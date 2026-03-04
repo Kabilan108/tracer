@@ -119,35 +119,35 @@ func createRootCommand() *cobra.Command {
 	// Build dynamic examples based on registered providers
 	examples := `
 # Check terminal coding agents installation
-specstory check
+tracer check
 
 # Run the default agent with auto-saving
-specstory run`
+tracer run`
 
 	// Add provider-specific examples if we have providers
 	if len(ids) > 0 {
 		examples += "\n\n# Run a specific agent with auto-saving"
 		for _, id := range ids {
 			if provider, _ := registry.Get(id); provider != nil {
-				examples += fmt.Sprintf("\nspecstory run %s", id)
+				examples += fmt.Sprintf("\ntracer run %s", id)
 			}
 		}
 
 		// Use first provider for custom command example
-		examples += fmt.Sprintf("\n\n# Run with custom command\nspecstory run %s -c \"/custom/path/to/agent\"", ids[0])
+		examples += fmt.Sprintf("\n\n# Run with custom command\ntracer run %s -c \"/custom/path/to/agent\"", ids[0])
 	}
 
 	examples += `
 
 # Generate markdown files for all agent sessions associated with the current directory
-specstory sync
+tracer sync
 
 # Generate markdown files for specific agent sessions
-specstory sync -s <session-id>
-specstory sync -s <session-id-1> -s <session-id-2>
+tracer sync -s <session-id>
+tracer sync -s <session-id-1> -s <session-id-2>
 
 # Watch for any agent activity in the current directory and generate markdown files
-specstory watch`
+tracer watch`
 
 	longDesc := `SpecStory is a wrapper for terminal coding agents that auto-saves markdown files of all your chat interactions.`
 	if providerList != "No providers registered" {
@@ -155,7 +155,7 @@ specstory watch`
 	}
 
 	return &cobra.Command{
-		Use:               "specstory [command]",
+		Use:               "tracer [command]",
 		Short:             "SpecStory auto-saves terminal coding agent chat interactions",
 		Long:              longDesc,
 		Example:           examples,
@@ -477,9 +477,26 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 var runCmd *cobra.Command
 
 func resolveProviders(registry *factory.Registry, projectPath string, args []string) (map[string]spi.Provider, error) {
+	enabled := map[string]bool{}
+	if loadedConfig != nil {
+		for _, providerID := range loadedConfig.GetEnabledProviders() {
+			enabled[providerID] = true
+		}
+	}
+
+	isEnabled := func(providerID string) bool {
+		if len(enabled) == 0 {
+			return true
+		}
+		return enabled[strings.ToLower(providerID)]
+	}
+
 	providers := make(map[string]spi.Provider)
 	if len(args) > 0 {
 		providerID := args[0]
+		if !isEnabled(providerID) {
+			return nil, fmt.Errorf("provider %q is disabled by config", providerID)
+		}
 		provider, err := registry.Get(providerID)
 		if err != nil {
 			return nil, err
@@ -489,6 +506,9 @@ func resolveProviders(registry *factory.Registry, projectPath string, args []str
 	}
 
 	for _, providerID := range registry.ListIDs() {
+		if !isEnabled(providerID) {
+			continue
+		}
 		provider, err := registry.Get(providerID)
 		if err != nil {
 			continue
@@ -504,13 +524,73 @@ func resolveProviders(registry *factory.Registry, projectPath string, args []str
 	return providers, nil
 }
 
-func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, useUTC bool, debounce time.Duration) engine.Options {
+func sanitizeArchiveSegment(value string) string {
+	replacer := strings.NewReplacer(
+		"/", "-",
+		"\\", "-",
+		" ", "-",
+		":", "-",
+		"*", "-",
+		"?", "-",
+		"\"", "-",
+		"<", "-",
+		">", "-",
+		"|", "-",
+	)
+	sanitized := strings.Trim(replacer.Replace(strings.TrimSpace(value)), "-.")
+	if sanitized == "" {
+		return "unknown"
+	}
+	return sanitized
+}
+
+func archivePathBuilder(outputConfig *utils.OutputPathConfig, projectPath string) engine.PathBuilder {
+	projectSegment := sanitizeArchiveSegment(filepath.Base(projectPath))
+	historyDir := outputConfig.GetHistoryDir()
+
+	return func(providerID string, session *spi.AgentChatSession) string {
+		providerSegment := sanitizeArchiveSegment(providerID)
+		sessionSegment := sanitizeArchiveSegment(session.SessionID)
+		return filepath.Join(historyDir, providerSegment, projectSegment, sessionSegment+".md")
+	}
+}
+
+func acquireDaemonLock(lockPath string) (*os.File, error) {
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open daemon lock file: %w", err)
+	}
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("daemon already running (lock: %s)", lockPath)
+	}
+
+	if err := lockFile.Truncate(0); err == nil {
+		_, _ = lockFile.WriteString(fmt.Sprintf("%d\n", os.Getpid()))
+	}
+
+	return lockFile, nil
+}
+
+func releaseDaemonLock(lockFile *os.File) {
+	if lockFile == nil {
+		return
+	}
+	lockPath := lockFile.Name()
+	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	_ = lockFile.Close()
+	_ = os.Remove(lockPath)
+}
+
+func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, projectPath string, useUTC bool, debounce time.Duration) engine.Options {
 	return engine.Options{
 		HistoryDir:     config.GetHistoryDir(),
 		StatisticsPath: config.GetStatisticsPath(),
 		StateDBPath:    filepath.Join(config.GetSpecStoryDir(), "runtime-state.db"),
 		UseUTC:         useUTC,
 		Debounce:       debounce,
+		PathBuilder:    archivePathBuilder(config, projectPath),
 	}
 }
 
@@ -544,13 +624,24 @@ func createIngestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if loadedConfig != nil && loadedConfig.IsProjectExcluded(cwd) {
+				if !silent {
+					fmt.Println()
+					fmt.Println("Project is excluded by ingest config; skipping.")
+					fmt.Println()
+				}
+				return nil
+			}
 
 			providers, err := resolveProviders(registry, cwd, args)
 			if err != nil {
 				return err
 			}
 
-			summary, err := engine.RunIngest(context.Background(), engineOptionsFromOutputConfig(outputConfig, useUTC, 0), cwd, providers, debugRaw)
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+
+			summary, err := engine.RunIngest(ctx, engineOptionsFromOutputConfig(outputConfig, cwd, useUTC, 0), cwd, providers, debugRaw)
 			if !silent {
 				fmt.Println()
 				fmt.Printf("Ingest complete: %d created, %d updated, %d skipped, %d errors\n",
@@ -564,7 +655,9 @@ func createIngestCommand() *cobra.Command {
 		},
 	}
 
-	ingestCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
+	ingestCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.specstory/history)")
+	ingestCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (deprecated; use --archive-root)")
+	_ = ingestCmd.Flags().MarkHidden("output-dir")
 	ingestCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
 	ingestCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
 	ingestCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")
@@ -605,6 +698,14 @@ func createDaemonCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if loadedConfig != nil && loadedConfig.IsProjectExcluded(cwd) {
+				if !silent {
+					fmt.Println()
+					fmt.Println("Project is excluded by ingest config; daemon not started.")
+					fmt.Println()
+				}
+				return nil
+			}
 
 			providers, err := resolveProviders(registry, cwd, args)
 			if err != nil {
@@ -621,7 +722,14 @@ func createDaemonCommand() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			summary, err := engine.RunDaemon(ctx, engineOptionsFromOutputConfig(outputConfig, useUTC, debounce), cwd, providers, debugRaw)
+			lockPath := filepath.Join(outputConfig.GetSpecStoryDir(), "daemon.lock")
+			lockFile, err := acquireDaemonLock(lockPath)
+			if err != nil {
+				return err
+			}
+			defer releaseDaemonLock(lockFile)
+
+			summary, err := engine.RunDaemon(ctx, engineOptionsFromOutputConfig(outputConfig, cwd, useUTC, debounce), cwd, providers, debugRaw)
 			if !silent {
 				fmt.Println()
 				fmt.Printf("Daemon stopped: %d created, %d updated, %d skipped, %d errors\n",
@@ -635,7 +743,9 @@ func createDaemonCommand() *cobra.Command {
 		},
 	}
 
-	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
+	runCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.specstory/history)")
+	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (deprecated; use --archive-root)")
+	_ = runCmd.Flags().MarkHidden("output-dir")
 	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
 	runCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
 	runCmd.Flags().DurationVar(&debounce, "debounce", 750*time.Millisecond, "debounce duration for write updates")
@@ -1447,8 +1557,8 @@ func main() {
 
 	// Apply config values to flag variables so the rest of the code can use them unchanged.
 	// This merges TOML config with CLI flags (CLI flags take precedence via config.Load).
-	if cfg.GetOutputDir() != "" {
-		outputDir = utils.ExpandTilde(cfg.GetOutputDir())
+	if cfg.GetArchiveRoot() != "" {
+		outputDir = utils.ExpandTilde(cfg.GetArchiveRoot())
 	}
 	if cfg.GetDebugDir() != "" {
 		debugDir = utils.ExpandTilde(cfg.GetDebugDir())

@@ -1249,3 +1249,57 @@ claude_cmd = "claude --project-level"
 		}
 	})
 }
+
+func TestGetArchiveRoot(t *testing.T) {
+	cfg := &Config{
+		LocalSync: LocalSyncConfig{OutputDir: "/legacy/output"},
+		Archive:   ArchiveConfig{RootDir: "/global/archive"},
+	}
+
+	if got := cfg.GetArchiveRoot(); got != "/global/archive" {
+		t.Fatalf("GetArchiveRoot() = %q, want %q", got, "/global/archive")
+	}
+
+	cfg.Archive.RootDir = ""
+	if got := cfg.GetArchiveRoot(); got != "/legacy/output" {
+		t.Fatalf("GetArchiveRoot() fallback = %q, want %q", got, "/legacy/output")
+	}
+}
+
+func TestGetEnabledProviders(t *testing.T) {
+	cfg := &Config{
+		Ingest: IngestConfig{
+			EnabledProviders: []string{" Claude ", "CODEX", "", "  "},
+		},
+	}
+
+	got := cfg.GetEnabledProviders()
+	want := []string{"claude", "codex"}
+	if len(got) != len(want) {
+		t.Fatalf("len(GetEnabledProviders()) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("GetEnabledProviders()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestIsProjectExcluded(t *testing.T) {
+	cfg := &Config{
+		Ingest: IngestConfig{
+			ExcludeProjects:  []string{"secret-repo"},
+			ExcludePathGlobs: []string{"/tmp/*", "/var/projects/*"},
+		},
+	}
+
+	if !cfg.IsProjectExcluded("/home/user/secret-repo") {
+		t.Fatal("IsProjectExcluded(project name) = false, want true")
+	}
+	if !cfg.IsProjectExcluded("/tmp/playground") {
+		t.Fatal("IsProjectExcluded(glob) = false, want true")
+	}
+	if cfg.IsProjectExcluded("/home/user/work/main") {
+		t.Fatal("IsProjectExcluded(non-excluded) = true, want false")
+	}
+}

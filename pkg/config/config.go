@@ -98,6 +98,22 @@ const defaultConfigTemplate = `# SpecStory CLI Configuration
 
 # Codex CLI command
 # codex_cmd = "codex"
+
+[archive]
+# Global archive root for generated markdown.
+# Sessions are written as: provider/project/session.md
+# root_dir = "~/.specstory/archive"
+
+[ingest]
+# Limit ingest/daemon processing to these providers.
+# Empty means all registered providers.
+# enabled_providers = ["claude", "codex"]
+
+# Skip project names entirely.
+# exclude_projects = ["scratch-playground"]
+
+# Skip project paths matching filepath globs.
+# exclude_path_globs = ["/tmp/*", "/home/user/archive/*"]
 `
 
 // Config represents the complete CLI configuration
@@ -108,6 +124,8 @@ type Config struct {
 	Logging      LoggingConfig      `toml:"logging"`
 	Telemetry    TelemetryConfig    `toml:"telemetry"`
 	Providers    ProvidersConfig    `toml:"providers"`
+	Archive      ArchiveConfig      `toml:"archive"`
+	Ingest       IngestConfig       `toml:"ingest"`
 }
 
 // VersionCheckConfig holds version check settings
@@ -170,6 +188,18 @@ type TelemetryConfig struct {
 type ProvidersConfig struct {
 	ClaudeCmd string `toml:"claude_cmd"`
 	CodexCmd  string `toml:"codex_cmd"`
+}
+
+// ArchiveConfig configures the global markdown archive output root.
+type ArchiveConfig struct {
+	RootDir string `toml:"root_dir"`
+}
+
+// IngestConfig controls provider selection and exclusion behavior for ingest/daemon modes.
+type IngestConfig struct {
+	EnabledProviders []string `toml:"enabled_providers"`
+	ExcludeProjects  []string `toml:"exclude_projects"`
+	ExcludePathGlobs []string `toml:"exclude_path_globs"`
 }
 
 // CLIOverrides holds CLI flag values that override config file settings.
@@ -572,6 +602,15 @@ func (c *Config) GetOutputDir() string {
 	return c.LocalSync.OutputDir
 }
 
+// GetArchiveRoot returns the global archive root if configured, otherwise falls
+// back to the local sync output directory setting.
+func (c *Config) GetArchiveRoot() string {
+	if c.Archive.RootDir != "" {
+		return c.Archive.RootDir
+	}
+	return c.LocalSync.OutputDir
+}
+
 // IsVersionCheckEnabled returns whether version check is enabled.
 // Defaults to true if not explicitly set.
 func (c *Config) IsVersionCheckEnabled() bool {
@@ -691,4 +730,47 @@ func (c *Config) GetProviderCmd(providerID string) string {
 	default:
 		return ""
 	}
+}
+
+// GetEnabledProviders returns configured provider IDs for ingest/daemon filtering.
+func (c *Config) GetEnabledProviders() []string {
+	if len(c.Ingest.EnabledProviders) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(c.Ingest.EnabledProviders))
+	for _, providerID := range c.Ingest.EnabledProviders {
+		trimmed := strings.TrimSpace(strings.ToLower(providerID))
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// IsProjectExcluded reports whether projectPath is excluded by ingest settings.
+func (c *Config) IsProjectExcluded(projectPath string) bool {
+	base := strings.ToLower(filepath.Base(projectPath))
+
+	for _, project := range c.Ingest.ExcludeProjects {
+		if strings.ToLower(strings.TrimSpace(project)) == base {
+			return true
+		}
+	}
+
+	cleaned := filepath.Clean(projectPath)
+	for _, glob := range c.Ingest.ExcludePathGlobs {
+		pattern := strings.TrimSpace(glob)
+		if pattern == "" {
+			continue
+		}
+		matched, err := filepath.Match(pattern, cleaned)
+		if err == nil && matched {
+			return true
+		}
+	}
+
+	return false
 }
