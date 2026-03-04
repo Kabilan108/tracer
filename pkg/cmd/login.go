@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
 )
 
@@ -70,7 +69,6 @@ specstory login`,
 
 			// User is not authenticated - start login flow
 			slog.Info("Starting login flow")
-			analytics.TrackEvent(analytics.EventLoginAttempted, nil)
 			loginURL := cloud.GetAPIBaseURL() + "/cli-login"
 
 			fmt.Println()
@@ -103,10 +101,6 @@ specstory login`,
 				code, err := reader.ReadString('\n')
 				if err != nil {
 					slog.Error("Failed to read authentication code", "error", err)
-					analytics.TrackEvent(analytics.EventLoginFailed, analytics.Properties{
-						"error": err.Error(),
-						"stage": "reading_code",
-					})
 					return fmt.Errorf("failed to read authentication code: %w", err)
 				}
 
@@ -117,7 +111,6 @@ specstory login`,
 				upperCode := strings.ToUpper(code)
 				if upperCode == quitCommandFull || upperCode == quitCommandShort || upperCode == exitCommand {
 					slog.Info("Login cancelled by user")
-					analytics.TrackEvent(analytics.EventLoginCancelled, nil)
 					fmt.Println()
 					fmt.Println("👋 Login cancelled.")
 					fmt.Println()
@@ -131,10 +124,6 @@ specstory login`,
 					slog.Debug("Invalid code format entered", "original", code, "attempt", invalidAttempts)
 
 					if invalidAttempts >= maxAttempts {
-						analytics.TrackEvent(analytics.EventLoginFailed, analytics.Properties{
-							"error": "max_attempts_exceeded",
-							"stage": "code_validation",
-						})
 						return fmt.Errorf("maximum login attempts exceeded")
 					}
 
@@ -159,18 +148,10 @@ specstory login`,
 				if err := cloud.LoginWithDeviceCode(normalizedCode); err != nil {
 					invalidAttempts++
 					slog.Error("Failed to authenticate with device code", "error", err)
-					analytics.TrackEvent(analytics.EventLoginFailed, analytics.Properties{
-						"error": err.Error(),
-						"stage": "device_login",
-					})
 
 					// Check if it's an invalid code error
 					if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
 						if invalidAttempts >= maxAttempts {
-							analytics.TrackEvent(analytics.EventLoginFailed, analytics.Properties{
-								"error": "max_attempts_exceeded",
-								"stage": "device_login",
-							})
 							return fmt.Errorf("maximum login attempts exceeded")
 						}
 
@@ -198,10 +179,6 @@ specstory login`,
 				fmt.Println("   • specstory sync - Sync markdown files for existing sessions")
 				fmt.Println()
 
-				analytics.TrackEvent(analytics.EventLoginSuccess, analytics.Properties{
-					"user":   username,
-					"method": "device_code",
-				})
 				slog.Info("Login flow completed successfully", "user", username)
 				return nil
 			}

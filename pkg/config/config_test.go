@@ -223,13 +223,10 @@ func TestConfigMerge(t *testing.T) {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
 
-		// User config sets output_dir and disables analytics
+		// User config sets output_dir
 		createTempConfigFile(t, tempHome, `
 [local_sync]
 output_dir = "/user/output"
-
-[analytics]
-enabled = false
 `)
 		// Project config sets debug_dir and disables cloud sync — no overlap
 		createTempConfigFile(t, tempProject, `
@@ -248,10 +245,6 @@ enabled = false
 		// User-level output_dir should survive (project didn't set it)
 		if cfg.GetOutputDir() != "/user/output" {
 			t.Errorf("GetOutputDir() = %q, want %q", cfg.GetOutputDir(), "/user/output")
-		}
-		// User-level analytics=false should survive (project didn't set it)
-		if cfg.IsAnalyticsEnabled() {
-			t.Errorf("IsAnalyticsEnabled() = true, want false (from user config)")
 		}
 		// Project-level debug_dir should be present
 		if cfg.GetDebugDir() != "/project/debug" {
@@ -454,19 +447,6 @@ silent = false
 			checkFunc: func(t *testing.T, cfg *Config) {
 				if !cfg.IsSilentEnabled() {
 					t.Errorf("IsSilentEnabled() = false, want true")
-				}
-			},
-		},
-		{
-			name: "NoAnalytics override (--no-usage-analytics)",
-			configFile: `
-[analytics]
-enabled = true
-`,
-			overrides: &CLIOverrides{NoAnalytics: true},
-			checkFunc: func(t *testing.T, cfg *Config) {
-				if cfg.IsAnalyticsEnabled() {
-					t.Errorf("IsAnalyticsEnabled() = true, want false")
 				}
 			},
 		},
@@ -785,7 +765,6 @@ func TestDefaultValues(t *testing.T) {
 		{"IsVersionCheckEnabled default", cfg.IsVersionCheckEnabled(), true},
 		{"IsCloudSyncEnabled default", cfg.IsCloudSyncEnabled(), true},
 		{"IsLocalSyncEnabled default", cfg.IsLocalSyncEnabled(), true},
-		{"IsAnalyticsEnabled default", cfg.IsAnalyticsEnabled(), true},
 		{"IsConsoleEnabled default", cfg.IsConsoleEnabled(), false},
 		{"IsLogEnabled default", cfg.IsLogEnabled(), false},
 		{"IsDebugEnabled default", cfg.IsDebugEnabled(), false},
@@ -870,9 +849,6 @@ func TestEnsureDefaultUserConfig(t *testing.T) {
 		}
 		if !cfg.IsLocalSyncEnabled() {
 			t.Errorf("IsLocalSyncEnabled() = false, want true")
-		}
-		if !cfg.IsAnalyticsEnabled() {
-			t.Errorf("IsAnalyticsEnabled() = false, want true")
 		}
 	})
 

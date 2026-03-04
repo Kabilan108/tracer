@@ -78,11 +78,6 @@ const defaultConfigTemplate = `# SpecStory CLI Configuration
 # Default: true
 # enabled = false # equivalent to --no-version-check
 
-[analytics]
-# Send anonymous product usage analytics to help improve SpecStory.
-# Default: true
-# enabled = false # equivalent to --no-usage-analytics
-
 [telemetry]
 # OTLP gRPC collector endpoint (e.g., "localhost:4317" or "http://localhost:4317")
 # endpoint = "localhost:4317"
@@ -111,7 +106,6 @@ type Config struct {
 	CloudSync    CloudSyncConfig    `toml:"cloud_sync"`
 	LocalSync    LocalSyncConfig    `toml:"local_sync"`
 	Logging      LoggingConfig      `toml:"logging"`
-	Analytics    AnalyticsConfig    `toml:"analytics"`
 	Telemetry    TelemetryConfig    `toml:"telemetry"`
 	Providers    ProvidersConfig    `toml:"providers"`
 }
@@ -151,12 +145,6 @@ type LoggingConfig struct {
 	Debug *bool `toml:"debug"`
 	// Silent suppresses all non-error output
 	Silent *bool `toml:"silent"`
-}
-
-// AnalyticsConfig holds analytics settings
-type AnalyticsConfig struct {
-	// Enabled controls whether usage analytics are sent
-	Enabled *bool `toml:"enabled"`
 }
 
 // TelemetryConfig holds OpenTelemetry configuration.
@@ -204,9 +192,6 @@ type CLIOverrides struct {
 	Log      bool
 	Debug    bool
 	Silent   bool
-
-	// Analytics
-	NoAnalytics bool
 
 	// Telemetry
 	TelemetryEndpoint    string
@@ -567,12 +552,6 @@ func applyCLIOverrides(cfg *Config, o *CLIOverrides) {
 		cfg.Logging.Silent = &enabled
 	}
 
-	// Analytics (--no-usage-analytics sets enabled to false)
-	if o.NoAnalytics {
-		disabled := false
-		cfg.Analytics.Enabled = &disabled
-	}
-
 	// Telemetry
 	if o.TelemetryEndpoint != "" {
 		cfg.Telemetry.Endpoint = o.TelemetryEndpoint
@@ -655,15 +634,6 @@ func (c *Config) IsSilentEnabled() bool {
 		return *c.Logging.Silent
 	}
 	return false // default disabled
-}
-
-// IsAnalyticsEnabled returns whether analytics are enabled.
-// Defaults to true if not explicitly set.
-func (c *Config) IsAnalyticsEnabled() bool {
-	if c.Analytics.Enabled != nil {
-		return *c.Analytics.Enabled
-	}
-	return true // default enabled
 }
 
 // IsTelemetryEnabled returns whether telemetry should be enabled.

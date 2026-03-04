@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
 )
@@ -122,17 +121,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 	versionOutput, versionFlag, stderrOutput, err := runCodexVersionCommand(codexCmd)
 	if err != nil {
 		errorType := classifyCheckError(err)
-		analytics.TrackEvent(analytics.EventCheckInstallFailed, analytics.Properties{
-			"provider":       "codex",
-			"custom_command": isCustomCommand,
-			"command_path":   codexCmd,
-			"resolved_path":  resolvedPath,
-			"error_type":     errorType,
-			"version_flag":   versionFlag,
-			"stderr":         stderrOutput,
-			"error_message":  err.Error(),
-		})
-
 		errorMessage := buildCheckErrorMessage(errorType, codexCmd, isCustomCommand, stderrOutput)
 
 		return spi.CheckResult{
@@ -145,16 +133,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 
 	if versionOutput == "" {
 		errorType := "no_output"
-		analytics.TrackEvent(analytics.EventCheckInstallFailed, analytics.Properties{
-			"provider":       "codex",
-			"custom_command": isCustomCommand,
-			"command_path":   codexCmd,
-			"resolved_path":  resolvedPath,
-			"error_type":     errorType,
-			"version_flag":   versionFlag,
-			"stderr":         stderrOutput,
-		})
-
 		errorMessage := buildCheckErrorMessage(errorType, codexCmd, isCustomCommand, stderrOutput)
 
 		return spi.CheckResult{
@@ -164,14 +142,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 			ErrorMessage: errorMessage,
 		}
 	}
-
-	analytics.TrackEvent(analytics.EventCheckInstallSuccess, analytics.Properties{
-		"provider":       "codex",
-		"custom_command": isCustomCommand,
-		"command_path":   resolvedPath,
-		"version":        versionOutput,
-		"version_flag":   versionFlag,
-	})
 
 	slog.Debug("Codex CLI check successful", "version", versionOutput, "location", resolvedPath, "flag", versionFlag)
 

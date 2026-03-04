@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
@@ -123,9 +122,6 @@ func checkSingleProvider(registry *factory.Registry, providerID, customCmd strin
 		return err
 	}
 
-	// Set the agent provider for analytics
-	analytics.SetAgentProviders([]string{provider.Name()})
-
 	// Run the check
 	result := provider.Check(customCmd)
 
@@ -156,15 +152,6 @@ func checkSingleProvider(registry *factory.Registry, providerID, customCmd strin
 func checkAllProviders(registry *factory.Registry) error {
 	// Sort for consistent output
 	ids := registry.ListIDs()
-
-	// Collect all provider names for analytics
-	var providerNames []string
-	for _, id := range ids {
-		if provider, err := registry.Get(id); err == nil {
-			providerNames = append(providerNames, provider.Name())
-		}
-	}
-	analytics.SetAgentProviders(providerNames)
 
 	anySuccess := false
 	type providerInfo struct {

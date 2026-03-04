@@ -83,7 +83,6 @@ To see debug output, you can use the following commands:
 The codebase package structure:
 
 - `main.go` - CLI entry point
-- `pkg/analytics/` - PostHog analytics integration
 - `pkg/cloud` - Cloud sync integration
 - `pkg/cmd` - CLI commands and command parsing
 - `pkg/config` - Optional TOML config file handling
@@ -92,6 +91,7 @@ The codebase package structure:
 - `pkg/providers/*` - Provider implementations including file watching, data processing, and session data generation
 - `pkg/session/` - Session data validation, helpers and markdown generation
 - `pkg/spi/` - SPI implementation for provider implementations
+- `pkg/telemetry/` - Optional OTEL trace and metrics support
 - `pkg/utils/` - Helper functions
 
 ### JSONL File Behavior
@@ -99,16 +99,6 @@ The codebase package structure:
 - Session data files grow during conversation (append-only)
 - `run` and `watch` commands uses fsnotify for real-time monitoring of the agent's session data directory
 - Many agents (e.g. Claude Code) use JSONL files for session data (e.g. `~/.claude/projects/<dir-derived-from-project-dir>/<session-id>.jsonl`)
-
-### Analytics Events
-
-When adding new features, track usage with PostHog:
-
-```go
-analytics.TrackEvent(analytics.EventExtensionActivated, analytics.Properties{
-	"property": "value",
-})
-```
 
 ## Code Conventions
 

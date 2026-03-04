@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
 )
@@ -205,14 +204,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 		}
 
 		stderrOutput := strings.TrimSpace(errOut.String())
-		analytics.TrackEvent(analytics.EventCheckInstallFailed, analytics.Properties{
-			"provider":       "claude",
-			"custom_command": isCustomCommand,
-			"command_path":   claudeCmd,
-			"error_type":     errorType,
-			"error_message":  err.Error(),
-		})
-
 		errorMessage := buildCheckErrorMessage(errorType, claudeCmd, isCustomCommand, stderrOutput)
 
 		return spi.CheckResult{
@@ -226,15 +217,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 	// Check if output contains "Claude Code"
 	output := out.String()
 	if !strings.Contains(output, "(Claude Code)") {
-		// Track unexpected output error
-		analytics.TrackEvent(analytics.EventCheckInstallFailed, analytics.Properties{
-			"provider":       "claude",
-			"custom_command": isCustomCommand,
-			"command_path":   claudeCmd,
-			"error_type":     "unexpected_output",
-			"output":         strings.TrimSpace(output),
-		})
-
 		errorMessage := buildCheckErrorMessage("unexpected_output", claudeCmd, isCustomCommand, output)
 
 		return spi.CheckResult{
@@ -244,14 +226,6 @@ func (p *Provider) Check(customCommand string) spi.CheckResult {
 			ErrorMessage: errorMessage,
 		}
 	}
-
-	// Success! Track it
-	analytics.TrackEvent(analytics.EventCheckInstallSuccess, analytics.Properties{
-		"provider":       "claude",
-		"custom_command": isCustomCommand,
-		"command_path":   resolvedPath,
-		"version":        strings.TrimSpace(output),
-	})
 
 	return spi.CheckResult{
 		Success:      true,

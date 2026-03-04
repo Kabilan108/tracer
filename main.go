@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
 	cmdpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/cmd" // Aliased to avoid shadowing cobra's `cmd` parameter
 
@@ -33,7 +32,6 @@ var version = "dev" // Replaced with actual version in the production build proc
 // Flags / Modes / Options
 
 // General Options
-var noAnalytics bool    // flag to disable usage analytics
 var noVersionCheck bool // flag to skip checking for newer versions
 var outputDir string    // custom output directory for markdown files
 var debugDir string     // custom output directory for debug files
@@ -243,11 +241,6 @@ specstory watch`
 			return nil
 		},
 		Run: func(c *cobra.Command, args []string) {
-			// Track help command usage (when no command is specified)
-			analytics.TrackEvent(analytics.EventHelpCommand, analytics.Properties{
-				"help_topic":  "general",
-				"help_reason": "requested",
-			})
 			// If no command is specified, show logo then help
 			cmdpkg.DisplayLogoAndHelp(c)
 		},
@@ -373,9 +366,6 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 
 			slog.Info("Launching agent", "provider", provider.Name())
 
-			// Set the agent provider for analytics
-			analytics.SetAgentProviders([]string{provider.Name()})
-
 			// Setup output configuration
 			config, err := utils.SetupOutputConfig(outputDir, debugDir)
 			if err != nil {
@@ -417,8 +407,6 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 
 			// Check authentication for cloud sync
 			cmdpkg.CheckAndWarnAuthentication(noCloudSync)
-			// Track extension activation
-			analytics.TrackEvent(analytics.EventExtensionActivated, nil)
 
 			// Get resume session ID if provided
 			resumeSessionID, _ := cmd.Flags().GetString("resume")
@@ -707,11 +695,6 @@ func syncSpecificSessions(cmd *cobra.Command, args []string, sessionIDs []string
 			markdownContent, err := sessionpkg.GenerateMarkdownFromAgentSession(session.SessionData, false, useUTC)
 			if err != nil {
 				slog.Error("Failed to generate markdown", "sessionId", session.SessionID, "error", err)
-				analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-					"session_id": session.SessionID,
-					"error":      err.Error(),
-					"mode":       "print",
-				})
 				errorCount++
 				lastError = err
 				continue
@@ -724,10 +707,6 @@ func syncSpecificSessions(cmd *cobra.Command, args []string, sessionIDs []string
 			fmt.Print(markdownContent)
 			printedSessions++
 			successCount++
-			analytics.TrackEvent(analytics.EventSyncMarkdownSuccess, analytics.Properties{
-				"session_id": session.SessionID,
-				"mode":       "print",
-			})
 		} else {
 			// Normal sync: write to file and optionally cloud sync
 			if _, err := sessionpkg.ProcessSingleSession(context.Background(), session, config, sessionpkg.ProcessingOptions{
@@ -811,7 +790,7 @@ func preloadBulkSessionSizesIfNeeded(identityManager *utils.ProjectIdentityManag
 // syncProvider performs the actual sync for a single provider.
 // The caller-provided statsCollector accumulates statistics across providers so
 // they can be flushed to disk in a single I/O operation after all providers are done.
-// Returns (sessionCount, error) for analytics tracking.
+// Returns (sessionCount, error).
 func syncProvider(provider spi.Provider, providerID string, config utils.OutputConfig, debugRaw bool, useUTC bool, statsCollector *sessionpkg.StatisticsCollector) (int, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -897,11 +876,6 @@ func syncProvider(provider spi.Provider, providerID string, config utils.OutputC
 				slog.Error("Failed to generate markdown from SessionData",
 					"sessionId", session.SessionID,
 					"error", err)
-				// Track sync error
-				analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-					"session_id": session.SessionID,
-					"error":      err.Error(),
-				})
 				return
 			}
 
@@ -945,30 +919,11 @@ func syncProvider(provider spi.Provider, providerID string, config utils.OutputC
 						slog.Error("Error writing markdown file",
 							"sessionId", session.SessionID,
 							"error", err)
-						// Track sync error
-						analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-							"session_id":      session.SessionID,
-							"error":           err.Error(),
-							"only_cloud_sync": onlyCloudSync,
-						})
 						return
 					}
 					slog.Info("Successfully wrote file",
 						"sessionId", session.SessionID,
 						"path", fileFullPath)
-
-					// Track successful sync
-					if !fileExists {
-						analytics.TrackEvent(analytics.EventSyncMarkdownNew, analytics.Properties{
-							"session_id":      session.SessionID,
-							"only_cloud_sync": onlyCloudSync,
-						})
-					} else {
-						analytics.TrackEvent(analytics.EventSyncMarkdownSuccess, analytics.Properties{
-							"session_id":      session.SessionID,
-							"only_cloud_sync": onlyCloudSync,
-						})
-					}
 				}
 
 				// Update statistics for normal mode
@@ -1075,15 +1030,6 @@ func syncAllProviders(registry *factory.Registry, cmd *cobra.Command) error {
 		return nil
 	}
 
-	// Collect provider names for analytics
-	var providerNames []string
-	for _, id := range providersWithActivity {
-		if provider, err := registry.Get(id); err == nil {
-			providerNames = append(providerNames, provider.Name())
-		}
-	}
-	analytics.SetAgentProviders(providerNames)
-
 	// Setup output configuration (once for all providers)
 	config, err := utils.SetupOutputConfig(outputDir, debugDir)
 	if err != nil {
@@ -1151,31 +1097,6 @@ func syncAllProviders(registry *factory.Registry, cmd *cobra.Command) error {
 		fmt.Printf("\n📊 Statistics collected: %s\n", config.GetStatisticsPath())
 	}
 
-	// Track stats-only usage separately so we can measure adoption
-	if onlyStats {
-		analytics.TrackEvent(analytics.EventSyncStatsComplete, analytics.Properties{
-			"provider":      "all",
-			"session_count": totalSessionCount,
-		})
-	}
-
-	// Track overall analytics
-	if lastError != nil {
-		analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-			"provider":      "all",
-			"error":         lastError.Error(),
-			"session_count": totalSessionCount,
-		})
-		// Brief delay to ensure error event is sent before exit
-		// TODO: This is a workaround for async analytics - should be fixed properly
-		time.Sleep(500 * time.Millisecond)
-	} else {
-		analytics.TrackEvent(analytics.EventSyncMarkdownSuccess, analytics.Properties{
-			"provider":      "all",
-			"session_count": totalSessionCount,
-		})
-	}
-
 	return lastError
 }
 
@@ -1202,9 +1123,6 @@ func syncSingleProvider(registry *factory.Registry, providerID string, cmd *cobr
 		}
 		return err
 	}
-
-	// Set the agent provider for analytics
-	analytics.SetAgentProviders([]string{provider.Name()})
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -1261,31 +1179,6 @@ func syncSingleProvider(registry *factory.Registry, providerID string, cmd *cobr
 		fmt.Printf("\n📊 Statistics collected: %s\n", config.GetStatisticsPath())
 	}
 
-	// Track stats-only usage separately so we can measure adoption
-	if onlyStats {
-		analytics.TrackEvent(analytics.EventSyncStatsComplete, analytics.Properties{
-			"provider":      providerID,
-			"session_count": sessionCount,
-		})
-	}
-
-	// Track analytics
-	if syncErr != nil {
-		analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-			"provider":      providerID,
-			"error":         syncErr.Error(),
-			"session_count": sessionCount,
-		})
-		// Brief delay to ensure error event is sent before exit
-		// TODO: This is a workaround for async analytics - should be fixed properly
-		time.Sleep(500 * time.Millisecond)
-	} else {
-		analytics.TrackEvent(analytics.EventSyncMarkdownSuccess, analytics.Properties{
-			"provider":      providerID,
-			"session_count": sessionCount,
-		})
-	}
-
 	return syncErr
 }
 
@@ -1299,8 +1192,6 @@ func main() {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "--no-usage-analytics":
-			noAnalytics = true
 		case "--console":
 			console = true
 		case "--log":
@@ -1371,7 +1262,6 @@ func main() {
 		Log:                  logFile,
 		Debug:                debug,
 		Silent:               silent,
-		NoAnalytics:          noAnalytics,
 		TelemetryEndpoint:    telemetryEndpoint,
 		TelemetryServiceName: telemetryServiceName,
 		NoTelemetryPrompts:   noTelemetryPrompts,
@@ -1395,7 +1285,6 @@ func main() {
 	noVersionCheck = !cfg.IsVersionCheckEnabled()
 	noCloudSync = !cfg.IsCloudSyncEnabled()
 	onlyCloudSync = !cfg.IsLocalSyncEnabled()
-	noAnalytics = !cfg.IsAnalyticsEnabled()
 	console = cfg.IsConsoleEnabled()
 	logFile = cfg.IsLogEnabled()
 	debug = cfg.IsDebugEnabled()
@@ -1457,7 +1346,6 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
 	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ./.specstory/debug/debug.log")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
-	rootCmd.PersistentFlags().BoolVar(&noAnalytics, "no-usage-analytics", noAnalytics, "disable usage analytics")
 	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
 	rootCmd.PersistentFlags().BoolVar(&noVersionCheck, "no-version-check", noVersionCheck, "skip checking for newer versions")
 	rootCmd.PersistentFlags().StringVar(&cloudToken, "cloud-token", "", "use a SpecStory Cloud refresh token for this session (bypasses login)")
@@ -1497,20 +1385,6 @@ func main() {
 	runCmd.Flags().StringVar(&telemetryServiceName, "telemetry-service-name", "", "override the default service name for telemetry, if telemetry is enabled")
 	runCmd.Flags().BoolVar(&noTelemetryPrompts, "no-telemetry-prompts", noTelemetryPrompts, "exclude prompt text from telemetry spans, if telemetry is enabled")
 
-	// Initialize analytics with the full CLI command (unless disabled)
-	slog.Debug("Analytics initialization check", "noAnalytics", noAnalytics, "flag_should_disable", noAnalytics)
-	if !noAnalytics {
-		slog.Debug("Initializing analytics")
-		fullCommand := strings.Join(os.Args, " ")
-		if err := analytics.Init(fullCommand, version); err != nil {
-			// Log error but don't fail - analytics should not break the app
-			slog.Warn("Failed to initialize analytics", "error", err)
-		}
-		defer func() { _ = analytics.Close() }() // Analytics errors shouldn't break the app
-	} else {
-		slog.Debug("Analytics disabled by --no-usage-analytics flag")
-	}
-
 	// Log config load error after logging is set up
 	if cfgErr != nil {
 		slog.Warn("Failed to load config file, using defaults", "error", cfgErr)
@@ -1548,22 +1422,9 @@ func main() {
 		// Wait for cloud sync operations to complete before exiting
 		cloudStats := cloud.Shutdown(cloud.CloudSyncTimeout)
 
-		// Track cloud sync analytics if we have stats
 		if cloudStats != nil {
 			// Calculate total attempted (all sessions that started sync)
 			totalCloudSessions := cloudStats.SessionsAttempted
-
-			// Track cloud sync completion event
-			if cloudStats.SessionsUpdated > 0 || cloudStats.SessionsCreated > 0 || cloudStats.SessionsErrored > 0 || cloudStats.SessionsTimedOut > 0 {
-				analytics.TrackEvent(analytics.EventCloudSyncComplete, analytics.Properties{
-					"sessions_created":   cloudStats.SessionsCreated,
-					"sessions_updated":   cloudStats.SessionsUpdated,
-					"sessions_skipped":   cloudStats.SessionsSkipped,
-					"sessions_errored":   cloudStats.SessionsErrored,
-					"sessions_timed_out": cloudStats.SessionsTimedOut,
-					"total":              totalCloudSessions,
-				})
-			}
 
 			// Display cloud sync stats if not in silent mode
 			if !silent && totalCloudSessions > 0 {

@@ -1,5 +1,5 @@
 // Package telemetry provides OpenTelemetry trace and metric initialization for the SpecStory CLI.
-// It follows the same idempotent-init pattern as pkg/analytics: first call to Init wins,
+// It follows an idempotent-init pattern: first call to Init wins, and the
 // disabled path uses the OTel no-op provider (zero overhead, no nil checks needed).
 package telemetry
 

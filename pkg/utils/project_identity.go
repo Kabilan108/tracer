@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 )
 
 const PROJECT_JSON_FILE = ".project.json"
@@ -65,7 +64,6 @@ func (m *ProjectIdentityManager) EnsureProjectIdentity() (bool, error) {
 	var identity ProjectIdentity
 	isModified := false
 
-	isNewProject := false
 	if existingIdentity == nil {
 		// Case 1: No .project.json yet
 		slog.Debug("No existing project identity found, creating new identity")
@@ -74,7 +72,6 @@ func (m *ProjectIdentityManager) EnsureProjectIdentity() (bool, error) {
 			WorkspaceIDAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		isModified = true
-		isNewProject = true
 	} else {
 		// Case 2 or 3: .project.json exists
 		identity = *existingIdentity
@@ -126,24 +123,6 @@ func (m *ProjectIdentityManager) EnsureProjectIdentity() (bool, error) {
 		}
 
 		slog.Info("Project identity saved", "path", projectJSONPath, "identity", identity)
-
-		// Track analytics for new project creation
-		if isNewProject {
-			properties := analytics.Properties{
-				"has_git_id":       identity.GitID != "",
-				"has_workspace_id": identity.WorkspaceID != "",
-				"project_name":     identity.ProjectName,
-			}
-
-			// Determine the ID type being used
-			if identity.GitID != "" {
-				properties["id_type"] = "git"
-			} else {
-				properties["id_type"] = "workspace"
-			}
-
-			analytics.TrackEvent(analytics.EventProjectIdentityCreated, properties)
-		}
 
 		return true, nil
 	}

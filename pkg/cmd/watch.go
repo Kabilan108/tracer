@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
@@ -146,7 +145,6 @@ By default, 'watch' is for activity from all registered agent providers. Specify
 				providerIDs = []string{args[0]}
 			}
 
-			// Collect provider names for analytics
 			providers := make(map[string]spi.Provider)
 			for _, id := range providerIDs {
 				if provider, err := registry.Get(id); err == nil {
@@ -160,10 +158,6 @@ By default, 'watch' is for activity from all registered agent providers. Specify
 			for _, provider := range providers {
 				providerNames = append(providerNames, provider.Name())
 			}
-			analytics.SetAgentProviders(providerNames)
-
-			// Track watch command activation
-			analytics.TrackEvent(analytics.EventWatchActivated, nil)
 
 			// Create context for graceful cancellation (Ctrl+C handling)
 			// This allows providers to clean up resources when user presses Ctrl+C

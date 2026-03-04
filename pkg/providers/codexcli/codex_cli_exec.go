@@ -206,7 +206,7 @@ func runCodexVersionCommand(command string) (string, string, string, error) {
 	return "", "", lastStderr, errors.New("failed to execute codex version command")
 }
 
-// classifyCheckError buckets common error categories for user guidance and analytics.
+// classifyCheckError buckets common error categories for user guidance.
 func classifyCheckError(err error) string {
 	if err == nil {
 		return ""

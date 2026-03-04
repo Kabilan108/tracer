@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
@@ -156,52 +155,7 @@ func ProcessSingleSession(ctx context.Context, session *spi.AgentChatSession, co
 			}
 			err := os.WriteFile(fileFullPath, []byte(markdownContent), 0644)
 			if err != nil {
-				// Track write error
-				if opts.IsAutosave {
-					analytics.TrackEvent(analytics.EventAutosaveError, analytics.Properties{
-						"session_id":      session.SessionID,
-						"error":           err.Error(),
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				} else {
-					analytics.TrackEvent(analytics.EventSyncMarkdownError, analytics.Properties{
-						"session_id":      session.SessionID,
-						"error":           err.Error(),
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				}
 				return 0, fmt.Errorf("error writing markdown file: %w", err)
-			}
-
-			// Track successful write
-			if opts.IsAutosave {
-				if !fileExists {
-					// New file created during autosave
-					analytics.TrackEvent(analytics.EventAutosaveNew, analytics.Properties{
-						"session_id":      session.SessionID,
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				} else {
-					// File updated during autosave
-					analytics.TrackEvent(analytics.EventAutosaveSuccess, analytics.Properties{
-						"session_id":      session.SessionID,
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				}
-			} else {
-				if !fileExists {
-					// New file created during manual sync
-					analytics.TrackEvent(analytics.EventSyncMarkdownNew, analytics.Properties{
-						"session_id":      session.SessionID,
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				} else {
-					// File updated during manual sync
-					analytics.TrackEvent(analytics.EventSyncMarkdownSuccess, analytics.Properties{
-						"session_id":      session.SessionID,
-						"only_cloud_sync": opts.OnlyCloudSync,
-					})
-				}
 			}
 
 			slog.Info("Successfully wrote file",

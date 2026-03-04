@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
 )
 
@@ -80,24 +79,12 @@ specstory logout --force`,
 			// Proceed with logout
 			if err := cloud.Logout(); err != nil {
 				slog.Error("Logout failed", "error", err)
-				// Track logout error
-				analytics.TrackEvent(analytics.EventLogout, analytics.Properties{
-					"success": false,
-					"forced":  force,
-					"error":   err.Error(),
-				})
 				fmt.Println()
 				fmt.Println("❌ Oops! Something went wrong during logout:")
 				fmt.Printf("   %v\n", err)
 				fmt.Println()
 				return err
 			}
-
-			// Track successful logout
-			analytics.TrackEvent(analytics.EventLogout, analytics.Properties{
-				"success": true,
-				"forced":  force,
-			})
 
 			// Success!
 			fmt.Println()

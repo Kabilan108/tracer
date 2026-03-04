@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 )
 
 // CreateVersionCommand creates the version command.
@@ -17,10 +15,6 @@ func CreateVersionCommand(version string) *cobra.Command {
 		Aliases: []string{"v", "ver"},
 		Short:   "Show SpecStory version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			// Track version command usage
-			analytics.TrackEvent(analytics.EventVersionCommand, analytics.Properties{
-				"version": version,
-			})
 			fmt.Printf("%s (SpecStory)\n", version)
 		},
 	}

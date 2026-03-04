@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/analytics"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
@@ -117,8 +116,6 @@ func listSingleProvider(registry *factory.Registry, providerID string) error {
 		return err
 	}
 
-	analytics.SetAgentProviders([]string{provider.Name()})
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		slog.Error("Failed to get current working directory", "error", err)
@@ -148,11 +145,6 @@ func listSingleProvider(registry *factory.Registry, providerID string) error {
 	if err := outputSessions(sessionsWithProvider); err != nil {
 		return err
 	}
-
-	analytics.TrackEvent(analytics.EventListSessions, analytics.Properties{
-		"provider":      providerID,
-		"session_count": len(sessions),
-	})
 
 	return nil
 }
@@ -200,14 +192,6 @@ func listAllProviders(registry *factory.Registry) error {
 		return nil
 	}
 
-	var providerNames []string
-	for _, id := range providersWithActivity {
-		if provider, err := registry.Get(id); err == nil {
-			providerNames = append(providerNames, provider.Name())
-		}
-	}
-	analytics.SetAgentProviders(providerNames)
-
 	allSessions := []sessionMetadataWithProvider{}
 	var lastError error
 
@@ -237,11 +221,6 @@ func listAllProviders(registry *factory.Registry) error {
 	if err := outputSessions(allSessions); err != nil {
 		return err
 	}
-
-	analytics.TrackEvent(analytics.EventListSessions, analytics.Properties{
-		"provider":      "all",
-		"session_count": len(allSessions),
-	})
 
 	return lastError
 }
