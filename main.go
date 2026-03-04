@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	cmdpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/cmd" // Aliased to avoid shadowing cobra's `cmd` parameter
 
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
+	"github.com/specstoryai/getspecstory/specstory-cli/pkg/engine"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/provenance"
 	sessionpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/session"
@@ -473,6 +475,176 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 }
 
 var runCmd *cobra.Command
+
+func resolveProviders(registry *factory.Registry, projectPath string, args []string) (map[string]spi.Provider, error) {
+	providers := make(map[string]spi.Provider)
+	if len(args) > 0 {
+		providerID := args[0]
+		provider, err := registry.Get(providerID)
+		if err != nil {
+			return nil, err
+		}
+		providers[providerID] = provider
+		return providers, nil
+	}
+
+	for _, providerID := range registry.ListIDs() {
+		provider, err := registry.Get(providerID)
+		if err != nil {
+			continue
+		}
+		if provider.DetectAgent(projectPath, false) {
+			providers[providerID] = provider
+		}
+	}
+
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("no providers with activity found in this project")
+	}
+	return providers, nil
+}
+
+func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, useUTC bool, debounce time.Duration) engine.Options {
+	return engine.Options{
+		HistoryDir:     config.GetHistoryDir(),
+		StatisticsPath: config.GetStatisticsPath(),
+		StateDBPath:    filepath.Join(config.GetSpecStoryDir(), "runtime-state.db"),
+		UseUTC:         useUTC,
+		Debounce:       debounce,
+	}
+}
+
+func createIngestCommand() *cobra.Command {
+	registry := factory.GetRegistry()
+	providerList := registry.GetProviderList()
+
+	longDesc := "Backfill session markdown for all providers using the shared ingest engine."
+	if providerList != "No providers registered" {
+		longDesc += "\n\nAvailable provider IDs: " + providerList + "."
+	}
+
+	ingestCmd := &cobra.Command{
+		Use:   "ingest [provider-id]",
+		Short: "Ingest historical sessions into markdown archive",
+		Long:  longDesc,
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			debugRaw, _ := cmd.Flags().GetBool("debug-raw")
+			useUTC := !localTimeZone
+
+			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			if err != nil {
+				return err
+			}
+			if err := utils.EnsureHistoryDirectoryExists(outputConfig); err != nil {
+				return err
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+
+			providers, err := resolveProviders(registry, cwd, args)
+			if err != nil {
+				return err
+			}
+
+			summary, err := engine.RunIngest(context.Background(), engineOptionsFromOutputConfig(outputConfig, useUTC, 0), cwd, providers, debugRaw)
+			if !silent {
+				fmt.Println()
+				fmt.Printf("Ingest complete: %d created, %d updated, %d skipped, %d errors\n",
+					summary.Created,
+					summary.Updated,
+					summary.Skipped,
+					summary.Errors)
+				fmt.Println()
+			}
+			return err
+		},
+	}
+
+	ingestCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
+	ingestCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	ingestCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
+	ingestCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")
+	_ = ingestCmd.Flags().MarkHidden("debug-raw")
+
+	return ingestCmd
+}
+
+func createDaemonCommand() *cobra.Command {
+	registry := factory.GetRegistry()
+	providerList := registry.GetProviderList()
+
+	daemonCmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Daemon commands",
+	}
+
+	var debounce time.Duration
+	runCmd := &cobra.Command{
+		Use:   "run [provider-id]",
+		Short: "Run continuous ingest daemon (historical + live updates)",
+		Long: "Runs a foreground daemon that first ingests historical sessions and then watches for session updates.\n\n" +
+			"Press Ctrl+C to stop.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			debugRaw, _ := cmd.Flags().GetBool("debug-raw")
+			useUTC := !localTimeZone
+
+			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			if err != nil {
+				return err
+			}
+			if err := utils.EnsureHistoryDirectoryExists(outputConfig); err != nil {
+				return err
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+
+			providers, err := resolveProviders(registry, cwd, args)
+			if err != nil {
+				return err
+			}
+
+			if providerList != "No providers registered" && !silent {
+				fmt.Println()
+				fmt.Println("Starting daemon ingest and watcher...")
+				fmt.Println("Press Ctrl+C to stop.")
+				fmt.Println()
+			}
+
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+
+			summary, err := engine.RunDaemon(ctx, engineOptionsFromOutputConfig(outputConfig, useUTC, debounce), cwd, providers, debugRaw)
+			if !silent {
+				fmt.Println()
+				fmt.Printf("Daemon stopped: %d created, %d updated, %d skipped, %d errors\n",
+					summary.Created,
+					summary.Updated,
+					summary.Skipped,
+					summary.Errors)
+				fmt.Println()
+			}
+			return err
+		},
+	}
+
+	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
+	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	runCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
+	runCmd.Flags().DurationVar(&debounce, "debounce", 750*time.Millisecond, "debounce duration for write updates")
+	runCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")
+	_ = runCmd.Flags().MarkHidden("debug-raw")
+
+	daemonCmd.AddCommand(runCmd)
+	return daemonCmd
+}
 
 // createSyncCommand dynamically creates the sync command with provider information
 func createSyncCommand() *cobra.Command {
@@ -1315,6 +1487,8 @@ func main() {
 	runCmd = createRunCommand()
 	watchCmd := cmdpkg.CreateWatchCommand(&cloudURL, localTimeZone, debugDir)
 	syncCmd = createSyncCommand()
+	ingestCmd := createIngestCommand()
+	daemonCmd := createDaemonCommand()
 	listCmd := cmdpkg.CreateListCommand()
 	checkCmd := cmdpkg.CreateCheckCommand()
 	versionCmd := cmdpkg.CreateVersionCommand(version)
@@ -1335,6 +1509,8 @@ func main() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(ingestCmd)
+	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(checkCmd)
