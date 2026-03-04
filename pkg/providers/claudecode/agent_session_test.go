@@ -1,0 +1,387 @@
+package claudecode
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/xeipuuv/gojsonschema"
+)
+
+// getSchemaPath returns the absolute path to the agent session schema
+func getSchemaPath() string {
+	// Get the directory of this test file
+	_, filename, _, _ := runtime.Caller(0)
+	testDir := filepath.Dir(filename)
+
+	// Navigate to the schema file: pkg/providers/claudecode -> pkg/spi/schema
+	schemaPath := filepath.Join(testDir, "..", "..", "spi", "schema", "session-data-v1.json")
+	return schemaPath
+}
+
+// loadSchemaJSON loads the schema JSON from disk
+func loadSchemaJSON() ([]byte, error) {
+	return os.ReadFile(getSchemaPath())
+}
+
+// validateJSONDocument validates the JSON document against the schema using xeipuuv/gojsonschema
+func validateJSONDocument(t *testing.T, jsonData []byte) error {
+	// Load the schema
+	agentSessionSchemaJSON, err := loadSchemaJSON()
+	if err != nil {
+		return fmt.Errorf("failed to load schema: %w", err)
+	}
+
+	// Create schema loader from schema
+	schemaLoader := gojsonschema.NewBytesLoader(agentSessionSchemaJSON)
+
+	// Create document loader from generated JSON
+	documentLoader := gojsonschema.NewBytesLoader(jsonData)
+
+	// Validate
+	result, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		return fmt.Errorf("validation error: %w", err)
+	}
+
+	if result.Valid() {
+		t.Log("  The document is valid")
+		return nil
+	}
+
+	// Document is not valid, report errors
+	t.Log("  The document is NOT valid. Errors:")
+	for i, desc := range result.Errors() {
+		t.Logf("    %d. %s", i+1, desc)
+	}
+
+	return fmt.Errorf("document failed schema validation with %d error(s)", len(result.Errors()))
+}
+
+// TestAgentSessionTypes validates that our type definitions are correct
+func TestAgentSessionTypes(t *testing.T) {
+	// Create a minimal valid session data
+	session := &SessionData{
+		SchemaVersion: "1.0",
+		Provider: ProviderInfo{
+			ID:      "claude-code",
+			Name:    "Claude Code",
+			Version: "1.0.0",
+		},
+		SessionID:     "test-session",
+		CreatedAt:     "2025-11-16T00:00:00Z",
+		WorkspaceRoot: "/test",
+		Exchanges: []Exchange{
+			{
+				StartTime: "2025-11-16T00:00:00Z",
+				EndTime:   "2025-11-16T00:00:10Z",
+				Messages: []Message{
+					{
+						ID:        "u1",
+						Timestamp: "2025-11-16T00:00:00Z",
+						Role:      "user",
+						Content: []ContentPart{
+							{
+								Type: "text",
+								Text: "Hello world",
+							},
+						},
+					},
+					{
+						ID:        "a1",
+						Timestamp: "2025-11-16T00:00:05Z",
+						Role:      "agent",
+						Model:     "claude-sonnet-4-5-20250929",
+						Content: []ContentPart{
+							{
+								Type: "text",
+								Text: "Creating a file...",
+							},
+						},
+						Tool: &ToolInfo{
+							Name:  "Write",
+							Type:  "write",
+							UseID: "tool_1",
+							Input: map[string]interface{}{
+								"file_path": "test.txt",
+							},
+						},
+						PathHints: []string{"test.txt"},
+					},
+				},
+			},
+		},
+	}
+
+	// Serialize to JSON
+	jsonData, err := json.MarshalIndent(session, "", "  ")
+	if err != nil {
+		t.Fatalf("Failed to marshal minimal session: %v", err)
+	}
+
+	// Validate against schema
+	if err := validateJSONDocument(t, jsonData); err != nil {
+		t.Errorf("Minimal session validation failed: %v", err)
+	} else {
+		t.Log("✓ Minimal session validation passed")
+	}
+}
+
+func TestClassifyToolType(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		expected string
+	}{
+		// Write tools
+		{"Write tool", "Write", "write"},
+		{"Edit tool", "Edit", "write"},
+		{"write lowercase", "write", "write"},
+
+		// Read tools
+		{"Read tool", "Read", "read"},
+		{"WebFetch tool", "WebFetch", "read"},
+
+		// Search tools
+		{"Grep tool", "Grep", "search"},
+		{"Glob tool", "Glob", "search"},
+		{"WebSearch tool", "WebSearch", "search"},
+
+		// Shell tools
+		{"Bash tool", "Bash", "shell"},
+		{"TaskOutput tool", "TaskOutput", "shell"},
+		{"KillShell tool", "KillShell", "shell"},
+
+		// Task tools
+		{"NotebookEdit tool", "NotebookEdit", "task"},
+		{"TodoWrite tool", "TodoWrite", "task"},
+
+		// Generic tools
+		{"EnterPlanMode tool", "EnterPlanMode", "generic"},
+		{"ExitPlanMode tool", "ExitPlanMode", "generic"},
+		{"AskUserQuestion tool", "AskUserQuestion", "generic"},
+		{"Skill tool", "Skill", "generic"},
+		{"LSP tool", "LSP", "generic"},
+		{"Task tool", "Task", "generic"},
+
+		// Unknown tools
+		{"Unknown tool", "SomethingElse", "unknown"},
+		{"Empty string", "", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyToolType(tt.toolName)
+			if result != tt.expected {
+				t.Errorf("classifyToolType(%q) = %q, want %q", tt.toolName, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestExtractPathHints_ShellCommand(t *testing.T) {
+	workspaceRoot := "/Users/me/prov-1"
+
+	tests := []struct {
+		name      string
+		command   string
+		cwd       string // shell's working directory from the JSONL record
+		wantPaths []string
+	}{
+		{
+			name:      "absolute path via redirection",
+			command:   `echo "The moon spills silver on the sleeping sea." > /Users/me/prov-1/poem2.txt`,
+			cwd:       workspaceRoot,
+			wantPaths: []string{"poem2.txt"},
+		},
+		{
+			name:      "relative path via redirection",
+			command:   `echo "The moon spills silver on the sleeping sea." > ./prov-1/poem2.txt`,
+			cwd:       workspaceRoot,
+			wantPaths: []string{"prov-1/poem2.txt"},
+		},
+		{
+			name:      "bare filename via redirection",
+			command:   `echo "The moon spills silver on the sleeping sea." > poem2.txt`,
+			cwd:       workspaceRoot,
+			wantPaths: []string{"poem2.txt"},
+		},
+		{
+			name:      "bare filename after cd resolves against record cwd",
+			command:   `echo "hello" > 1.txt`,
+			cwd:       "/Users/me/prov-1/foo/bar",
+			wantPaths: []string{"foo/bar/1.txt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := map[string]interface{}{
+				"command": tt.command,
+			}
+			paths := extractPathHints(input, tt.cwd, workspaceRoot)
+			if len(paths) != len(tt.wantPaths) {
+				t.Fatalf("got %d paths %v, want %d paths %v", len(paths), paths, len(tt.wantPaths), tt.wantPaths)
+			}
+			for i, want := range tt.wantPaths {
+				if paths[i] != want {
+					t.Errorf("paths[%d] = %q, want %q", i, paths[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatToolAsMarkdown_AskUserQuestion(t *testing.T) {
+	tests := []struct {
+		name        string
+		tool        *ToolInfo
+		contains    []string
+		notContains []string
+	}{
+		{
+			name: "Parseable answer formats nicely",
+			tool: &ToolInfo{
+				Name:  "AskUserQuestion",
+				Input: map[string]interface{}{},
+				Output: map[string]interface{}{
+					"content": `User has answered your questions: "What color?"="Blue". You can now continue with the user's answers in mind.`,
+				},
+			},
+			contains:    []string{"**Answer:** Blue"},
+			notContains: []string{"```"},
+		},
+		{
+			name: "Unparseable content falls back to code block",
+			tool: &ToolInfo{
+				Name:  "AskUserQuestion",
+				Input: map[string]interface{}{},
+				Output: map[string]interface{}{
+					"content": "Some unexpected format that cannot be parsed",
+				},
+			},
+			contains:    []string{"```", "Some unexpected format that cannot be parsed"},
+			notContains: []string{"**Answer:**"},
+		},
+		{
+			name: "Empty content produces no output",
+			tool: &ToolInfo{
+				Name:  "AskUserQuestion",
+				Input: map[string]interface{}{},
+				Output: map[string]interface{}{
+					"content": "",
+				},
+			},
+			contains:    []string{},
+			notContains: []string{"**Answer:**", "```"},
+		},
+		{
+			name: "Whitespace-only content produces no output",
+			tool: &ToolInfo{
+				Name:  "AskUserQuestion",
+				Input: map[string]interface{}{},
+				Output: map[string]interface{}{
+					"content": "   \t  ",
+				},
+			},
+			contains:    []string{},
+			notContains: []string{"**Answer:**", "```"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatToolAsMarkdown(tt.tool, "/workspace")
+			for _, substr := range tt.contains {
+				if !strings.Contains(result, substr) {
+					t.Errorf("formatToolAsMarkdown() result doesn't contain %q\nGot: %q", substr, result)
+				}
+			}
+			for _, substr := range tt.notContains {
+				if strings.Contains(result, substr) {
+					t.Errorf("formatToolAsMarkdown() result should not contain %q\nGot: %q", substr, result)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildAgentMessage_Usage(t *testing.T) {
+	tests := []struct {
+		name          string
+		record        JSONLRecord
+		expectUsage   bool
+		expectedUsage *Usage // only checked when expectUsage is true
+	}{
+		{
+			name: "with usage data",
+			record: JSONLRecord{
+				Data: map[string]interface{}{
+					"type":      "assistant",
+					"uuid":      "test-uuid-123",
+					"timestamp": "2025-01-15T10:00:00Z",
+					"message": map[string]interface{}{
+						"model": "claude-opus-4-5-20251101",
+						"content": []interface{}{
+							map[string]interface{}{"type": "text", "text": "Hello, I can help with that."},
+						},
+						"usage": map[string]interface{}{
+							"input_tokens":                float64(3660),
+							"output_tokens":               float64(150),
+							"cache_creation_input_tokens": float64(5562),
+							"cache_read_input_tokens":     float64(19345),
+						},
+					},
+				},
+			},
+			expectUsage: true,
+			expectedUsage: &Usage{
+				InputTokens:              3660,
+				OutputTokens:             150,
+				CacheCreationInputTokens: 5562,
+				CacheReadInputTokens:     19345,
+			},
+		},
+		{
+			name: "without usage data",
+			record: JSONLRecord{
+				Data: map[string]interface{}{
+					"type":      "assistant",
+					"uuid":      "test-uuid-456",
+					"timestamp": "2025-01-15T10:00:00Z",
+					"message": map[string]interface{}{
+						"model": "claude-opus-4-5-20251101",
+						"content": []interface{}{
+							map[string]interface{}{"type": "text", "text": "No usage data here."},
+						},
+					},
+				},
+			},
+			expectUsage: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := buildAgentMessage(tt.record, "/workspace", false)
+
+			if !tt.expectUsage {
+				if msg.Usage != nil {
+					t.Errorf("Expected Usage to be nil, got %+v", msg.Usage)
+				}
+				return
+			}
+
+			if msg.Usage == nil {
+				t.Fatal("Expected Usage to be populated, got nil")
+			}
+			if *msg.Usage != *tt.expectedUsage {
+				t.Errorf("Usage = %+v, want %+v", *msg.Usage, *tt.expectedUsage)
+			}
+		})
+	}
+}
