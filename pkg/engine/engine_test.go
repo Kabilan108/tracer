@@ -15,12 +15,15 @@ import (
 type testProvider struct {
 	name     string
 	sessions map[string]spi.AgentChatSession
+	detect   bool
+	watchFn  func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error
 }
 
 func newTestProvider(name string) *testProvider {
 	return &testProvider{
 		name:     name,
 		sessions: make(map[string]spi.AgentChatSession),
+		detect:   true,
 	}
 }
 
@@ -37,7 +40,7 @@ func (p *testProvider) Check(customCommand string) spi.CheckResult {
 }
 
 func (p *testProvider) DetectAgent(projectPath string, helpOutput bool) bool {
-	return true
+	return p.detect
 }
 
 func (p *testProvider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
@@ -66,6 +69,9 @@ func (p *testProvider) ExecAgentAndWatch(projectPath string, customCommand strin
 }
 
 func (p *testProvider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	if p.watchFn != nil {
+		return p.watchFn(ctx, projectPath, debugRaw, sessionCallback)
+	}
 	return nil
 }
 
@@ -118,6 +124,33 @@ func newSession(providerID, providerName, sessionID, slug, userText string) spi.
 	}
 }
 
+func sessionWithAddedUserMessages(session spi.AgentChatSession, texts ...string) spi.AgentChatSession {
+	if session.SessionData == nil || len(texts) == 0 || len(session.SessionData.Exchanges) == 0 {
+		return session
+	}
+
+	sessionCopy := session
+	dataCopy := *session.SessionData
+	exchanges := append([]schema.Exchange(nil), session.SessionData.Exchanges...)
+	firstExchange := exchanges[0]
+	messages := append([]schema.Message(nil), firstExchange.Messages...)
+	for _, text := range texts {
+		messages = append(messages, schema.Message{
+			ID:        "extra-user",
+			Timestamp: dataCopy.UpdatedAt,
+			Role:      schema.RoleUser,
+			Content: []schema.ContentPart{
+				{Type: schema.ContentTypeText, Text: text},
+			},
+		})
+	}
+	firstExchange.Messages = messages
+	exchanges[0] = firstExchange
+	dataCopy.Exchanges = exchanges
+	sessionCopy.SessionData = &dataCopy
+	return sessionCopy
+}
+
 func newEngineForTest(t *testing.T, dir string) *Engine {
 	t.Helper()
 	engine, err := New(Options{
@@ -131,6 +164,20 @@ func newEngineForTest(t *testing.T, dir string) *Engine {
 		t.Fatalf("New() error = %v", err)
 	}
 	return engine
+}
+
+func newRunModeOptions(dir string, debounce time.Duration) Options {
+	historyDir := filepath.Join(dir, "history")
+	return Options{
+		HistoryDir:     historyDir,
+		StatisticsPath: filepath.Join(dir, "statistics.json"),
+		StateDBPath:    filepath.Join(dir, "state.db"),
+		UseUTC:         true,
+		Debounce:       debounce,
+		PathBuilder: func(providerID string, session *spi.AgentChatSession) string {
+			return filepath.Join(historyDir, providerID, session.SessionID+".md")
+		},
+	}
 }
 
 func TestIngestProviders_IdempotentWithStateDB(t *testing.T) {
@@ -206,13 +253,7 @@ func TestQueueSessionUpdate_DebouncesByProviderAndSession(t *testing.T) {
 
 func TestRunModes_ShareStateAndProcessingPath(t *testing.T) {
 	tempDir := t.TempDir()
-	opts := Options{
-		HistoryDir:     filepath.Join(tempDir, "history"),
-		StatisticsPath: filepath.Join(tempDir, "statistics.json"),
-		StateDBPath:    filepath.Join(tempDir, "state.db"),
-		UseUTC:         true,
-		Debounce:       25 * time.Millisecond,
-	}
+	opts := newRunModeOptions(tempDir, 25*time.Millisecond)
 
 	provider := newTestProvider("Claude Code")
 	provider.setSession(newSession("claude", "Claude Code", "session-3", "shared-path", "same-content"))
@@ -237,5 +278,80 @@ func TestRunModes_ShareStateAndProcessingPath(t *testing.T) {
 	}
 	if daemonSummary.Skipped < 1 {
 		t.Fatalf("RunDaemon summary expected skipped >= 1, got %+v", daemonSummary)
+	}
+}
+
+func TestRunDaemon_PerformsHistoricalBackfill(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := newRunModeOptions(tempDir, 25*time.Millisecond)
+
+	provider := newTestProvider("Claude Code")
+	provider.setSession(newSession("claude", "Claude Code", "session-backfill", "daemon-backfill", "historical"))
+
+	summary, err := RunDaemon(context.Background(), opts, "/tmp/workspace", map[string]spi.Provider{
+		"claude": provider,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunDaemon() error = %v", err)
+	}
+	if summary.Created != 1 || summary.Updated != 0 || summary.Errors != 0 {
+		t.Fatalf("RunDaemon summary = %+v", summary)
+	}
+
+	outputPath := filepath.Join(tempDir, "history", "claude", "session-backfill.md")
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !strings.Contains(string(content), "historical") {
+		t.Fatalf("historical content missing from output markdown")
+	}
+}
+
+func TestRunDaemon_DebouncesLiveUpdates(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := newRunModeOptions(tempDir, 200*time.Millisecond)
+
+	provider := newTestProvider("Codex CLI")
+	firstUpdate := sessionWithAddedUserMessages(
+		newSession("codex", "Codex CLI", "session-live", "daemon-live", "FIRST_ONLY"),
+		"first-extra",
+	)
+	secondUpdate := sessionWithAddedUserMessages(
+		newSession("codex", "Codex CLI", "session-live", "daemon-live", "SECOND_ONLY"),
+		"second-extra-1",
+		"second-extra-2",
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	provider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+		sessionCallback(&firstUpdate)
+		sessionCallback(&secondUpdate)
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	summary, err := RunDaemon(ctx, opts, "/tmp/workspace", map[string]spi.Provider{
+		"codex": provider,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunDaemon() error = %v", err)
+	}
+	if summary.Created != 1 || summary.Updated != 0 || summary.Errors != 0 {
+		t.Fatalf("RunDaemon summary = %+v", summary)
+	}
+
+	outputPath := filepath.Join(tempDir, "history", "codex", "session-live.md")
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !strings.Contains(string(content), "SECOND_ONLY") {
+		t.Fatalf("output markdown missing latest debounced content")
+	}
+	if strings.Contains(string(content), "FIRST_ONLY") {
+		t.Fatalf("output markdown includes superseded content after debounce")
 	}
 }
