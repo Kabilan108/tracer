@@ -12,15 +12,12 @@ import (
 
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/claudecode"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/codexcli"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/cursorcli"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/droidcli"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/geminicli"
 	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
 )
 
-// Registry manages all registered providers
+// Registry manages all registered providers.
 type Registry struct {
-	providers         map[string]spi.Provider // key is the provider ID (e.g., "claude", "cursor")
+	providers         map[string]spi.Provider // key is the provider ID (e.g., "claude", "codex")
 	mu                sync.RWMutex
 	initialized       bool
 	providerListCache string    // Cached formatted provider list string
@@ -55,27 +52,14 @@ func (r *Registry) registerAll() {
 
 	slog.Debug("Initializing provider registry")
 
-	// Register providers with simple IDs
-	// Each provider directly implements the spi.Provider interface
+	// Register providers with simple IDs.
 	claudeProvider := claudecode.NewProvider()
 	r.providers["claude"] = claudeProvider
 	slog.Debug("Registered provider", "id", "claude", "name", claudeProvider.Name())
 
-	cursorProvider := cursorcli.NewProvider()
-	r.providers["cursor"] = cursorProvider
-	slog.Debug("Registered provider", "id", "cursor", "name", cursorProvider.Name())
-
 	codexProvider := codexcli.NewProvider()
 	r.providers["codex"] = codexProvider
 	slog.Debug("Registered provider", "id", "codex", "name", codexProvider.Name())
-
-	geminiProvider := geminicli.NewProvider()
-	r.providers["gemini"] = geminiProvider
-	slog.Debug("Registered provider", "id", "gemini", "name", geminiProvider.Name())
-
-	droidProvider := droidcli.NewProvider()
-	r.providers["droid"] = droidProvider
-	slog.Debug("Registered provider", "id", "droid", "name", droidProvider.Name())
 
 	r.initialized = true
 	slog.Info("Provider registry initialized", "count", len(r.providers), "providers", r.ListIDsUnsafe())

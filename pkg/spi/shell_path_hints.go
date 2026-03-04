@@ -8,7 +8,7 @@ import (
 
 // NormalizePath converts absolute paths to workspace-relative paths when they
 // fall under workspaceRoot. This consolidates the identical normalization logic
-// previously duplicated across all 5 providers.
+// previously duplicated across providers.
 func NormalizePath(path, workspaceRoot string) string {
 	if workspaceRoot == "" {
 		return path

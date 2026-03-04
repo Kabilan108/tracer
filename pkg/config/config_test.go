@@ -1142,9 +1142,6 @@ func TestGetProviderCmd(t *testing.T) {
 		Providers: ProvidersConfig{
 			ClaudeCmd: "claude --dangerously-skip-permissions",
 			CodexCmd:  "/usr/local/bin/codex",
-			CursorCmd: "cursor-agent --fast",
-			DroidCmd:  "droid --verbose",
-			GeminiCmd: "gemini --model pro",
 		},
 	}
 
@@ -1154,9 +1151,6 @@ func TestGetProviderCmd(t *testing.T) {
 	}{
 		{"claude", "claude --dangerously-skip-permissions"},
 		{"codex", "/usr/local/bin/codex"},
-		{"cursor", "cursor-agent --fast"},
-		{"droid", "droid --verbose"},
-		{"gemini", "gemini --model pro"},
 		{"Claude", "claude --dangerously-skip-permissions"}, // case-insensitive
 		{"CODEX", "/usr/local/bin/codex"},                   // case-insensitive
 		{"unknown", ""},                                     // unknown provider
@@ -1212,7 +1206,7 @@ codex_cmd = "/custom/codex"
 		if got := cfg.GetProviderCmd("codex"); got != "/custom/codex" {
 			t.Errorf("GetProviderCmd(codex) = %q, want %q", got, "/custom/codex")
 		}
-		// Unset provider should return empty
+		// Unsupported provider should return empty
 		if got := cfg.GetProviderCmd("cursor"); got != "" {
 			t.Errorf("GetProviderCmd(cursor) = %q, want empty", got)
 		}
@@ -1272,7 +1266,7 @@ claude_cmd = "claude --project-level"
 			t.Fatalf("Load() returned error: %v", err)
 		}
 
-		for _, id := range []string{"claude", "codex", "cursor", "droid", "gemini"} {
+		for _, id := range []string{"claude", "codex", "unknown"} {
 			if got := cfg.GetProviderCmd(id); got != "" {
 				t.Errorf("GetProviderCmd(%s) = %q, want empty", id, got)
 			}

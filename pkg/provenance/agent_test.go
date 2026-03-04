@@ -132,7 +132,7 @@ func TestExtractAgentEvents(t *testing.T) {
 			name: "generic tool with path hints produces events",
 			sessionData: &schema.SessionData{
 				SessionID: "sess-1",
-				Provider:  schema.ProviderInfo{ID: "cursor"},
+				Provider:  schema.ProviderInfo{ID: "codex-cli"},
 				Exchanges: []schema.Exchange{
 					{
 						ExchangeID: "ex-1",
@@ -150,7 +150,7 @@ func TestExtractAgentEvents(t *testing.T) {
 			},
 			wantCount:     1,
 			wantPaths:     []string{"foo.txt"},
-			wantAgentType: "cursor",
+			wantAgentType: "codex-cli",
 		},
 		{
 			name: "write tool without path hints produces no events",

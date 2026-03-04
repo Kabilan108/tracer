@@ -92,7 +92,7 @@ func TestComputeSessionStatistics(t *testing.T) {
 				},
 			},
 			markdownContent:   "# Test\n\nAgent-only content",
-			providerID:        "cursor",
+			providerID:        "codex",
 			expectedUserMsgs:  0,
 			expectedAgentMsgs: 1,
 			expectedStart:     "2026-02-09T10:00:00Z",
@@ -164,7 +164,7 @@ func TestComputeSessionStatistics(t *testing.T) {
 				},
 			},
 			markdownContent:   "# Test",
-			providerID:        "cursor",
+			providerID:        "codex",
 			expectedUserMsgs:  1,
 			expectedAgentMsgs: 0,
 			expectedStart:     "2026-02-09T10:00:00Z",
@@ -369,7 +369,7 @@ func TestStatisticsCollector_CorruptJSON(t *testing.T) {
 		StartTimestamp:    "2026-02-09T12:00:00Z",
 		EndTimestamp:      "2026-02-09T12:05:00Z",
 		MarkdownSizeBytes: 100,
-		Provider:          "cursor",
+		Provider:          "codex",
 		LastUpdated:       "2026-02-09T12:10:00Z",
 	}
 

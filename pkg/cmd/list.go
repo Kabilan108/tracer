@@ -38,7 +38,7 @@ var flags listFlags
 // Used when listing sessions from all providers to show which provider each session came from.
 type sessionMetadataWithProvider struct {
 	spi.SessionMetadata        // Embedded struct - promotes all fields with their JSON tags
-	Provider            string `json:"provider"` // Provider ID (e.g., "claude", "cursor", "codex")
+	Provider            string `json:"provider"` // Provider ID (e.g., "claude", "codex")
 }
 
 // CreateListCommand creates the list command with provider information.

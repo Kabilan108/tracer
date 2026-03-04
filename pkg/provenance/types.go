@@ -81,7 +81,7 @@ type AgentEvent struct {
 	SessionID     string    // Agent session ID
 	ExchangeID    string    // Specific exchange within session
 	MessageID     string    // Agent message ID
-	AgentType     string    // "claude-code", "cursor", etc.
+	AgentType     string    // Provider identifier (for example "claude-code", "codex-cli")
 	AgentModel    string    // "claude-sonnet-4-20250514", etc.
 	ActorHost     string    // Machine hostname
 	ActorUsername string    // OS user
@@ -136,7 +136,7 @@ type ProvenanceRecord struct {
 	// Attribution
 	SessionID  string // Agent session that caused the change
 	ExchangeID string // Specific exchange that caused the change
-	AgentType  string // "claude-code", "cursor", etc.
+	AgentType  string // Provider identifier (for example "claude-code", "codex-cli")
 	AgentModel string // Model used
 	MessageID  string // For tracing
 

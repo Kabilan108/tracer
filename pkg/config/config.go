@@ -103,15 +103,6 @@ const defaultConfigTemplate = `# SpecStory CLI Configuration
 
 # Codex CLI command
 # codex_cmd = "codex"
-
-# Cursor CLI command
-# cursor_cmd = "cursor-agent"
-
-# Droid CLI command
-# droid_cmd = "droid"
-
-# Gemini CLI command
-# gemini_cmd = "gemini"
 `
 
 // Config represents the complete CLI configuration
@@ -191,9 +182,6 @@ type TelemetryConfig struct {
 type ProvidersConfig struct {
 	ClaudeCmd string `toml:"claude_cmd"`
 	CodexCmd  string `toml:"codex_cmd"`
-	CursorCmd string `toml:"cursor_cmd"`
-	DroidCmd  string `toml:"droid_cmd"`
-	GeminiCmd string `toml:"gemini_cmd"`
 }
 
 // CLIOverrides holds CLI flag values that override config file settings.
@@ -723,19 +711,13 @@ func (c *Config) IsLocalTimeZoneEnabled() bool {
 
 // GetProviderCmd returns the custom execution command for a provider, or empty
 // string if none is configured. The providerID should match a registered
-// provider ID (e.g., "claude", "codex", "cursor", "droid", "gemini").
+// provider ID (e.g., "claude", "codex").
 func (c *Config) GetProviderCmd(providerID string) string {
 	switch strings.ToLower(providerID) {
 	case "claude":
 		return c.Providers.ClaudeCmd
 	case "codex":
 		return c.Providers.CodexCmd
-	case "cursor":
-		return c.Providers.CursorCmd
-	case "droid":
-		return c.Providers.DroidCmd
-	case "gemini":
-		return c.Providers.GeminiCmd
 	default:
 		return ""
 	}
