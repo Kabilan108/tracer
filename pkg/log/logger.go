@@ -26,7 +26,7 @@ func UserMessage(format string, args ...interface{}) {
 	}
 }
 
-// UserWarn prints a warning message to stderr with orange color
+// UserWarn prints a warning message to stderr.
 // This respects the silent flag - no output if silent mode is enabled
 func UserWarn(format string, args ...interface{}) {
 	if !isSilent() {
@@ -35,7 +35,7 @@ func UserWarn(format string, args ...interface{}) {
 	}
 }
 
-// UserError prints an error message to stderr with bright red color
+// UserError prints an error message to stderr.
 // This respects the silent flag - no output if silent mode is enabled
 func UserError(format string, args ...interface{}) {
 	if !isSilent() {
