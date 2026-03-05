@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,6 +50,237 @@ var (
 type listFlags struct {
 	json     bool
 	sessions bool
+}
+
+type providerSyncProgress struct {
+	ScanStarted bool
+	ScanDone    bool
+	ScanError   string
+
+	Total     int
+	Processed int
+	Created   int
+	Updated   int
+	Skipped   int
+	Errors    int
+}
+
+type syncProgressTracker struct {
+	mu sync.Mutex
+
+	providers map[string]*providerSyncProgress
+	order     []string
+
+	start       time.Time
+	interactive bool
+	out         *os.File
+	lastLines   int
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+}
+
+func newSyncProgressTracker(providerIDs []string, interactive bool, out *os.File) *syncProgressTracker {
+	state := make(map[string]*providerSyncProgress, len(providerIDs))
+	for _, providerID := range providerIDs {
+		state[providerID] = &providerSyncProgress{}
+	}
+
+	return &syncProgressTracker{
+		providers:   state,
+		order:       providerIDs,
+		start:       time.Now(),
+		interactive: interactive,
+		out:         out,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+	}
+}
+
+func (t *syncProgressTracker) onProviderScanStart(providerID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, ok := t.providers[providerID]
+	if !ok {
+		return
+	}
+	state.ScanStarted = true
+}
+
+func (t *syncProgressTracker) onProviderScanComplete(providerID string, totalSessions int, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, ok := t.providers[providerID]
+	if !ok {
+		return
+	}
+
+	state.ScanDone = true
+	state.Total = totalSessions
+	if err != nil {
+		state.ScanError = err.Error()
+	}
+}
+
+func (t *syncProgressTracker) onSessionProcessed(providerID string, outcome engine.ProcessOutcome, processed int, total int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, ok := t.providers[providerID]
+	if !ok {
+		return
+	}
+
+	state.Processed = processed
+	if total > 0 {
+		state.Total = total
+	}
+
+	switch outcome {
+	case engine.OutcomeCreated:
+		state.Created++
+	case engine.OutcomeUpdated:
+		state.Updated++
+	case engine.OutcomeSkipped:
+		state.Skipped++
+	case engine.OutcomeError:
+		state.Errors++
+	}
+}
+
+func (t *syncProgressTracker) startRendering(period time.Duration) func() {
+	t.render(false)
+
+	ticker := time.NewTicker(period)
+	go func() {
+		defer close(t.doneCh)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				t.render(false)
+			case <-t.stopCh:
+				t.render(true)
+				return
+			}
+		}
+	}()
+
+	return t.stop
+}
+
+func (t *syncProgressTracker) stop() {
+	t.stopOnce.Do(func() {
+		close(t.stopCh)
+	})
+	<-t.doneCh
+}
+
+func (t *syncProgressTracker) render(clearOnly bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if clearOnly {
+		if t.interactive {
+			t.clearLocked()
+		}
+		return
+	}
+
+	lines := t.renderLinesLocked()
+	if t.interactive {
+		t.redrawLocked(lines)
+		return
+	}
+
+	for _, line := range lines {
+		fmt.Fprintln(t.out, line)
+	}
+	fmt.Fprintln(t.out)
+}
+
+func (t *syncProgressTracker) renderLinesLocked() []string {
+	lines := make([]string, 0, len(t.order)+2)
+	elapsed := time.Since(t.start).Round(time.Second)
+	lines = append(lines, fmt.Sprintf("Sync progress [%s]", elapsed))
+
+	overallTotal := 0
+	overallProcessed := 0
+	overallCreated := 0
+	overallUpdated := 0
+	overallSkipped := 0
+	overallErrors := 0
+
+	for _, providerID := range t.order {
+		state := t.providers[providerID]
+		if state == nil {
+			continue
+		}
+
+		if state.ScanDone {
+			overallTotal += state.Total
+			overallProcessed += state.Processed
+			overallCreated += state.Created
+			overallUpdated += state.Updated
+			overallSkipped += state.Skipped
+			overallErrors += state.Errors
+		}
+
+		switch {
+		case state.ScanError != "":
+			lines = append(lines, fmt.Sprintf("  %s: scan failed (%s)", providerID, state.ScanError))
+		case !state.ScanDone && state.ScanStarted:
+			lines = append(lines, fmt.Sprintf("  %s: scanning sessions...", providerID))
+		case !state.ScanDone:
+			lines = append(lines, fmt.Sprintf("  %s: pending...", providerID))
+		default:
+			lines = append(lines, fmt.Sprintf("  %s: %d/%d processed (c:%d u:%d s:%d e:%d)",
+				providerID,
+				state.Processed,
+				state.Total,
+				state.Created,
+				state.Updated,
+				state.Skipped,
+				state.Errors))
+		}
+	}
+
+	lines = append(lines, fmt.Sprintf("  overall: %d/%d processed (c:%d u:%d s:%d e:%d)",
+		overallProcessed,
+		overallTotal,
+		overallCreated,
+		overallUpdated,
+		overallSkipped,
+		overallErrors))
+
+	return lines
+}
+
+func (t *syncProgressTracker) redrawLocked(lines []string) {
+	if t.lastLines > 0 {
+		fmt.Fprintf(t.out, "\x1b[%dA", t.lastLines)
+	}
+	for _, line := range lines {
+		fmt.Fprintf(t.out, "\x1b[2K\r%s\n", line)
+	}
+	t.lastLines = len(lines)
+}
+
+func (t *syncProgressTracker) clearLocked() {
+	if t.lastLines == 0 {
+		return
+	}
+
+	fmt.Fprintf(t.out, "\x1b[%dA", t.lastLines)
+	for i := 0; i < t.lastLines; i++ {
+		fmt.Fprint(t.out, "\x1b[2K\r\n")
+	}
+	fmt.Fprintf(t.out, "\x1b[%dA", t.lastLines)
+	t.lastLines = 0
 }
 
 func validateFlags() error {
@@ -114,6 +346,33 @@ func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, useUTC bool, 
 		PathBuilder:     archivePathBuilder(config),
 		NoTelemetryText: noTelemetryPrompts,
 	}
+}
+
+func sortedProviderIDs(providers map[string]spi.Provider) []string {
+	ids := make([]string, 0, len(providers))
+	for providerID := range providers {
+		ids = append(ids, providerID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func shouldUseInteractiveProgress() bool {
+	stdoutInfo, stdoutErr := os.Stdout.Stat()
+	stderrInfo, stderrErr := os.Stderr.Stat()
+	if stdoutErr != nil || stderrErr != nil {
+		return false
+	}
+
+	if stdoutInfo.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	if stderrInfo.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	return term != "" && term != "dumb"
 }
 
 func resolveProviders(registry *factory.Registry, args []string) (map[string]spi.Provider, error) {
@@ -220,7 +479,21 @@ func createSyncCommand() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			summary, err := engine.RunIngest(ctx, engineOptionsFromOutputConfig(outputConfig, useUTC, 0), "", providers, debugRaw)
+			opts := engineOptionsFromOutputConfig(outputConfig, useUTC, 0)
+			var stopProgress func()
+			if !silent {
+				tracker := newSyncProgressTracker(sortedProviderIDs(providers), shouldUseInteractiveProgress(), os.Stderr)
+				opts.OnProviderScanStart = tracker.onProviderScanStart
+				opts.OnProviderScanComplete = tracker.onProviderScanComplete
+				opts.OnSessionProcessed = tracker.onSessionProcessed
+				stopProgress = tracker.startRendering(1 * time.Second)
+			}
+
+			summary, err := engine.RunIngest(ctx, opts, "", providers, debugRaw)
+			if stopProgress != nil {
+				stopProgress()
+			}
+
 			if !silent {
 				fmt.Println()
 				fmt.Printf("Sync complete: %d created, %d updated, %d skipped, %d errors\n",

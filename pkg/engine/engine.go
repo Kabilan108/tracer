@@ -44,13 +44,16 @@ type PathBuilder func(providerID string, session *spi.AgentChatSession) string
 
 // Options configures shared ingest/daemon processing.
 type Options struct {
-	HistoryDir      string
-	StatisticsPath  string
-	StateDBPath     string
-	UseUTC          bool
-	Debounce        time.Duration
-	PathBuilder     PathBuilder
-	NoTelemetryText bool
+	HistoryDir             string
+	StatisticsPath         string
+	StateDBPath            string
+	UseUTC                 bool
+	Debounce               time.Duration
+	PathBuilder            PathBuilder
+	NoTelemetryText        bool
+	OnProviderScanStart    func(providerID string)
+	OnProviderScanComplete func(providerID string, totalSessions int, err error)
+	OnSessionProcessed     func(providerID string, outcome ProcessOutcome, processed int, total int)
 }
 
 type pendingUpdate struct {
@@ -150,6 +153,9 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 	for _, providerID := range providerIDs {
 		providerID := providerID
 		provider := providers[providerID]
+		if e.opts.OnProviderScanStart != nil {
+			e.opts.OnProviderScanStart(providerID)
+		}
 		go func() {
 			sessions, err := provider.GetAgentChatSessions(projectPath, debugRaw, nil)
 			results <- providerResult{
@@ -167,6 +173,9 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 			return runSummary, ctx.Err()
 		case result := <-results:
 			received++
+			if e.opts.OnProviderScanComplete != nil {
+				e.opts.OnProviderScanComplete(result.providerID, len(result.sessions), result.err)
+			}
 			if result.err != nil {
 				runSummary.Errors++
 				e.recordOutcome(OutcomeError)
@@ -174,6 +183,7 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 				continue
 			}
 
+			processedCount := 0
 			for i := range result.sessions {
 				select {
 				case <-ctx.Done():
@@ -185,19 +195,25 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 				if err != nil {
 					runSummary.Errors++
 					e.recordOutcome(OutcomeError)
+					outcome = OutcomeError
 					slog.Error("Engine ingest failed to process session",
 						"provider", result.providerID,
 						"session_id", result.sessions[i].SessionID,
 						"error", err)
-					continue
+				} else {
+					switch outcome {
+					case OutcomeCreated:
+						runSummary.Created++
+					case OutcomeUpdated:
+						runSummary.Updated++
+					case OutcomeSkipped:
+						runSummary.Skipped++
+					}
 				}
-				switch outcome {
-				case OutcomeCreated:
-					runSummary.Created++
-				case OutcomeUpdated:
-					runSummary.Updated++
-				case OutcomeSkipped:
-					runSummary.Skipped++
+
+				processedCount++
+				if e.opts.OnSessionProcessed != nil {
+					e.opts.OnSessionProcessed(result.providerID, outcome, processedCount, len(result.sessions))
 				}
 			}
 		}
