@@ -5,6 +5,9 @@ default: test
 build:
     go build -o ./bin/tracer .
 
+clean:
+    rm -rf ./bin/*
+
 test:
     go test ./...
 
