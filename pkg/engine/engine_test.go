@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -353,5 +355,168 @@ func TestRunDaemon_DebouncesLiveUpdates(t *testing.T) {
 	}
 	if strings.Contains(string(content), "FIRST_ONLY") {
 		t.Fatalf("output markdown includes superseded content after debounce")
+	}
+}
+
+func TestIngestProviders_ProgressCallbacks(t *testing.T) {
+	tempDir := t.TempDir()
+
+	claudeProvider := newTestProvider("Claude Code")
+	claudeProvider.setSession(newSession("claude", "Claude Code", "progress-claude", "progress-claude", "hello from claude"))
+
+	codexProvider := newTestProvider("Codex CLI")
+	codexProvider.setSession(newSession("codex", "Codex CLI", "progress-codex", "progress-codex", "hello from codex"))
+
+	var mu sync.Mutex
+	started := make(map[string]int)
+	completedTotals := make(map[string]int)
+	completedErrors := make(map[string]int)
+	processed := make(map[string]int)
+
+	opts := newRunModeOptions(tempDir, 10*time.Millisecond)
+	opts.OnProviderScanStart = func(providerID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		started[providerID]++
+	}
+	opts.OnProviderScanComplete = func(providerID string, totalSessions int, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		completedTotals[providerID] = totalSessions
+		if err != nil {
+			completedErrors[providerID]++
+		}
+	}
+	opts.OnSessionProcessed = func(providerID string, outcome ProcessOutcome, processedCount int, total int) {
+		mu.Lock()
+		defer mu.Unlock()
+		processed[providerID] = processedCount
+	}
+
+	summary, err := RunIngest(context.Background(), opts, "/tmp/workspace", map[string]spi.Provider{
+		"claude": claudeProvider,
+		"codex":  codexProvider,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunIngest() error = %v", err)
+	}
+	if summary.Created != 2 || summary.Errors != 0 {
+		t.Fatalf("RunIngest summary = %+v", summary)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, providerID := range []string{"claude", "codex"} {
+		if started[providerID] != 1 {
+			t.Fatalf("provider %s scan started count = %d, want 1", providerID, started[providerID])
+		}
+		if completedTotals[providerID] != 1 {
+			t.Fatalf("provider %s completed total = %d, want 1", providerID, completedTotals[providerID])
+		}
+		if completedErrors[providerID] != 0 {
+			t.Fatalf("provider %s completed with unexpected errors count = %d", providerID, completedErrors[providerID])
+		}
+		if processed[providerID] != 1 {
+			t.Fatalf("provider %s processed count = %d, want 1", providerID, processed[providerID])
+		}
+	}
+}
+
+type testProviderWithListError struct {
+	name string
+	err  error
+}
+
+func (p *testProviderWithListError) Name() string {
+	return p.name
+}
+
+func (p *testProviderWithListError) Check(customCommand string) spi.CheckResult {
+	return spi.CheckResult{Success: true}
+}
+
+func (p *testProviderWithListError) DetectAgent(projectPath string, helpOutput bool) bool {
+	return true
+}
+
+func (p *testProviderWithListError) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	return nil, nil
+}
+
+func (p *testProviderWithListError) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
+	return nil, p.err
+}
+
+func (p *testProviderWithListError) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
+	return nil, nil
+}
+
+func (p *testProviderWithListError) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return nil
+}
+
+func (p *testProviderWithListError) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return nil
+}
+
+func TestIngestProviders_ProgressCallbacksWithScanError(t *testing.T) {
+	tempDir := t.TempDir()
+	providerErr := fmt.Errorf("boom")
+	provider := &testProviderWithListError{name: "ErrProvider", err: providerErr}
+
+	var mu sync.Mutex
+	started := 0
+	completed := 0
+	completedTotal := -1
+	completedHadErr := false
+	processedCalls := 0
+
+	opts := newRunModeOptions(tempDir, 10*time.Millisecond)
+	opts.OnProviderScanStart = func(providerID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		started++
+	}
+	opts.OnProviderScanComplete = func(providerID string, totalSessions int, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		completed++
+		completedTotal = totalSessions
+		completedHadErr = err != nil
+	}
+	opts.OnSessionProcessed = func(providerID string, outcome ProcessOutcome, processedCount int, total int) {
+		mu.Lock()
+		defer mu.Unlock()
+		processedCalls++
+	}
+
+	summary, err := RunIngest(context.Background(), opts, "/tmp/workspace", map[string]spi.Provider{
+		"error-provider": provider,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunIngest() error = %v", err)
+	}
+	if summary.Errors != 1 {
+		t.Fatalf("expected summary errors = 1, got %+v", summary)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if started != 1 {
+		t.Fatalf("scan started count = %d, want 1", started)
+	}
+	if completed != 1 {
+		t.Fatalf("scan completed count = %d, want 1", completed)
+	}
+	if completedTotal != 0 {
+		t.Fatalf("scan completed total = %d, want 0", completedTotal)
+	}
+	if !completedHadErr {
+		t.Fatal("expected scan completion callback to receive error")
+	}
+	if processedCalls != 0 {
+		t.Fatalf("session processed callbacks = %d, want 0", processedCalls)
 	}
 }
