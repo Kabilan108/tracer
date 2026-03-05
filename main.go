@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -228,6 +229,9 @@ func createSyncCommand() *cobra.Command {
 					summary.Skipped,
 					summary.Errors)
 				fmt.Println()
+			}
+			if errors.Is(err, context.Canceled) {
+				return nil
 			}
 			return err
 		},

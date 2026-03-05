@@ -140,40 +140,65 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 
 	runSummary := Summary{}
 
+	type providerResult struct {
+		providerID string
+		sessions   []spi.AgentChatSession
+		err        error
+	}
+
+	results := make(chan providerResult, len(providerIDs))
 	for _, providerID := range providerIDs {
+		providerID := providerID
 		provider := providers[providerID]
-		sessions, err := provider.GetAgentChatSessions(projectPath, debugRaw, nil)
-		if err != nil {
-			runSummary.Errors++
-			e.recordOutcome(OutcomeError)
-			slog.Error("Engine ingest failed to list sessions", "provider", providerID, "error", err)
-			continue
-		}
-
-		for i := range sessions {
-			select {
-			case <-ctx.Done():
-				return runSummary, ctx.Err()
-			default:
+		go func() {
+			sessions, err := provider.GetAgentChatSessions(projectPath, debugRaw, nil)
+			results <- providerResult{
+				providerID: providerID,
+				sessions:   sessions,
+				err:        err,
 			}
+		}()
+	}
 
-			outcome, err := e.processSession(providerID, &sessions[i])
-			if err != nil {
+	received := 0
+	for received < len(providerIDs) {
+		select {
+		case <-ctx.Done():
+			return runSummary, ctx.Err()
+		case result := <-results:
+			received++
+			if result.err != nil {
 				runSummary.Errors++
 				e.recordOutcome(OutcomeError)
-				slog.Error("Engine ingest failed to process session",
-					"provider", providerID,
-					"session_id", sessions[i].SessionID,
-					"error", err)
+				slog.Error("Engine ingest failed to list sessions", "provider", result.providerID, "error", result.err)
 				continue
 			}
-			switch outcome {
-			case OutcomeCreated:
-				runSummary.Created++
-			case OutcomeUpdated:
-				runSummary.Updated++
-			case OutcomeSkipped:
-				runSummary.Skipped++
+
+			for i := range result.sessions {
+				select {
+				case <-ctx.Done():
+					return runSummary, ctx.Err()
+				default:
+				}
+
+				outcome, err := e.processSession(result.providerID, &result.sessions[i])
+				if err != nil {
+					runSummary.Errors++
+					e.recordOutcome(OutcomeError)
+					slog.Error("Engine ingest failed to process session",
+						"provider", result.providerID,
+						"session_id", result.sessions[i].SessionID,
+						"error", err)
+					continue
+				}
+				switch outcome {
+				case OutcomeCreated:
+					runSummary.Created++
+				case OutcomeUpdated:
+					runSummary.Updated++
+				case OutcomeSkipped:
+					runSummary.Skipped++
+				}
 			}
 		}
 	}
