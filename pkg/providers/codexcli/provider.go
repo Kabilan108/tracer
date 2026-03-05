@@ -63,44 +63,39 @@ func buildCheckErrorMessage(errorType string, codexCmd string, isCustom bool, st
 
 	switch errorType {
 	case "not_found":
-		fmt.Fprintf(&errorMsg, "  🔍 Could not find Codex CLI at: %s\n\n", codexCmd)
-		errorMsg.WriteString("  💡 Here's how to fix this:\n\n")
+		fmt.Fprintf(&errorMsg, "Could not find Codex CLI at: %s\n\n", codexCmd)
+		errorMsg.WriteString("How to fix:\n")
 		if isCustom {
-			errorMsg.WriteString("     • Double-check the custom command/path you provided\n")
-			errorMsg.WriteString("     • Ensure the file exists and is executable\n")
-			errorMsg.WriteString("     • If the binary lives elsewhere, point to it with an absolute path\n")
+			errorMsg.WriteString("- Double-check the custom command/path.\n")
+			errorMsg.WriteString("- Ensure the file exists and is executable.\n")
+			errorMsg.WriteString("- If the binary lives elsewhere, use an absolute path.")
 		} else {
-			errorMsg.WriteString("     1. Check common installation locations:\n")
-			errorMsg.WriteString("        • Homebrew: /opt/homebrew/bin/codex (installed via `brew install codex`)\n")
-			errorMsg.WriteString("        • npm: $(npm bin -g)/codex (installed via `npm install -g codex`)\n")
-			errorMsg.WriteString("\n")
-			errorMsg.WriteString("     2. If it's already installed, try:\n")
-			errorMsg.WriteString("        • Check if 'codex' is in your PATH\n")
-			errorMsg.WriteString("        • Use -c flag to specify the full path\n")
-			errorMsg.WriteString("        • Example: tracer check codex -c \"/opt/local/bin/codex\"")
+			errorMsg.WriteString("- Check common installation locations:\n")
+			errorMsg.WriteString("  Homebrew: /opt/homebrew/bin/codex (brew install codex)\n")
+			errorMsg.WriteString("  npm: $(npm bin -g)/codex (npm install -g codex)\n")
+			errorMsg.WriteString("- If installed already, ensure `codex` is in PATH.\n")
+			errorMsg.WriteString("- Use `-c` to specify the full path.\n")
+			errorMsg.WriteString("- Example: tracer check codex -c \"/opt/local/bin/codex\"")
 		}
 	case "permission_denied":
-		fmt.Fprintf(&errorMsg, "  🔒 Permission denied when trying to run: %s\n\n", codexCmd)
-		errorMsg.WriteString("  💡 Try the following:\n")
-		fmt.Fprintf(&errorMsg, "     • Ensure the binary is executable: chmod +x %s\n", codexCmd)
-		errorMsg.WriteString("     • Run the command manually to confirm it works outside Tracer\n")
+		fmt.Fprintf(&errorMsg, "Permission denied when trying to run: %s\n\n", codexCmd)
+		errorMsg.WriteString("How to fix:\n")
+		fmt.Fprintf(&errorMsg, "- Ensure the binary is executable: chmod +x %s\n", codexCmd)
+		errorMsg.WriteString("- Run the command manually to confirm it works outside Tracer.")
 	case "no_output":
-		errorMsg.WriteString("  ⚠️  No version information from codex\n\n")
-		errorMsg.WriteString("  🤔 The command ran but produced no output\n")
-		errorMsg.WriteString("  ❓ Expected: Version information from codex\n\n")
-		errorMsg.WriteString("  💡 Please verify you're pointing at the Codex CLI binary:\n")
-		errorMsg.WriteString("     • Try running '" + codexCmd + " --version' directly\n")
-		errorMsg.WriteString("     • If you're using a wrapper script, pass the real codex binary with -c\n")
+		errorMsg.WriteString("No version information from codex\n\n")
+		errorMsg.WriteString("The command ran but produced no output.\n")
+		errorMsg.WriteString("- Try running '" + codexCmd + " --version' directly.\n")
+		errorMsg.WriteString("- If using a wrapper script, pass the real codex binary with -c.")
 	default:
-		fmt.Fprintf(&errorMsg, "  ⚠️  Error running '%s --version'\n", codexCmd)
+		fmt.Fprintf(&errorMsg, "Error running '%s --version'\n", codexCmd)
 		if stderrOutput != "" {
-			fmt.Fprintf(&errorMsg, "  📋 Error details: %s\n", stderrOutput)
+			fmt.Fprintf(&errorMsg, "Details: %s\n", stderrOutput)
 		}
-		errorMsg.WriteString("\n")
-		errorMsg.WriteString("  💡 Troubleshooting tips:\n")
-		errorMsg.WriteString("     • Make sure the Codex CLI is correctly installed\n")
-		errorMsg.WriteString("     • Try running 'codex --version' directly in your terminal\n")
-		errorMsg.WriteString("     • Check https://developers.openai.com/codex/quickstart for installation help\n")
+		errorMsg.WriteString("\nTroubleshooting:\n")
+		errorMsg.WriteString("- Make sure Codex CLI is correctly installed.\n")
+		errorMsg.WriteString("- Run 'codex --version' directly in your terminal.\n")
+		errorMsg.WriteString("- Install docs: https://developers.openai.com/codex/quickstart")
 	}
 
 	return errorMsg.String()

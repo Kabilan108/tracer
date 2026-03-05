@@ -7,29 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-)
 
-// ANSI color codes for terminal output
-const (
-	// Base ANSI escape sequence
-	ANSIEscape = "\033["
-
-	// Color codes
-	ColorReset       = ANSIEscape + "0m"
-	ColorBold        = ANSIEscape + "1m"
-	ColorRed         = ANSIEscape + "31m"
-	ColorGreen       = ANSIEscape + "32m"
-	ColorYellow      = ANSIEscape + "33m"
-	ColorBlue        = ANSIEscape + "34m"
-	ColorMagenta     = ANSIEscape + "35m"
-	ColorCyan        = ANSIEscape + "36m"
-	ColorBrightRed   = ANSIEscape + "91m"
-	ColorBrightGreen = ANSIEscape + "92m"
-	ColorOrange      = ANSIEscape + "38;5;208m"
-
-	// Combined styles
-	ColorBoldGreen = ANSIEscape + "1;32m"
-	ColorBoldCyan  = ANSIEscape + "1;36m"
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 )
 
 // Logger configuration
@@ -52,7 +31,7 @@ func UserMessage(format string, args ...interface{}) {
 func UserWarn(format string, args ...interface{}) {
 	if !isSilent() {
 		message := fmt.Sprintf(format, args...)
-		fmt.Fprintf(os.Stderr, "\n%sWarning: %s\n%s", ColorOrange, message, ColorReset)
+		fmt.Fprintf(os.Stderr, "\n%s %s\n", ui.Warning("Warning"), message)
 	}
 }
 
@@ -61,7 +40,7 @@ func UserWarn(format string, args ...interface{}) {
 func UserError(format string, args ...interface{}) {
 	if !isSilent() {
 		message := fmt.Sprintf(format, args...)
-		fmt.Fprintf(os.Stderr, "\n%sError: %s\n%s", ColorBrightRed, message, ColorReset)
+		fmt.Fprintf(os.Stderr, "\n%s %s\n", ui.Error("Error"), message)
 	}
 }
 

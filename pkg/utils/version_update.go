@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"regexp"
 	"time"
+
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 )
 
 // CheckForUpdates checks for newer versions of the CLI and displays a notification if available
@@ -67,19 +69,14 @@ func CheckForUpdates(currentVersion string, noVersionCheck bool, silent bool) {
 	if latestVersion != currentVersion {
 		if !silent {
 			fmt.Println()
-			fmt.Println("╭─────────────────────────────────────────────────────────────╮")
-			// Check if current version contains "beta"
 			if regexp.MustCompile(`(?i)beta`).MatchString(currentVersion) {
-				fmt.Println("│                  Beta Version in use! 🚀                    │")
+				fmt.Println(ui.Warning("Beta build in use"))
 			} else {
-				fmt.Println("│                   Update Available! 🚀                      │")
+				fmt.Println(ui.Warning("Update available"))
 			}
-			fmt.Println("├─────────────────────────────────────────────────────────────┤")
-			fmt.Printf("│ Current version: %-42s │\n", currentVersion)
-			fmt.Printf("│ Latest version:  %-42s │\n", latestVersion)
-			fmt.Println("├─────────────────────────────────────────────────────────────┤")
-			fmt.Println("│ Visit https://docs.tracer.com/quickstart for updates     │")
-			fmt.Println("╰─────────────────────────────────────────────────────────────╯")
+			fmt.Printf("Current version: %s\n", currentVersion)
+			fmt.Printf("Latest version:  %s\n", latestVersion)
+			fmt.Println("Install docs: https://docs.tracer.com/quickstart")
 			fmt.Println()
 		}
 	}

@@ -115,45 +115,38 @@ func buildCheckErrorMessage(errorType string, claudeCmd string, isCustom bool, s
 
 	switch errorType {
 	case "not_found":
-		fmt.Fprintf(&errorMsg, "  🔍 Could not find Claude Code at: %s\n", claudeCmd)
-		errorMsg.WriteString("\n")
-		errorMsg.WriteString("  💡 Here's how to fix this:\n")
-		errorMsg.WriteString("\n")
+		fmt.Fprintf(&errorMsg, "Could not find Claude Code at: %s\n\n", claudeCmd)
+		errorMsg.WriteString("How to fix:\n")
 		if isCustom {
-			errorMsg.WriteString("     The specified path doesn't exist. Please check:\n")
-			fmt.Fprintf(&errorMsg, "     • Is Claude Code installed at %s?\n", claudeCmd)
-			errorMsg.WriteString("     • Did you type the path correctly?")
+			errorMsg.WriteString("- The specified path does not exist.\n")
+			fmt.Fprintf(&errorMsg, "- Verify Claude Code is installed at %s.\n", claudeCmd)
+			errorMsg.WriteString("- Confirm the path is typed correctly.")
 		} else {
-			errorMsg.WriteString("     1. Make sure Claude Code is installed:\n")
-			errorMsg.WriteString("        • Visit https://docs.claude.com/en/docs/claude-code/quickstart\n")
-			errorMsg.WriteString("\n")
-			errorMsg.WriteString("     2. If it's already installed, try:\n")
-			errorMsg.WriteString("        • Check if 'claude' is in your PATH\n")
-			errorMsg.WriteString("        • Use -c flag to specify the full path\n")
-			errorMsg.WriteString("        • Example: tracer check claude -c \"~/.claude/local/claude\"")
+			errorMsg.WriteString("- Install Claude Code:\n")
+			errorMsg.WriteString("  https://docs.claude.com/en/docs/claude-code/quickstart\n")
+			errorMsg.WriteString("- If installed already, check whether `claude` is in PATH.\n")
+			errorMsg.WriteString("- Use `-c` to point to an absolute binary path.\n")
+			errorMsg.WriteString("- Example: tracer check claude -c \"~/.claude/local/claude\"")
 		}
 	case "permission_denied":
-		fmt.Fprintf(&errorMsg, "  🔒 Permission denied when trying to run: %s\n", claudeCmd)
-		errorMsg.WriteString("\n")
-		errorMsg.WriteString("  💡 Here's how to fix this:\n")
-		fmt.Fprintf(&errorMsg, "     • Check file permissions: chmod +x %s\n", claudeCmd)
-		errorMsg.WriteString("     • Try running with elevated permissions if needed")
+		fmt.Fprintf(&errorMsg, "Permission denied when trying to run: %s\n\n", claudeCmd)
+		errorMsg.WriteString("How to fix:\n")
+		fmt.Fprintf(&errorMsg, "- Check file permissions: chmod +x %s\n", claudeCmd)
+		errorMsg.WriteString("- Try running with elevated permissions if needed.")
 	case "unexpected_output":
-		fmt.Fprintf(&errorMsg, "  ⚠️  Unexpected output from 'claude -v': %s\n", strings.TrimSpace(stderrOutput))
-		errorMsg.WriteString("\n")
-		errorMsg.WriteString("  💡 This might not be Claude Code. Expected output containing '(Claude Code)'.\n")
-		errorMsg.WriteString("     • Make sure you have Claude Code installed, not a different 'claude' command\n")
-		errorMsg.WriteString("     • Visit https://docs.anthropic.com/en/docs/claude-code/quickstart for installation")
+		fmt.Fprintf(&errorMsg, "Unexpected output from 'claude -v': %s\n\n", strings.TrimSpace(stderrOutput))
+		errorMsg.WriteString("This may not be Claude Code. Expected output containing '(Claude Code)'.\n")
+		errorMsg.WriteString("- Make sure this is Claude Code and not another `claude` executable.\n")
+		errorMsg.WriteString("- Install docs: https://docs.anthropic.com/en/docs/claude-code/quickstart")
 	default:
-		errorMsg.WriteString("  ⚠️  Error running 'claude -v'\n")
+		errorMsg.WriteString("Error running 'claude -v'\n")
 		if stderrOutput != "" {
-			fmt.Fprintf(&errorMsg, "  📋 Error details: %s\n", stderrOutput)
+			fmt.Fprintf(&errorMsg, "Details: %s\n", stderrOutput)
 		}
-		errorMsg.WriteString("\n")
-		errorMsg.WriteString("  💡 Troubleshooting tips:\n")
-		errorMsg.WriteString("     • Make sure Claude Code is properly installed\n")
-		errorMsg.WriteString("     • Try running 'claude -v' directly in your terminal\n")
-		errorMsg.WriteString("     • Check https://docs.claude.com/en/docs/claude-code/quickstart for installation help")
+		errorMsg.WriteString("\nTroubleshooting:\n")
+		errorMsg.WriteString("- Make sure Claude Code is properly installed.\n")
+		errorMsg.WriteString("- Run `claude -v` directly in your terminal.\n")
+		errorMsg.WriteString("- Install docs: https://docs.claude.com/en/docs/claude-code/quickstart")
 	}
 
 	return errorMsg.String()

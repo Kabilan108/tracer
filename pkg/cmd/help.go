@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 )
 
 // DisplayHelp prints the command's help text.
@@ -25,7 +27,7 @@ func CreateHelpCommand(rootCmd *cobra.Command) *cobra.Command {
 			if len(args) > 0 {
 				targetCmd, _, err := rootCmd.Find(args)
 				if err != nil {
-					fmt.Printf("Unknown command: %s\n", args[0])
+					fmt.Printf("%s Unknown command: %s\n", ui.Error("Error"), args[0])
 					DisplayHelp(rootCmd)
 				} else {
 					DisplayHelp(targetCmd)

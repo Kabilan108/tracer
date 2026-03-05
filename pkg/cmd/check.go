@@ -11,6 +11,7 @@ import (
 
 	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
@@ -19,7 +20,6 @@ func CreateCheckCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	ids := registry.ListIDs()
 
-	// Build dynamic examples
 	var examplesBuilder strings.Builder
 	examplesBuilder.WriteString(`
 # Check all coding agents
@@ -30,8 +30,6 @@ tracer check`)
 		for _, id := range ids {
 			fmt.Fprintf(&examplesBuilder, "\ntracer check %s", id)
 		}
-
-		// Use first provider for custom command example
 		fmt.Fprintf(&examplesBuilder, "\n\n# Check a specific coding agent with a custom command\ntracer check %s -c \"/custom/path/to/agent\"", ids[0])
 	}
 	examples := examplesBuilder.String()
@@ -46,17 +44,13 @@ Ensures the user-level configuration file is valid.
 By default, checks all registered coding agents providers.
 Specify a specific agent ID to check only a specific coding agent.`,
 		Example: examples,
-		Args:    cobra.MaximumNArgs(1), // Accept 0 or 1 argument
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slog.Info("Running in check-install mode")
 			registry := factory.GetRegistry()
 
-			// Get custom command if provided via flag
 			customCmd, _ := cmd.Flags().GetString("command")
-
-			// Validate that -c flag requires a provider
 			if customCmd != "" && len(args) == 0 {
-				registry := factory.GetRegistry()
 				ids := registry.ListIDs()
 				example := "tracer check <provider> -c \"/custom/path/to/agent\""
 				if len(ids) > 0 {
@@ -68,20 +62,16 @@ Specify a specific agent ID to check only a specific coding agent.`,
 				}
 			}
 
-			// Check config files first
 			configOK := checkConfigFiles()
 			printDivider()
 
 			var providerErr error
 			if len(args) == 0 {
-				// Check all providers
 				providerErr = checkAllProviders(registry)
 			} else {
-				// Check specific provider
 				providerErr = checkSingleProvider(registry, args[0], customCmd)
 			}
 
-			// Fail if either config or provider checks failed
 			if !configOK && providerErr != nil {
 				return providerErr
 			}
@@ -93,143 +83,120 @@ Specify a specific agent ID to check only a specific coding agent.`,
 	}
 
 	cmd.Flags().StringP("command", "c", "", "custom agent execution command for the provider")
-
 	return cmd
 }
 
-// printDivider prints a divider line for visual separation
-func printDivider() {
-	fmt.Println("\n--------")
+func tracerCommand(args ...string) string {
+	return strings.TrimSpace(ui.Command("tracer") + " " + strings.Join(args, " "))
 }
 
-// checkSingleProvider checks a specific provider
+func printDivider() {
+	fmt.Println(strings.Repeat("-", 72))
+}
+
 func checkSingleProvider(registry *factory.Registry, providerID, customCmd string) error {
 	provider, err := registry.Get(providerID)
 	if err != nil {
-		// Provider not found - show helpful error
-		fmt.Printf("❌ Provider '%s' is not a valid provider implementation\n\n", providerID)
+		fmt.Printf("%s Provider %q is not registered\n\n", ui.Error("Error"), providerID)
 
 		ids := registry.ListIDs()
 		if len(ids) > 0 {
-			fmt.Println("The registered providers are:")
+			fmt.Println(ui.Section("Registered providers"))
 			for _, id := range ids {
 				if p, _ := registry.Get(id); p != nil {
-					fmt.Printf("  • %s - %s\n", id, p.Name())
+					fmt.Printf("%s  %s\n", ui.Command(id), p.Name())
 				}
 			}
-			fmt.Println("\nExample: tracer check " + ids[0])
+			fmt.Printf("\nExample: %s\n", tracerCommand("check", ids[0]))
 		}
 		return err
 	}
 
-	// Run the check
 	result := provider.Check(customCmd)
-
-	// Display results with the nice formatting
 	if result.Success {
-		fmt.Printf("\n✨ %s is installed and ready! ✨\n\n", provider.Name())
-		fmt.Printf("  📦 Version: %s\n", result.Version)
-		fmt.Printf("  📍 Location: %s\n", result.Location)
-		fmt.Printf("  ✅ Status: All systems go!\n\n")
-
-		fmt.Println("🚀 Ready to sync your sessions! 💪")
-		normalizedID := strings.ToLower(providerID)
-		fmt.Printf("   • tracer sync %s\n", normalizedID)
-		fmt.Printf("   • tracer watch %s\n", normalizedID)
+		fmt.Printf("%s %s is installed and ready\n", ui.Success("OK"), provider.Name())
+		fmt.Printf("Version:  %s\n", result.Version)
+		fmt.Printf("Location: %s\n", result.Location)
+		fmt.Printf("Status:   %s\n", ui.Success("ready"))
 		fmt.Println()
-
+		fmt.Println(ui.Section("Next"))
+		normalizedID := strings.ToLower(providerID)
+		fmt.Println(tracerCommand("sync", normalizedID))
+		fmt.Println(tracerCommand("watch", normalizedID))
 		return nil
-	} else {
-		fmt.Printf("\n❌ %s check failed!\n", provider.Name())
-		if result.ErrorMessage != "" {
-			fmt.Printf("\n%s\n", result.ErrorMessage)
-		}
-		return errors.New("check failed")
 	}
+
+	fmt.Printf("%s %s check failed\n", ui.Error("Failed"), provider.Name())
+	if result.ErrorMessage != "" {
+		fmt.Printf("\n%s\n", result.ErrorMessage)
+	}
+	return errors.New("check failed")
 }
 
-// checkAllProviders checks all registered providers
 func checkAllProviders(registry *factory.Registry) error {
-	// Sort for consistent output
 	ids := registry.ListIDs()
-
 	anySuccess := false
+
 	type providerInfo struct {
-		id   string
-		name string
+		id string
 	}
 	var successfulProviders []providerInfo
-	first := true
 
-	for _, id := range ids {
-		provider, _ := registry.Get(id)
-		// Invoke Check() here to keep registry limited to registration/lookup
-		result := provider.Check("")
-
-		// Add divider between providers (but not before the first one)
-		if !first {
+	for i, id := range ids {
+		if i > 0 {
 			printDivider()
 		}
-		first = false
+
+		provider, _ := registry.Get(id)
+		result := provider.Check("")
 
 		if result.Success {
 			anySuccess = true
-			successfulProviders = append(successfulProviders, providerInfo{id: id, name: provider.Name()})
-			fmt.Printf("\n✨ %s is installed and ready! ✨\n\n", provider.Name())
-			fmt.Printf("  📦 Version: %s\n", result.Version)
-			fmt.Printf("  📍 Location: %s\n", result.Location)
-			fmt.Printf("  ✅ Status: All systems go!\n")
-		} else {
-			fmt.Printf("\n❌ %s check failed!\n\n", provider.Name())
-			if result.ErrorMessage != "" {
-				// Show just first line of error for summary view
-				lines := strings.Split(result.ErrorMessage, "\n")
-				fmt.Printf("  Error: %s\n", strings.TrimSpace(lines[0]))
-			}
+			successfulProviders = append(successfulProviders, providerInfo{id: id})
+			fmt.Printf("%s %s is installed and ready\n", ui.Success("OK"), provider.Name())
+			fmt.Printf("Version:  %s\n", result.Version)
+			fmt.Printf("Location: %s\n", result.Location)
+			fmt.Printf("Status:   %s\n", ui.Success("ready"))
+			continue
+		}
+
+		fmt.Printf("%s %s check failed\n", ui.Error("Failed"), provider.Name())
+		if result.ErrorMessage != "" {
+			lines := strings.Split(result.ErrorMessage, "\n")
+			fmt.Printf("Error: %s\n", strings.TrimSpace(lines[0]))
 		}
 	}
 
-	// Show ready message if at least one provider is working
+	printDivider()
 	if anySuccess {
-		printDivider()
-		fmt.Println("\n🚀 Ready to archive your sessions! 💪")
+		fmt.Println(ui.Section("Next"))
 		for _, info := range successfulProviders {
-			fmt.Printf("   • tracer sync %s\n", info.id)
-			fmt.Printf("   • tracer watch %s\n", info.id)
+			fmt.Println(tracerCommand("sync", info.id))
+			fmt.Println(tracerCommand("watch", info.id))
 		}
-		fmt.Println()
+		return nil
+	}
+
+	fmt.Printf("%s No providers are currently available\n", ui.Warning("Warning"))
+	fmt.Println("Install at least one provider to use Tracer.")
+
+	if len(ids) > 0 {
+		fmt.Printf("Example: %s\n", tracerCommand("check", ids[0]))
 	} else {
-		printDivider()
-		fmt.Println("\n⚠️  No providers are currently available")
-		fmt.Println("   Install at least one provider to use Tracer")
-		fmt.Println("\n💡 Tip: Use 'tracer check <provider>' for detailed installation help")
-
-		// Try to show an example with the first registered provider ID
-		ids := registry.ListIDs()
-		if len(ids) > 0 {
-			fmt.Printf("   Example: tracer check %s\n", ids[0])
-		} else {
-			fmt.Println("   Example: tracer check <provider>")
-		}
+		fmt.Printf("Example: %s\n", tracerCommand("check", "<provider>"))
 	}
 
-	// Return error only if ALL providers failed
-	if !anySuccess {
-		return errors.New("check failed")
-	}
-
-	return nil
+	return errors.New("check failed")
 }
 
 // checkConfigFiles validates the user-level config file.
 // Returns true if all existing config files are valid, false if any have errors.
 func checkConfigFiles() bool {
-	fmt.Println("\n📋 Configuration Files")
+	fmt.Println(ui.Section("Configuration"))
 
 	allOK := true
 	checked := false
 
-	// Check user-level config
 	userPath := config.GetUserConfigPath()
 	if userPath != "" {
 		result := config.ValidateConfigFile(userPath)
@@ -241,36 +208,36 @@ func checkConfigFiles() bool {
 	}
 
 	if !checked {
-		fmt.Println("  ⚠️  Could not determine config file paths")
+		fmt.Printf("%s Could not determine config file paths\n", ui.Warning("Warning"))
 	}
 
 	return allOK
 }
 
-// printConfigResult displays the validation result for a single config file.
 func printConfigResult(label string, result config.ConfigValidationResult) {
 	if !result.Exists {
-		fmt.Printf("\n  ℹ️  %s: not found\n", label)
-		fmt.Printf("     %s\n", result.Path)
+		fmt.Printf("%s %s: not found\n", ui.Warning("Warning"), label)
+		fmt.Printf("Path: %s\n\n", result.Path)
 		return
 	}
 
 	if !result.ValidTOML {
-		fmt.Printf("\n  ❌ %s: invalid TOML\n", label)
-		fmt.Printf("     %s\n", result.Path)
-		fmt.Printf("     Error: %s\n", result.ParseError)
+		fmt.Printf("%s %s: invalid TOML\n", ui.Error("Error"), label)
+		fmt.Printf("Path:  %s\n", result.Path)
+		fmt.Printf("Error: %s\n\n", result.ParseError)
 		return
 	}
 
 	if len(result.UnknownKeys) > 0 {
-		fmt.Printf("\n  ⚠️  %s: valid TOML, but has unknown keys\n", label)
-		fmt.Printf("     %s\n", result.Path)
+		fmt.Printf("%s %s: valid TOML with unknown keys\n", ui.Warning("Warning"), label)
+		fmt.Printf("Path: %s\n", result.Path)
 		for _, key := range result.UnknownKeys {
-			fmt.Printf("     • unknown key: %s\n", key)
+			fmt.Printf("Unknown key: %s\n", key)
 		}
+		fmt.Println()
 		return
 	}
 
-	fmt.Printf("\n  ✅ %s: valid\n", label)
-	fmt.Printf("     %s\n", result.Path)
+	fmt.Printf("%s %s: valid\n", ui.Success("OK"), label)
+	fmt.Printf("Path: %s\n\n", result.Path)
 }

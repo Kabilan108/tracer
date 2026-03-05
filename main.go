@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	cmdpkg "github.com/tracer-ai/tracer-cli/pkg/cmd"
 	"github.com/tracer-ai/tracer-cli/pkg/config"
@@ -25,6 +25,7 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
 	"github.com/tracer-ai/tracer-cli/pkg/telemetry"
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
@@ -51,6 +52,43 @@ type listFlags struct {
 	json     bool
 	sessions bool
 }
+
+const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if or .Runnable .HasSubCommands}}{{section "Usage"}}
+{{formatUseLine .UseLine}}
+{{end}}{{if .HasAvailableSubCommands}}
+
+{{section "Commands"}}
+{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}{{formatCommandUse .Use}}  {{.Short}}
+{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+{{section "Flags"}}
+{{formatFlagUsages .LocalFlags}}
+{{end}}{{if .HasAvailableInheritedFlags}}
+
+{{section "Flags"}}
+{{formatFlagUsages .InheritedFlags}}
+{{end}}{{if .HasAvailableSubCommands}}
+
+{{section "More"}}
+{{.CommandPath}} [command] --help
+{{end}}`
+
+const usageTemplate = `{{if .Runnable}}{{section "Usage"}}
+{{formatUseLine .UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+
+{{section "Commands"}}
+{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}{{formatCommandUse .Use}}  {{.Short}}
+{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+{{section "Flags"}}
+{{formatFlagUsages .LocalFlags}}
+{{end}}{{if .HasAvailableInheritedFlags}}
+
+{{section "Flags"}}
+{{formatFlagUsages .InheritedFlags}}
+{{end}}`
 
 type providerSyncProgress struct {
 	ScanStarted bool
@@ -206,7 +244,7 @@ func (t *syncProgressTracker) render(clearOnly bool) {
 func (t *syncProgressTracker) renderLinesLocked() []string {
 	lines := make([]string, 0, len(t.order)+2)
 	elapsed := time.Since(t.start).Round(time.Second)
-	lines = append(lines, fmt.Sprintf("Sync progress [%s]", elapsed))
+	lines = append(lines, fmt.Sprintf("%s [%s]", ui.Section("Sync progress"), elapsed))
 
 	overallTotal := 0
 	overallProcessed := 0
@@ -220,6 +258,7 @@ func (t *syncProgressTracker) renderLinesLocked() []string {
 		if state == nil {
 			continue
 		}
+		providerLabel := ui.Command(providerID)
 
 		if state.ScanDone {
 			overallTotal += state.Total
@@ -232,14 +271,14 @@ func (t *syncProgressTracker) renderLinesLocked() []string {
 
 		switch {
 		case state.ScanError != "":
-			lines = append(lines, fmt.Sprintf("  %s: scan failed (%s)", providerID, state.ScanError))
+			lines = append(lines, fmt.Sprintf("  %s: %s (%s)", providerLabel, ui.Error("scan failed"), state.ScanError))
 		case !state.ScanDone && state.ScanStarted:
-			lines = append(lines, fmt.Sprintf("  %s: scanning sessions...", providerID))
+			lines = append(lines, fmt.Sprintf("  %s: scanning sessions...", providerLabel))
 		case !state.ScanDone:
-			lines = append(lines, fmt.Sprintf("  %s: pending...", providerID))
+			lines = append(lines, fmt.Sprintf("  %s: pending...", providerLabel))
 		default:
 			lines = append(lines, fmt.Sprintf("  %s: %d/%d processed (c:%d u:%d s:%d e:%d)",
-				providerID,
+				providerLabel,
 				state.Processed,
 				state.Total,
 				state.Created,
@@ -249,7 +288,8 @@ func (t *syncProgressTracker) renderLinesLocked() []string {
 		}
 	}
 
-	lines = append(lines, fmt.Sprintf("  overall: %d/%d processed (c:%d u:%d s:%d e:%d)",
+	lines = append(lines, fmt.Sprintf("  %s: %d/%d processed (c:%d u:%d s:%d e:%d)",
+		ui.Bold("overall"),
 		overallProcessed,
 		overallTotal,
 		overallCreated,
@@ -375,6 +415,66 @@ func shouldUseInteractiveProgress() bool {
 	return term != "" && term != "dumb"
 }
 
+func styleFirstToken(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return line
+	}
+
+	parts := strings.SplitN(trimmed, " ", 2)
+	if len(parts) == 1 {
+		return ui.Command(parts[0])
+	}
+	return ui.Command(parts[0]) + " " + parts[1]
+}
+
+func formatUseLine(useLine string) string {
+	return styleFirstToken(useLine)
+}
+
+func formatCommandUse(use string) string {
+	return styleFirstToken(use)
+}
+
+func formatFlagUsages(flagSet *pflag.FlagSet) string {
+	if flagSet == nil {
+		return ""
+	}
+
+	usages := strings.TrimRight(flagSet.FlagUsagesWrapped(120), "\n")
+	if usages == "" {
+		return ""
+	}
+
+	lines := strings.Split(usages, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(trimmed, "-") {
+			idx := strings.Index(trimmed, "  ")
+			if idx > 0 {
+				left := strings.TrimSpace(trimmed[:idx])
+				right := strings.TrimLeft(trimmed[idx:], " ")
+				lines[i] = fmt.Sprintf("%s  %s", ui.Command(left), right)
+				continue
+			}
+			lines[i] = ui.Command(trimmed)
+			continue
+		}
+		lines[i] = trimmed
+	}
+	return strings.Join(lines, "\n")
+}
+
+func configureHelpFormatting(rootCmd *cobra.Command) {
+	cobra.AddTemplateFunc("section", ui.Section)
+	cobra.AddTemplateFunc("formatUseLine", formatUseLine)
+	cobra.AddTemplateFunc("formatCommandUse", formatCommandUse)
+	cobra.AddTemplateFunc("formatFlagUsages", formatFlagUsages)
+
+	rootCmd.SetHelpTemplate(helpTemplate)
+	rootCmd.SetUsageTemplate(usageTemplate)
+}
+
 func resolveProviders(registry *factory.Registry, args []string) (map[string]spi.Provider, error) {
 	providers := make(map[string]spi.Provider)
 
@@ -496,7 +596,8 @@ func createSyncCommand() *cobra.Command {
 
 			if !silent {
 				fmt.Println()
-				fmt.Printf("Sync complete: %d created, %d updated, %d skipped, %d errors\n",
+				fmt.Printf("%s: %d created, %d updated, %d skipped, %d errors\n",
+					ui.Success("Sync complete"),
 					summary.Created,
 					summary.Updated,
 					summary.Skipped,
@@ -548,7 +649,8 @@ func createWatchCommand() *cobra.Command {
 
 			if providerList != "No providers registered" && !silent {
 				fmt.Println()
-				fmt.Println("Starting global watcher (historical + live updates)...")
+				fmt.Printf("%s\n", ui.Section("Starting watcher"))
+				fmt.Println("historical + live updates")
 				fmt.Println("Press Ctrl+C to stop.")
 				fmt.Println()
 			}
@@ -566,7 +668,8 @@ func createWatchCommand() *cobra.Command {
 			summary, err := engine.RunDaemon(ctx, engineOptionsFromOutputConfig(outputConfig, useUTC, debounce), "", providers, debugRaw)
 			if !silent {
 				fmt.Println()
-				fmt.Printf("Watcher stopped: %d created, %d updated, %d skipped, %d errors\n",
+				fmt.Printf("%s: %d created, %d updated, %d skipped, %d errors\n",
+					ui.Warning("Watcher stopped"),
 					summary.Created,
 					summary.Updated,
 					summary.Skipped,
@@ -723,12 +826,12 @@ func createListCommand() *cobra.Command {
 
 			if len(projects) == 0 {
 				if !silent {
-					fmt.Println("No projects found.")
+					fmt.Println(ui.Warning("No projects found."))
 				}
 				return nil
 			}
 
-			fmt.Printf("%-10s  %-24s  %-8s  %s\n", "PROVIDER", "PROJECT", "SESSIONS", "PROJECT PATH")
+			fmt.Println(ui.Section(fmt.Sprintf("%-10s  %-24s  %-8s  %s", "PROVIDER", "PROJECT", "SESSIONS", "PROJECT PATH")))
 			fmt.Println(strings.Repeat("-", 96))
 			for _, p := range projects {
 				fmt.Printf("%-10s  %-24s  %-8d  %s\n", p.ProviderID, p.Project, p.SessionCount, p.ProjectPath)
@@ -736,7 +839,7 @@ func createListCommand() *cobra.Command {
 
 			if flags.sessions {
 				fmt.Println()
-				fmt.Printf("%-10s  %-24s  %-36s  %-20s  %s\n", "PROVIDER", "PROJECT", "SESSION ID", "CREATED", "SLUG")
+				fmt.Println(ui.Section(fmt.Sprintf("%-10s  %-24s  %-36s  %-20s  %s", "PROVIDER", "PROJECT", "SESSION ID", "CREATED", "SLUG")))
 				fmt.Println(strings.Repeat("-", 128))
 				for _, s := range sessions {
 					created := s.CreatedAt
@@ -844,13 +947,14 @@ func applyConfigDefaults(cfg *config.Config) {
 func main() {
 	cfg, err := config.Load(nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s: %v\n", ui.Error("Failed to load config"), err)
 		os.Exit(1)
 	}
 	loadedConfig = cfg
 	applyConfigDefaults(cfg)
 
 	rootCmd := createRootCommand()
+	configureHelpFormatting(rootCmd)
 	syncCmd := createSyncCommand()
 	watchCmd := createWatchCommand()
 	listCmd := createListCommand()
@@ -877,10 +981,10 @@ func main() {
 
 	utils.CheckForUpdates(version, noVersionCheck, silent)
 
-	if err := fang.Execute(context.Background(), rootCmd); err != nil {
+	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		if !silent {
 			fmt.Fprintln(os.Stderr)
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s: %v\n", ui.Error("Error"), err)
 			fmt.Fprintln(os.Stderr)
 		}
 		_ = telemetry.Shutdown(context.Background())

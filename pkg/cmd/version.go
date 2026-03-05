@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tracer-ai/tracer-cli/pkg/ui"
 )
 
 // CreateVersionCommand creates the version command.
@@ -15,7 +17,7 @@ func CreateVersionCommand(version string) *cobra.Command {
 		Aliases: []string{"v", "ver"},
 		Short:   "Show Tracer version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s (Tracer)\n", version)
+			fmt.Printf("%s %s\n", ui.Command("tracer"), version)
 		},
 	}
 }
