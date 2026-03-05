@@ -14,11 +14,11 @@ fmt:
 run *args:
     go run . {{args}}
 
-ingest *args:
-    go run . ingest {{args}}
+sync *args:
+    go run . sync {{args}}
 
-daemon *args:
-    go run . daemon run {{args}}
+watch *args:
+    go run . watch {{args}}
 
 nix-build:
     nix build .#tracer

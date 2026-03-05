@@ -473,14 +473,14 @@ func processCodexSessionFile(sessionPath string, projectPath string, normalizedP
 		return fmt.Errorf("session meta missing cwd")
 	}
 
-	// Check if this session matches the project path
-	matched := false
-	if normalizedProjectPath != "" {
-		if normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath) {
-			matched = true
+	// Empty projectPath means global mode: include every session.
+	matched := strings.TrimSpace(projectPath) == ""
+	if !matched {
+		if normalizedProjectPath != "" {
+			matched = normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath)
+		} else {
+			matched = normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath)
 		}
-	} else if normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath) {
-		matched = true
 	}
 
 	if !matched {

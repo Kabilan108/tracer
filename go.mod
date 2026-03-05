@@ -24,7 +24,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.40.0
 	go.opentelemetry.io/otel/sdk/metric v1.40.0
 	go.opentelemetry.io/otel/trace v1.40.0
-	golang.org/x/term v0.40.0 // terminal and console support
 	golang.org/x/text v0.34.0 // Text processing and Unicode normalization
 	modernc.org/sqlite v1.46.1 // Pure Go SQLite database driver
 )

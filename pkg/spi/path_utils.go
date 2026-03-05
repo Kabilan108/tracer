@@ -208,15 +208,23 @@ func GetCanonicalPath(p string) (string, error) {
 
 // debugBaseDirOverride allows overriding the base directory for debug output.
 // When set, debug files are written to this directory instead of the default
-// .tracer/debug/ location. This is set via the --debug-dir CLI flag or
+// ~/.local/state/tracer/debug location. This is set via the --debug-dir CLI flag or
 // the debug_dir config option.
 var debugBaseDirOverride string
 
 // SetDebugBaseDir sets the override base directory for debug output.
 // When set to a non-empty value, GetDebugDir will use this as the base
-// instead of the default .tracer/debug/ path.
+// instead of the default ~/.local/state/tracer/debug path.
 func SetDebugBaseDir(dir string) {
 	debugBaseDirOverride = dir
+}
+
+func getDefaultDebugBaseDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".tracer", "debug")
+	}
+	return filepath.Join(home, ".local", "state", "tracer", "debug")
 }
 
 // GetDebugDir returns the debug directory path for a given session ID or UUID.
@@ -227,23 +235,23 @@ func SetDebugBaseDir(dir string) {
 //
 // When debugBaseDirOverride is set (via SetDebugBaseDir), the directory structure
 // is: <override>/<sessionID>/
-// Otherwise: .tracer/debug/<sessionID>/
+// Otherwise: ~/.local/state/tracer/debug/<sessionID>/
 //
 // Example:
 //
 //	debugDir := spi.GetDebugDir("abc123-def456")
-//	// Returns: ".tracer/debug/abc123-def456"
+//	// Returns: "~/.local/state/tracer/debug/abc123-def456"
 func GetDebugDir(sessionID string) string {
 	if debugBaseDirOverride != "" {
 		return filepath.Join(debugBaseDirOverride, sessionID)
 	}
-	return filepath.Join(".tracer", "debug", sessionID)
+	return filepath.Join(getDefaultDebugBaseDir(), sessionID)
 }
 
 // WriteDebugSessionData writes the SessionData as formatted JSON to the debug directory.
 // This provides a standardized, provider-agnostic debug output alongside provider-specific raw data.
 //
-// The file is written to: .tracer/debug/<sessionID>/session-data.json
+// The file is written to: ~/.local/state/tracer/debug/<sessionID>/session-data.json
 //
 // Returns an error if the debug directory cannot be created or the file cannot be written.
 func WriteDebugSessionData(sessionID string, sessionData *schema.SessionData) error {

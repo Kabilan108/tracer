@@ -268,7 +268,11 @@ func TestSetDebugBaseDir(t *testing.T) {
 	t.Run("default path without override", func(t *testing.T) {
 		SetDebugBaseDir("")
 		result := GetDebugDir("test-session")
-		expected := filepath.Join(".tracer", "debug", "test-session")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatalf("UserHomeDir() error = %v", err)
+		}
+		expected := filepath.Join(home, ".local", "state", "tracer", "debug", "test-session")
 		if result != expected {
 			t.Errorf("GetDebugDir() = %q, want %q", result, expected)
 		}
@@ -287,7 +291,11 @@ func TestSetDebugBaseDir(t *testing.T) {
 		SetDebugBaseDir("/custom/debug")
 		SetDebugBaseDir("")
 		result := GetDebugDir("test-session")
-		expected := filepath.Join(".tracer", "debug", "test-session")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatalf("UserHomeDir() error = %v", err)
+		}
+		expected := filepath.Join(home, ".local", "state", "tracer", "debug", "test-session")
 		if result != expected {
 			t.Errorf("GetDebugDir() = %q, want %q", result, expected)
 		}

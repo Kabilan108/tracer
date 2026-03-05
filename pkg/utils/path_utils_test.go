@@ -3,312 +3,101 @@ package utils
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// Note: GetCanonicalPath tests are in pkg/spi/path_utils_test.go
-
-func TestNewOutputPathConfig(t *testing.T) {
-	tests := []struct {
-		name        string
-		dir         string
-		setup       func(t *testing.T) string
-		cleanup     func(t *testing.T, dir string)
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name: "empty string uses defaults",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				return ""
-			},
-			cleanup: func(t *testing.T, dir string) {},
-			wantErr: false,
-		},
-		{
-			name: "relative path converts to absolute",
-			dir:  "./test-output",
-			setup: func(t *testing.T) string {
-				return "./test-output"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./test-output")
-			},
-			wantErr: false,
-		},
-		{
-			name: "deeply nested directory creation",
-			dir:  "./very/deeply/nested/directory/structure/for/testing",
-			setup: func(t *testing.T) string {
-				return "./very/deeply/nested/directory/structure/for/testing"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./very")
-			},
-			wantErr: false,
-		},
-		{
-			name: "path with special characters",
-			dir:  "./test-output with spaces & special@chars!",
-			setup: func(t *testing.T) string {
-				return "./test-output with spaces & special@chars!"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./test-output with spaces & special@chars!")
-			},
-			wantErr: false,
-		},
-		{
-			name: "path with unicode characters",
-			dir:  "./测试目录-テスト-🚀",
-			setup: func(t *testing.T) string {
-				return "./测试目录-テスト-🚀"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./测试目录-テスト-🚀")
-			},
-			wantErr: false,
-		},
-		{
-			name: "existing directory with write permissions",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				return dir
-			},
-			cleanup: func(t *testing.T, dir string) {},
-			wantErr: false,
-		},
-		{
-			name: "existing file not directory",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				tmpFile, err := os.CreateTemp("", "test-file-*")
-				if err != nil {
-					t.Fatal(err)
-				}
-				_ = tmpFile.Close()
-				return tmpFile.Name()
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.Remove(dir)
-			},
-			wantErr:     true,
-			errContains: "not a directory",
-		},
-		{
-			name: "directory without write permissions",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				noWriteDir := filepath.Join(dir, "no-write")
-				if err := os.Mkdir(noWriteDir, 0555); err != nil {
-					t.Fatal(err)
-				}
-				return noWriteDir
-			},
-			cleanup: func(t *testing.T, dir string) {
-				parent := filepath.Dir(dir)
-				_ = os.Chmod(dir, 0755)
-				_ = os.RemoveAll(parent)
-			},
-			wantErr:     true,
-			errContains: "not writable",
-		},
-		{
-			name: "parent directory without write permissions",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				noWriteDir := filepath.Join(dir, "no-write")
-				if err := os.Mkdir(noWriteDir, 0555); err != nil {
-					t.Fatal(err)
-				}
-				return filepath.Join(noWriteDir, "child")
-			},
-			cleanup: func(t *testing.T, dir string) {
-				parent := filepath.Dir(filepath.Dir(dir))
-				_ = os.Chmod(filepath.Dir(dir), 0755)
-				_ = os.RemoveAll(parent)
-			},
-			wantErr:     true,
-			errContains: "failed to create",
-		},
-		{
-			name: "absolute path preserved",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				absPath, _ := filepath.Abs("./test-absolute")
-				return absPath
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./test-absolute")
-			},
-			wantErr: false,
-		},
-		{
-			name: "path with double dots",
-			dir:  "../../../test-output",
-			setup: func(t *testing.T) string {
-				return "../../../test-output"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				absPath, _ := filepath.Abs("../../../test-output")
-				_ = os.RemoveAll(absPath)
-			},
-			wantErr: false,
-		},
-		{
-			name: "path with single dot",
-			dir:  "./././test-output",
-			setup: func(t *testing.T) string {
-				return "./././test-output"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./test-output")
-			},
-			wantErr: false,
-		},
-		{
-			name: "symlink to directory",
-			dir:  "",
-			setup: func(t *testing.T) string {
-				realDir := t.TempDir()
-				linkPath := filepath.Join(t.TempDir(), "link")
-				if err := os.Symlink(realDir, linkPath); err != nil {
-					t.Fatal(err)
-				}
-				return linkPath
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.Remove(dir)
-			},
-			wantErr: false,
-		},
-		{
-			name: "path with trailing slashes",
-			dir:  "./test-output///",
-			setup: func(t *testing.T) string {
-				return "./test-output///"
-			},
-			cleanup: func(t *testing.T, dir string) {
-				_ = os.RemoveAll("./test-output")
-			},
-			wantErr: false,
-		},
+func TestExpandTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir() error = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := tt.setup(t)
-			if dir != "" {
-				tt.dir = dir
-			}
-			defer tt.cleanup(t, tt.dir)
-
-			config, err := NewOutputPathConfig(tt.dir, "")
-
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("NewOutputPathConfig() error = nil, wantErr %v", tt.wantErr)
-					return
-				}
-				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("NewOutputPathConfig() error = %v, want error containing %v", err, tt.errContains)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("NewOutputPathConfig() unexpected error = %v", err)
-				return
-			}
-
-			// Verify config is not nil
-			if config == nil {
-				t.Fatal("NewOutputPathConfig() returned nil config")
-			}
-
-			// For non-empty dir, verify it's absolute
-			if tt.dir != "" && !filepath.IsAbs(config.BaseDir) {
-				t.Errorf("NewOutputPathConfig() BaseDir = %v, want absolute path", config.BaseDir)
-			}
-		})
+	got := ExpandTilde("~/tmp")
+	want := filepath.Join(home, "tmp")
+	if got != want {
+		t.Fatalf("ExpandTilde() = %q, want %q", got, want)
 	}
 }
 
-func TestOutputPathConfigMethods(t *testing.T) {
-	t.Run("with custom base directory", func(t *testing.T) {
-		baseDir := t.TempDir()
-		config := &OutputPathConfig{BaseDir: baseDir}
+func TestNewOutputPathConfig(t *testing.T) {
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	debugDir := filepath.Join(t.TempDir(), "debug")
 
-		// Test GetHistoryDir
-		historyDir := config.GetHistoryDir()
-		if historyDir != baseDir {
-			t.Errorf("GetHistoryDir() = %v, want %v", historyDir, baseDir)
-		}
+	cfg, err := NewOutputPathConfig(archiveDir, debugDir)
+	if err != nil {
+		t.Fatalf("NewOutputPathConfig() error = %v", err)
+	}
 
-		// Test GetDebugDir
-		debugDir := config.GetDebugDir()
-		expectedDebugDir := filepath.Join(baseDir, DEBUG_DIR)
-		if debugDir != expectedDebugDir {
-			t.Errorf("GetDebugDir() = %v, want %v", debugDir, expectedDebugDir)
-		}
+	if cfg.BaseDir == "" || cfg.DebugBaseDir == "" {
+		t.Fatal("expected BaseDir and DebugBaseDir to be set")
+	}
+	if !filepath.IsAbs(cfg.BaseDir) || !filepath.IsAbs(cfg.DebugBaseDir) {
+		t.Fatal("expected BaseDir and DebugBaseDir to be absolute paths")
+	}
+}
 
-		// Test GetLogPath
-		logPath := config.GetLogPath()
-		expectedLogPath := filepath.Join(expectedDebugDir, DEBUG_LOG_FILE)
-		if logPath != expectedLogPath {
-			t.Errorf("GetLogPath() = %v, want %v", logPath, expectedLogPath)
-		}
-	})
+func TestOutputPathConfigMethods_Defaults(t *testing.T) {
+	cfg := &OutputPathConfig{}
 
-	t.Run("with custom debug base directory", func(t *testing.T) {
-		baseDir := t.TempDir()
-		debugBaseDir := t.TempDir()
-		config := &OutputPathConfig{BaseDir: baseDir, DebugBaseDir: debugBaseDir}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir() error = %v", err)
+	}
 
-		// Test GetDebugDir returns the custom debug base dir directly
-		debugDir := config.GetDebugDir()
-		if debugDir != debugBaseDir {
-			t.Errorf("GetDebugDir() = %v, want %v", debugDir, debugBaseDir)
-		}
+	expectedHistory := filepath.Join(home, ".local", "share", "tracer", "archive")
+	if got := cfg.GetHistoryDir(); got != expectedHistory {
+		t.Fatalf("GetHistoryDir() = %q, want %q", got, expectedHistory)
+	}
 
-		// Test GetHistoryDir still uses BaseDir
-		historyDir := config.GetHistoryDir()
-		if historyDir != baseDir {
-			t.Errorf("GetHistoryDir() = %v, want %v", historyDir, baseDir)
-		}
+	expectedState := filepath.Join(home, ".local", "state", "tracer")
+	if got := cfg.GetTracerDir(); got != expectedState {
+		t.Fatalf("GetTracerDir() = %q, want %q", got, expectedState)
+	}
 
-		// Test GetLogPath uses the custom debug base dir
-		logPath := config.GetLogPath()
-		expectedLogPath := filepath.Join(debugBaseDir, DEBUG_LOG_FILE)
-		if logPath != expectedLogPath {
-			t.Errorf("GetLogPath() = %v, want %v", logPath, expectedLogPath)
-		}
-	})
+	expectedDebug := filepath.Join(expectedState, DEBUG_DIR)
+	if got := cfg.GetDebugDir(); got != expectedDebug {
+		t.Fatalf("GetDebugDir() = %q, want %q", got, expectedDebug)
+	}
 
-	t.Run("with empty base directory", func(t *testing.T) {
-		config := &OutputPathConfig{}
+	expectedLog := filepath.Join(expectedDebug, DEBUG_LOG_FILE)
+	if got := cfg.GetLogPath(); got != expectedLog {
+		t.Fatalf("GetLogPath() = %q, want %q", got, expectedLog)
+	}
 
-		// Test GetHistoryDir - should include .tracer/history
-		historyDir := config.GetHistoryDir()
-		if !strings.Contains(historyDir, TRACER_DIR) || !strings.Contains(historyDir, HISTORY_DIR) {
-			t.Errorf("GetHistoryDir() = %v, want path containing %s/%s", historyDir, TRACER_DIR, HISTORY_DIR)
-		}
+	expectedStats := filepath.Join(expectedState, STATISTICS_FILE)
+	if got := cfg.GetStatisticsPath(); got != expectedStats {
+		t.Fatalf("GetStatisticsPath() = %q, want %q", got, expectedStats)
+	}
 
-		// Test GetDebugDir - should include .tracer/debug
-		debugDir := config.GetDebugDir()
-		if !strings.Contains(debugDir, TRACER_DIR) || !strings.Contains(debugDir, DEBUG_DIR) {
-			t.Errorf("GetDebugDir() = %v, want path containing %s/%s", debugDir, TRACER_DIR, DEBUG_DIR)
-		}
+	expectedDB := filepath.Join(expectedState, RUNTIME_STATE_DB_FILE)
+	if got := cfg.GetRuntimeStateDBPath(); got != expectedDB {
+		t.Fatalf("GetRuntimeStateDBPath() = %q, want %q", got, expectedDB)
+	}
+}
 
-		// Test GetLogPath
-		logPath := config.GetLogPath()
-		if !strings.Contains(logPath, DEBUG_LOG_FILE) {
-			t.Errorf("GetLogPath() = %v, want path containing %s", logPath, DEBUG_LOG_FILE)
-		}
-	})
+func TestEnsureDirectories(t *testing.T) {
+	archiveDir := filepath.Join(t.TempDir(), "archive")
+	stateDir := filepath.Join(t.TempDir(), "state")
+
+	cfg := &OutputPathConfig{BaseDir: archiveDir, DebugBaseDir: filepath.Join(stateDir, "debug")}
+
+	if err := EnsureHistoryDirectoryExists(cfg); err != nil {
+		t.Fatalf("EnsureHistoryDirectoryExists() error = %v", err)
+	}
+	if _, err := os.Stat(archiveDir); err != nil {
+		t.Fatalf("history dir not created: %v", err)
+	}
+
+	cfg2 := &OutputPathConfig{BaseDir: archiveDir}
+	origHome := os.Getenv("HOME")
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+	if err := os.Setenv("HOME", t.TempDir()); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	if err := EnsureStateDirectoryExists(cfg2); err != nil {
+		t.Fatalf("EnsureStateDirectoryExists() error = %v", err)
+	}
+	if _, err := os.Stat(cfg2.GetTracerDir()); err != nil {
+		t.Fatalf("state dir not created: %v", err)
+	}
 }

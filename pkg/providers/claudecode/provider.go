@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tracer-ai/tracer-cli/pkg/log"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
@@ -259,8 +260,9 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 		log.UserMessage("Claude Code hasn't created a project folder for your current directory yet.\n")
 		log.UserMessage("This happens when Claude Code hasn't been run in this directory.\n\n")
 		log.UserMessage("To fix this:\n")
-		log.UserMessage("  1. Run 'tracer run' to start Claude Code in this directory\n")
-		log.UserMessage("  2. Or run Claude Code directly with `claude`, then try syncing again\n\n")
+		log.UserMessage("  1. Run Claude Code directly with `claude` in this directory\n")
+		log.UserMessage("  2. Run `tracer sync claude` to backfill sessions\n")
+		log.UserMessage("  3. Run `tracer watch claude` for continuous updates\n\n")
 		log.UserMessage("Expected project folder: %s\n", claudeProjectPath)
 		fmt.Println() // Add trailing newline
 	}
@@ -270,44 +272,66 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 
 // GetAgentChatSessions retrieves all chat sessions for the given project path
 func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
-	// Get the Claude Code project directory
+	if strings.TrimSpace(projectPath) == "" {
+		projectDirs, err := ListClaudeCodeProjectDirs()
+		if err != nil {
+			return nil, err
+		}
+		all := make([]spi.AgentChatSession, 0)
+		for _, projectDir := range projectDirs {
+			sessions, err := parseProjectSessions(projectDir, "", debugRaw, nil)
+			if err != nil {
+				slog.Warn("GetAgentChatSessions: failed to parse Claude project", "projectDir", projectDir, "error", err)
+				continue
+			}
+			all = append(all, sessions...)
+		}
+		return all, nil
+	}
+
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
 	if err != nil {
 		return nil, err
 	}
-
-	// Check if project directory exists
-	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
-		return []spi.AgentChatSession{}, nil // No sessions if no project
-	}
-
-	// Parse JSONL files with progress callback
-	parser := NewJSONLParser()
-	err = parser.ParseProjectSessionsWithProgress(claudeProjectDir, progress)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert sessions to AgentChatSession structs
-	result := make([]spi.AgentChatSession, 0, len(parser.Sessions))
-	for _, session := range parser.Sessions {
-		// Skip empty sessions (no records)
-		if len(session.Records) == 0 {
-			continue
-		}
-
-		// Process session (filter warmup, generate SessionData)
-		chatSession := processSession(session, projectPath, debugRaw)
-		if chatSession != nil {
-			result = append(result, *chatSession)
-		}
-	}
-
-	return result, nil
+	return parseProjectSessions(claudeProjectDir, projectPath, debugRaw, progress)
 }
 
 // GetAgentChatSession retrieves a single chat session by ID for the given project path
 func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	if strings.TrimSpace(projectPath) == "" {
+		projectDirs, err := ListClaudeCodeProjectDirs()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, projectDir := range projectDirs {
+			parser := NewJSONLParser()
+			err := parser.ParseSingleSession(projectDir, sessionID)
+			if err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					continue
+				}
+				slog.Warn("GetAgentChatSession: failed to parse Claude project session",
+					"projectDir", projectDir,
+					"sessionID", sessionID,
+					"error", err)
+				continue
+			}
+
+			sessionPointer := parser.FindSession(sessionID)
+			if sessionPointer == nil {
+				continue
+			}
+			session := *sessionPointer
+			if len(session.Records) == 0 {
+				return nil, nil
+			}
+			return processSession(session, "", debugRaw), nil
+		}
+
+		return nil, nil
+	}
+
 	// Get the Claude Code project directory
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
 	if err != nil {
@@ -342,8 +366,30 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 		return nil, nil
 	}
 
-	// Process session (filter warmup, generate SessionData)
 	return processSession(session, projectPath, debugRaw), nil
+}
+
+func parseProjectSessions(claudeProjectDir string, workspaceRoot string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
+	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
+		return []spi.AgentChatSession{}, nil
+	}
+
+	parser := NewJSONLParser()
+	if err := parser.ParseProjectSessionsWithProgress(claudeProjectDir, progress); err != nil {
+		return nil, err
+	}
+
+	result := make([]spi.AgentChatSession, 0, len(parser.Sessions))
+	for _, session := range parser.Sessions {
+		if len(session.Records) == 0 {
+			continue
+		}
+		chatSession := processSession(session, workspaceRoot, debugRaw)
+		if chatSession != nil {
+			result = append(result, *chatSession)
+		}
+	}
+	return result, nil
 }
 
 // ExecAgentAndWatch executes Claude Code in interactive mode and watches for session updates
@@ -364,7 +410,7 @@ func (p *Provider) ExecAgentAndWatch(projectPath string, customCommand string, r
 		slog.Info("Resuming Claude Code session", "sessionId", resumeSessionID)
 	}
 
-	// Set up the callback which enables real-time markdown generation and cloud sync during
+	// Set up the callback which enables real-time markdown generation during
 	// interactive sessions. As Claude Code writes JSONL updates, the watcher detects
 	// changes and invokes this callback, allowing immediate processing without blocking
 	// the agent's execution. The defer ensures cleanup when the agent exits.
@@ -405,6 +451,64 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 	slog.Info("WatchAgent: Starting Claude Code activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
+
+	if strings.TrimSpace(projectPath) == "" {
+		slog.Info("WatchAgent: Using global polling mode for Claude projects")
+
+		type sessionFingerprint struct {
+			messageCount int
+			updatedAt    string
+		}
+
+		current := make(map[string]sessionFingerprint)
+		updateState := func(emit bool) {
+			sessions, err := p.GetAgentChatSessions("", debugRaw, nil)
+			if err != nil {
+				slog.Warn("WatchAgent: failed to poll Claude sessions", "error", err)
+				return
+			}
+
+			next := make(map[string]sessionFingerprint, len(sessions))
+			for i := range sessions {
+				session := sessions[i]
+				if session.SessionData == nil {
+					continue
+				}
+
+				messageCount := 0
+				for _, exchange := range session.SessionData.Exchanges {
+					messageCount += len(exchange.Messages)
+				}
+
+				fp := sessionFingerprint{
+					messageCount: messageCount,
+					updatedAt:    session.SessionData.UpdatedAt,
+				}
+				next[session.SessionID] = fp
+
+				prev, seen := current[session.SessionID]
+				if emit && (!seen || prev != fp) {
+					sessionCopy := session
+					sessionCallback(&sessionCopy)
+				}
+			}
+
+			current = next
+		}
+
+		updateState(false)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				updateState(true)
+			}
+		}
+	}
 
 	// The watcher callback directly passes AgentChatSession (which now contains SessionData)
 	wrappedCallback := func(agentChatSession *spi.AgentChatSession) {
@@ -514,31 +618,40 @@ func FileSlugFromRootRecord(session Session) string {
 // ListAgentChatSessions retrieves lightweight session metadata without full parsing
 // This is much faster than GetAgentChatSessions as it only reads minimal data from each session
 func (p *Provider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
-	// Get the Claude Code project directory
-	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if project directory exists
-	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
-		return []spi.SessionMetadata{}, nil // No sessions if no project
-	}
-
-	// Collect all JSONL files in the project directory
-	var sessionFiles []string
-	err = filepath.Walk(claudeProjectDir, func(path string, info os.FileInfo, err error) error {
+	projectDirs := []string{}
+	if strings.TrimSpace(projectPath) == "" {
+		dirs, err := ListClaudeCodeProjectDirs()
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+		projectDirs = dirs
+	} else {
+		claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
+		if err != nil {
+			return nil, err
+		}
+		projectDirs = []string{claudeProjectDir}
+	}
+
+	var sessionFiles []string
+	for _, projectDir := range projectDirs {
+		if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+			continue
+		}
+
+		err := filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+				return nil
+			}
+			sessionFiles = append(sessionFiles, path)
 			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan project directory: %w", err)
 		}
-		sessionFiles = append(sessionFiles, path)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan project directory: %w", err)
 	}
 
 	// Extract metadata from each session file

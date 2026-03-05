@@ -4,7 +4,7 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## Project Overview
 
-Tracer CLI is a wrapper for coding agents that tracks conversations and generates markdown files. The project uses the Go language and follows standard Go project conventions.
+Tracer CLI archives coding-agent sessions to markdown files. The project uses Go and follows standard Go project conventions.
 
 ## Key Commands
 
@@ -51,14 +51,11 @@ gofmt -w .
 There are two main modes of operation:
 
 ```zsh
-# Interactive interactive auto-save mode
-./tracer run
-
 # Sync mode - process all sessions
 ./tracer sync
 
-# Sync mode - process specific session
-./tracer sync -u <uuid>
+# Watch mode - continuous updates after initial sync
+./tracer watch
 ```
 
 ### Debugging
@@ -69,7 +66,7 @@ To see debug output, you can use the following commands:
 # Debug output to stdout
 ./tracer sync --debug
 
-# Debug log output in ./.tracer/debug/debug.log
+# Debug log output in ~/.local/state/tracer/debug/debug.log
 ./tracer sync --log
 
 # Hidden debug flag (not in public docs)
@@ -83,7 +80,6 @@ To see debug output, you can use the following commands:
 The codebase package structure:
 
 - `main.go` - CLI entry point
-- `pkg/cloud` - Cloud sync integration
 - `pkg/cmd` - CLI commands and command parsing
 - `pkg/config` - Optional TOML config file handling
 - `pkg/log/` - Logging utilities
@@ -97,7 +93,7 @@ The codebase package structure:
 ### JSONL File Behavior
 
 - Session data files grow during conversation (append-only)
-- `run` and `watch` commands uses fsnotify for real-time monitoring of the agent's session data directory
+- `watch` mode monitors provider session data and continuously updates markdown output
 - Many agents (e.g. Claude Code) use JSONL files for session data (e.g. `~/.claude/projects/<dir-derived-from-project-dir>/<session-id>.jsonl`)
 
 ## Code Conventions

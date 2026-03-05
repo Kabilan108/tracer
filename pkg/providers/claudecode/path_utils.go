@@ -31,6 +31,32 @@ func GetClaudeCodeProjectsDir() (string, error) {
 	return projectsDir, nil
 }
 
+// ListClaudeCodeProjectDirs returns all project directories under ~/.claude/projects.
+func ListClaudeCodeProjectDirs() ([]string, error) {
+	projectsDir, err := GetClaudeCodeProjectsDir()
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Claude projects directory: %v", err)
+	}
+
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		result = append(result, filepath.Join(projectsDir, entry.Name()))
+	}
+
+	return result, nil
+}
+
 // GetClaudeCodeProjectDir returns the Claude Code project directory for the given path.
 // If no path is provided (empty string), it uses the current working directory.
 // It resolves any symlinks in the path to match Claude Code's behavior, which uses the real path

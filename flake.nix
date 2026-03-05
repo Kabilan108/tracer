@@ -1,5 +1,5 @@
 {
-  description = "tracer CLI (session archive ingest + daemon) — x86_64-linux only";
+  description = "tracer CLI (session archive sync + watch) — x86_64-linux only";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -34,7 +34,7 @@
           doCheck = false;
 
           meta = with pkgs.lib; {
-            description = "Tracer CLI and daemon for Claude/Codex session archiving";
+            description = "Tracer CLI and watcher for Claude/Codex session archiving";
             homepage = "https://github.com/tracer-ai/tracer-cli";
             license = licenses.asl20;
             platforms = [ "x86_64-linux" ];

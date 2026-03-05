@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tracer-ai/tracer-cli/pkg/cloud"
 	"github.com/tracer-ai/tracer-cli/pkg/log"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/telemetry"
@@ -67,15 +66,13 @@ func BuildSessionFilePath(session *spi.AgentChatSession, historyDir string, useU
 
 // ProcessingOptions holds flags that control session processing behavior.
 type ProcessingOptions struct {
-	OnlyCloudSync      bool // Skip local markdown writes and only sync to cloud
 	ShowOutput         bool // Print progress to stdout
-	IsAutosave         bool // Called from run/watch (true) vs sync command (false)
 	DebugRaw           bool // Enable schema validation (only in debug mode to avoid overhead)
 	UseUTC             bool // Timestamp format: true=UTC, false=local
 	NoTelemetryPrompts bool // Exclude user prompt text from telemetry spans for privacy
 }
 
-// ProcessSingleSession writes markdown and triggers cloud sync for a single session.
+// ProcessSingleSession writes markdown for a single session.
 // ctx is used for OTel trace/span propagation (no-op when telemetry is disabled).
 // Returns the size of the markdown content in bytes.
 func ProcessSingleSession(ctx context.Context, session *spi.AgentChatSession, config utils.OutputConfig, opts ProcessingOptions) (int, error) {
@@ -146,43 +143,27 @@ func ProcessSingleSession(ctx context.Context, session *spi.AgentChatSession, co
 		}
 	}
 
-	// Write file if needed (skip if only-cloud-sync is enabled)
-	if !opts.OnlyCloudSync {
-		if !identicalContent {
-			// Ensure history directory exists (handles deletion during long-running watch/run)
-			if err := utils.EnsureHistoryDirectoryExists(config); err != nil {
-				return 0, fmt.Errorf("failed to ensure history directory: %w", err)
-			}
-			err := os.WriteFile(fileFullPath, []byte(markdownContent), 0644)
-			if err != nil {
-				return 0, fmt.Errorf("error writing markdown file: %w", err)
-			}
-
-			slog.Info("Successfully wrote file",
-				"sessionId", session.SessionID,
-				"path", fileFullPath)
+	if !identicalContent {
+		// Ensure history directory exists (handles deletion during long-running watch/run)
+		if err := utils.EnsureHistoryDirectoryExists(config); err != nil {
+			return 0, fmt.Errorf("failed to ensure history directory: %w", err)
+		}
+		err := os.WriteFile(fileFullPath, []byte(markdownContent), 0644)
+		if err != nil {
+			return 0, fmt.Errorf("error writing markdown file: %w", err)
 		}
 
-		// Determine outcome for user feedback
-		if identicalContent {
-			outcome = "up to date (skipped)"
-		} else if fileExists {
-			outcome = "updated"
-		} else {
-			outcome = "created"
-		}
-	} else {
-		// Only cloud sync mode - no local file operations
-		outcome = "synced to cloud only"
-		slog.Info("Skipping local file write (only-cloud-sync mode)",
-			"sessionId", session.SessionID)
+		slog.Info("Successfully wrote file",
+			"sessionId", session.SessionID,
+			"path", fileFullPath)
 	}
 
-	// Trigger cloud sync with provider-specific data
-	// In only-cloud-sync mode: always sync (no file to check for identical content)
-	// In normal mode: skip sync only if identical content AND in autosave mode
-	if opts.OnlyCloudSync || !identicalContent || !opts.IsAutosave {
-		cloud.SyncSessionToCloud(session.SessionID, fileFullPath, markdownContent, []byte(session.RawData), session.SessionData.Provider.Name, opts.IsAutosave)
+	if identicalContent {
+		outcome = "up to date (skipped)"
+	} else if fileExists {
+		outcome = "updated"
+	} else {
+		outcome = "created"
 	}
 
 	if opts.ShowOutput && !log.IsSilent() {

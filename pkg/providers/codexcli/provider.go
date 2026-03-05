@@ -183,8 +183,9 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 				log.UserWarn("No Codex CLI sessions were found for this directory.\n")
 				log.UserMessage("Codex CLI stores activity under ~/.codex/sessions/YYYY/MM/DD/. We couldn't find that directory.\n\n")
 				log.UserMessage("To fix this:\n")
-				log.UserMessage("  1. Run `tracer run codex` to launch Codex CLI in this project\n")
-				log.UserMessage("  2. Or start Codex CLI manually, then run `tracer sync codex` afterward\n\n")
+				log.UserMessage("  1. Start Codex CLI manually in a project directory\n")
+				log.UserMessage("  2. Run `tracer sync codex` to backfill sessions\n")
+				log.UserMessage("  3. Run `tracer watch codex` for continuous updates\n\n")
 				log.UserMessage("Expected sessions directory: %s\n", sessionsRoot)
 				fmt.Println()
 			}
@@ -215,8 +216,9 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 		log.UserMessage("Codex CLI hasn't saved a session with this working directory yet.\n")
 		log.UserMessage("Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/ as JSONL files.\n\n")
 		log.UserMessage("To fix this:\n")
-		log.UserMessage("  1. Run `tracer run codex` to launch Codex CLI here\n")
-		log.UserMessage("  2. Or open Codex CLI manually in this project, then try syncing again\n\n")
+		log.UserMessage("  1. Open Codex CLI manually in this project\n")
+		log.UserMessage("  2. Run `tracer sync codex` to backfill sessions\n")
+		log.UserMessage("  3. Run `tracer watch codex` for continuous updates\n\n")
 		log.UserMessage("Checked sessions directory: %s\n", sessionsRoot)
 		fmt.Println()
 	}
@@ -302,7 +304,7 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 
 // ExecAgentAndWatch executes the Codex CLI in interactive mode and monitors for session updates.
 // The function blocks until the Codex CLI exits. During execution, it watches for JSONL file changes
-// and invokes sessionCallback for each update, enabling real-time markdown generation and cloud sync.
+// and invokes sessionCallback for each update, enabling real-time markdown generation.
 func (p *Provider) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("ExecAgentAndWatch: Starting Codex CLI execution and monitoring",
 		"projectPath", projectPath,
@@ -315,7 +317,7 @@ func (p *Provider) ExecAgentAndWatch(projectPath string, customCommand string, r
 		slog.Info("ExecAgentAndWatch: Will resume specific Codex session", "sessionID", resumeSessionID)
 	}
 
-	// Set up the callback which enables real-time markdown generation and cloud sync during
+	// Set up the callback which enables real-time markdown generation during
 	// interactive sessions. As Codex CLI writes JSONL updates, the watcher detects changes
 	// and invokes this callback, allowing immediate processing without blocking the agent's
 	// execution. The defer ensures cleanup when the agent exits.
@@ -498,14 +500,14 @@ func findCodexSessions(projectPath string, targetSessionID string, stopOnFirst b
 						continue
 					}
 
-					// Check if this session matches the project path
-					matched := false
-					if normalizedProjectPath != "" {
-						if normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath) {
-							matched = true
+					// Empty projectPath means global mode: include every session.
+					matched := strings.TrimSpace(projectPath) == ""
+					if !matched {
+						if normalizedProjectPath != "" {
+							matched = normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath)
+						} else {
+							matched = normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath)
 						}
-					} else if normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath) {
-						matched = true
 					}
 
 					if matched {

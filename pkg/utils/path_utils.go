@@ -14,6 +14,7 @@ const HISTORY_DIR = "history"
 const DEBUG_DIR = "debug"
 const DEBUG_LOG_FILE = "debug.log"
 const STATISTICS_FILE = "statistics.json"
+const RUNTIME_STATE_DB_FILE = "runtime-state.db"
 
 // OutputConfig interface defines methods for getting output directories
 type OutputConfig interface {
@@ -117,20 +118,16 @@ func (c *OutputPathConfig) getBasePath() string {
 	if c.BaseDir != "" {
 		return c.BaseDir
 	}
-	cwd, err := os.Getwd()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return TRACER_DIR
+		return filepath.Join(TRACER_DIR, HISTORY_DIR)
 	}
-	return filepath.Join(cwd, TRACER_DIR)
+	return filepath.Join(home, ".local", "share", "tracer", "archive")
 }
 
 // GetHistoryDir returns the history directory path
 func (c *OutputPathConfig) GetHistoryDir() string {
-	basePath := c.getBasePath()
-	if c.BaseDir != "" {
-		return basePath
-	}
-	return filepath.Join(basePath, HISTORY_DIR)
+	return c.getBasePath()
 }
 
 // GetDebugDir returns the debug directory path.
@@ -139,7 +136,7 @@ func (c *OutputPathConfig) GetDebugDir() string {
 	if c.DebugBaseDir != "" {
 		return c.DebugBaseDir
 	}
-	return filepath.Join(c.getBasePath(), DEBUG_DIR)
+	return filepath.Join(c.GetTracerDir(), DEBUG_DIR)
 }
 
 // GetLogPath returns the debug log file path
@@ -150,12 +147,21 @@ func (c *OutputPathConfig) GetLogPath() string {
 // GetTracerDir returns the .tracer directory path.
 // With a custom output dir this is the output dir itself; otherwise cwd/.tracer.
 func (c *OutputPathConfig) GetTracerDir() string {
-	return c.getBasePath()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return TRACER_DIR
+	}
+	return filepath.Join(home, ".local", "state", "tracer")
 }
 
 // GetStatisticsPath returns the full path to the statistics.json file
 func (c *OutputPathConfig) GetStatisticsPath() string {
 	return filepath.Join(c.GetTracerDir(), STATISTICS_FILE)
+}
+
+// GetRuntimeStateDBPath returns the default runtime state database path.
+func (c *OutputPathConfig) GetRuntimeStateDBPath() string {
+	return filepath.Join(c.GetTracerDir(), RUNTIME_STATE_DB_FILE)
 }
 
 // ValidationError represents errors from flag validation that should not display usage
@@ -167,9 +173,9 @@ func (e ValidationError) Error() string {
 	return e.Message
 }
 
-// EnsureHistoryDirectoryExists creates the .tracer/history directory if it doesn't exist.
+// EnsureHistoryDirectoryExists creates the archive directory if it doesn't exist.
 // This should be called before writing markdown files to handle cases where the directory
-// is deleted during a long-running watch or run command.
+// is deleted during a long-running watch command.
 func EnsureHistoryDirectoryExists(config OutputConfig) error {
 	historyPath := config.GetHistoryDir()
 	if err := os.MkdirAll(historyPath, 0755); err != nil {
@@ -187,6 +193,15 @@ func EnsureHistoryDirectoryExists(config OutputConfig) error {
 	return nil
 }
 
+// EnsureStateDirectoryExists creates the runtime state directory if it does not exist.
+func EnsureStateDirectoryExists(config *OutputPathConfig) error {
+	statePath := config.GetTracerDir()
+	if err := os.MkdirAll(statePath, 0o755); err != nil {
+		return fmt.Errorf("error creating state directory: %v", err)
+	}
+	return nil
+}
+
 // SetupOutputConfig creates and configures the output configuration.
 // outputDir is the markdown output directory; debugDir is the debug output directory.
 func SetupOutputConfig(outputDir string, debugDir string) (*OutputPathConfig, error) {
@@ -195,13 +210,4 @@ func SetupOutputConfig(outputDir string, debugDir string) (*OutputPathConfig, er
 		return nil, err
 	}
 	return config, nil
-}
-
-// GetAuthPath returns the path to the auth.json file
-func GetAuthPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".tracer", "cli", "auth.json"), nil
 }

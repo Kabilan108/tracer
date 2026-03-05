@@ -41,7 +41,7 @@ tracer check`)
 		Short: "Check if the configuration is valid and terminal coding agents are properly installed",
 		Long: `Check if the configuration is valid and terminal coding agents are properly installed and can be invoked by Tracer.
 
-Ensures the user level and project level configuration files are valid.
+Ensures the user-level configuration file is valid.
 
 By default, checks all registered coding agents providers.
 Specify a specific agent ID to check only a specific coding agent.`,
@@ -134,8 +134,8 @@ func checkSingleProvider(registry *factory.Registry, providerID, customCmd strin
 
 		fmt.Println("🚀 Ready to sync your sessions! 💪")
 		normalizedID := strings.ToLower(providerID)
-		fmt.Printf("   • tracer run %s\n", normalizedID)
-		fmt.Println("   • tracer sync - Save markdown files for existing sessions")
+		fmt.Printf("   • tracer sync %s\n", normalizedID)
+		fmt.Printf("   • tracer watch %s\n", normalizedID)
 		fmt.Println()
 
 		return nil
@@ -192,11 +192,11 @@ func checkAllProviders(registry *factory.Registry) error {
 	// Show ready message if at least one provider is working
 	if anySuccess {
 		printDivider()
-		fmt.Println("\n🚀 Ready to sync your sessions! 💪")
+		fmt.Println("\n🚀 Ready to archive your sessions! 💪")
 		for _, info := range successfulProviders {
-			fmt.Printf("   • tracer run %s\n", info.id)
+			fmt.Printf("   • tracer sync %s\n", info.id)
+			fmt.Printf("   • tracer watch %s\n", info.id)
 		}
-		fmt.Println("   • tracer sync - Save markdown files for existing sessions")
 		fmt.Println()
 	} else {
 		printDivider()
@@ -221,37 +221,26 @@ func checkAllProviders(registry *factory.Registry) error {
 	return nil
 }
 
-// checkConfigFiles validates user-level and project-level config files.
+// checkConfigFiles validates the user-level config file.
 // Returns true if all existing config files are valid, false if any have errors.
 func checkConfigFiles() bool {
 	fmt.Println("\n📋 Configuration Files")
 
 	allOK := true
-	checked := 0
+	checked := false
 
 	// Check user-level config
 	userPath := config.GetUserConfigPath()
 	if userPath != "" {
 		result := config.ValidateConfigFile(userPath)
-		checked++
+		checked = true
 		printConfigResult("User config", result)
 		if result.Exists && (!result.ValidTOML || len(result.UnknownKeys) > 0) {
 			allOK = false
 		}
 	}
 
-	// Check project-level config
-	localPath := config.GetLocalConfigPath()
-	if localPath != "" {
-		result := config.ValidateConfigFile(localPath)
-		checked++
-		printConfigResult("Project config", result)
-		if result.Exists && (!result.ValidTOML || len(result.UnknownKeys) > 0) {
-			allOK = false
-		}
-	}
-
-	if checked == 0 {
+	if !checked {
 		fmt.Println("  ⚠️  Could not determine config file paths")
 	}
 
