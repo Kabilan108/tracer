@@ -15,22 +15,22 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
-// CreateCheckCommand dynamically creates the check command with provider information.
-func CreateCheckCommand() *cobra.Command {
+// CreateConfigCheckCommand creates the config check command.
+func CreateConfigCheckCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	ids := registry.ListIDs()
 
 	var examplesBuilder strings.Builder
 	examplesBuilder.WriteString(`
 # Check all coding agents
-tracer check`)
+tracer config check`)
 
 	if len(ids) > 0 {
 		examplesBuilder.WriteString("\n\n# Check specific coding agent")
 		for _, id := range ids {
-			fmt.Fprintf(&examplesBuilder, "\ntracer check %s", id)
+			fmt.Fprintf(&examplesBuilder, "\ntracer config check %s", id)
 		}
-		fmt.Fprintf(&examplesBuilder, "\n\n# Check a specific coding agent with a custom command\ntracer check %s -c \"/custom/path/to/agent\"", ids[0])
+		fmt.Fprintf(&examplesBuilder, "\n\n# Check a specific coding agent with a custom command\ntracer config check %s -c \"/custom/path/to/agent\"", ids[0])
 	}
 	examples := examplesBuilder.String()
 
@@ -46,15 +46,15 @@ Specify a specific agent ID to check only a specific coding agent.`,
 		Example: examples,
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			slog.Info("Running in check-install mode")
+			slog.Info("Running config check")
 			registry := factory.GetRegistry()
 
 			customCmd, _ := cmd.Flags().GetString("command")
 			if customCmd != "" && len(args) == 0 {
 				ids := registry.ListIDs()
-				example := "tracer check <provider> -c \"/custom/path/to/agent\""
+				example := "tracer config check <provider> -c \"/custom/path/to/agent\""
 				if len(ids) > 0 {
-					example = fmt.Sprintf("tracer check %s -c \"/custom/path/to/agent\"", ids[0])
+					example = fmt.Sprintf("tracer config check %s -c \"/custom/path/to/agent\"", ids[0])
 				}
 				return utils.ValidationError{
 					Message: "The -c/--command flag requires a provider to be specified.\n" +
@@ -107,7 +107,7 @@ func checkSingleProvider(registry *factory.Registry, providerID, customCmd strin
 					fmt.Printf("%s  %s\n", ui.Command(id), p.Name())
 				}
 			}
-			fmt.Printf("\nExample: %s\n", tracerCommand("check", ids[0]))
+			fmt.Printf("\nExample: %s\n", tracerCommand("config", "check", ids[0]))
 		}
 		return err
 	}
@@ -181,9 +181,9 @@ func checkAllProviders(registry *factory.Registry) error {
 	fmt.Println("Install at least one provider to use Tracer.")
 
 	if len(ids) > 0 {
-		fmt.Printf("Example: %s\n", tracerCommand("check", ids[0]))
+		fmt.Printf("Example: %s\n", tracerCommand("config", "check", ids[0]))
 	} else {
-		fmt.Printf("Example: %s\n", tracerCommand("check", "<provider>"))
+		fmt.Printf("Example: %s\n", tracerCommand("config", "check", "<provider>"))
 	}
 
 	return errors.New("check failed")

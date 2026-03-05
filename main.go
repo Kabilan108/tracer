@@ -958,13 +958,13 @@ func main() {
 	syncCmd := createSyncCommand()
 	watchCmd := createWatchCommand()
 	listCmd := createListCommand()
-	checkCmd := cmdpkg.CreateCheckCommand()
+	configCmd := cmdpkg.CreateConfigCommand()
 	versionCmd := cmdpkg.CreateVersionCommand(version)
 
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(checkCmd)
+	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	rootCmd.PersistentFlags().BoolVar(&noVersionCheck, "no-version-check", noVersionCheck, "skip checking for newer versions")

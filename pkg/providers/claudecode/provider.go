@@ -126,7 +126,7 @@ func buildCheckErrorMessage(errorType string, claudeCmd string, isCustom bool, s
 			errorMsg.WriteString("  https://docs.claude.com/en/docs/claude-code/quickstart\n")
 			errorMsg.WriteString("- If installed already, check whether `claude` is in PATH.\n")
 			errorMsg.WriteString("- Use `-c` to point to an absolute binary path.\n")
-			errorMsg.WriteString("- Example: tracer check claude -c \"~/.claude/local/claude\"")
+			errorMsg.WriteString("- Example: tracer config check claude -c \"~/.claude/local/claude\"")
 		}
 	case "permission_denied":
 		fmt.Fprintf(&errorMsg, "Permission denied when trying to run: %s\n\n", claudeCmd)

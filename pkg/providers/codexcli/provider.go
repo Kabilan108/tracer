@@ -75,7 +75,7 @@ func buildCheckErrorMessage(errorType string, codexCmd string, isCustom bool, st
 			errorMsg.WriteString("  npm: $(npm bin -g)/codex (npm install -g codex)\n")
 			errorMsg.WriteString("- If installed already, ensure `codex` is in PATH.\n")
 			errorMsg.WriteString("- Use `-c` to specify the full path.\n")
-			errorMsg.WriteString("- Example: tracer check codex -c \"/opt/local/bin/codex\"")
+			errorMsg.WriteString("- Example: tracer config check codex -c \"/opt/local/bin/codex\"")
 		}
 	case "permission_denied":
 		fmt.Fprintf(&errorMsg, "Permission denied when trying to run: %s\n\n", codexCmd)
