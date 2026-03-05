@@ -16,7 +16,7 @@ import (
 
 const PROJECT_JSON_FILE = ".project.json"
 
-// ProjectIdentity represents the project identity stored in .specstory/.project.json
+// ProjectIdentity represents the project identity stored in .tracer/.project.json
 type ProjectIdentity struct {
 	WorkspaceID   string `json:"workspace_id"`
 	WorkspaceIDAt string `json:"workspace_id_at"`
@@ -37,9 +37,9 @@ func NewProjectIdentityManager(projectRoot string) *ProjectIdentityManager {
 	}
 }
 
-// getProjectJSONPath returns the path to .specstory/.project.json
+// getProjectJSONPath returns the path to .tracer/.project.json
 func (m *ProjectIdentityManager) getProjectJSONPath() string {
-	return filepath.Join(m.projectRoot, SPECSTORY_DIR, PROJECT_JSON_FILE)
+	return filepath.Join(m.projectRoot, TRACER_DIR, PROJECT_JSON_FILE)
 }
 
 // EnsureProjectIdentity initializes or updates the project identity
@@ -47,10 +47,10 @@ func (m *ProjectIdentityManager) getProjectJSONPath() string {
 func (m *ProjectIdentityManager) EnsureProjectIdentity() (bool, error) {
 	slog.Debug("Ensuring project identity", "projectRoot", m.projectRoot)
 
-	// Ensure .specstory directory exists (create if needed)
-	specstoryDir := filepath.Join(m.projectRoot, SPECSTORY_DIR)
-	if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-		return false, fmt.Errorf("failed to create .specstory directory: %w", err)
+	// Ensure .tracer directory exists (create if needed)
+	tracerDir := filepath.Join(m.projectRoot, TRACER_DIR)
+	if err := os.MkdirAll(tracerDir, 0755); err != nil {
+		return false, fmt.Errorf("failed to create .tracer directory: %w", err)
 	}
 
 	// Read existing project identity if it exists

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
 )
 
 // WatchAgents starts watchers for all registered providers concurrently.

@@ -3,7 +3,7 @@ package spi
 import (
 	"context"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 // CheckResult contains the result of a provider check operation
@@ -55,14 +55,14 @@ type Provider interface {
 	// GetAgentChatSession retrieves a single chat session by ID for the given project path
 	// projectPath: Agent's working directory
 	// sessionID: specific session identifier to retrieve (always provided, never empty)
-	// debugRaw: if true, provider should write provider-specific raw debug files to .specstory/debug/<sessionID>/
+	// debugRaw: if true, provider should write provider-specific raw debug files to .tracer/debug/<sessionID>/
 	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
 	// Returns nil if the session is not found, error for actual errors
 	GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*AgentChatSession, error)
 
 	// GetAgentChatSessions retrieves all chat sessions for the given project path
 	// projectPath: Agent's working directory
-	// debugRaw: if true, provider should write provider-specific raw debug files to .specstory/debug/<sessionID>/
+	// debugRaw: if true, provider should write provider-specific raw debug files to .tracer/debug/<sessionID>/
 	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
 	// progress: optional callback for reporting progress during parsing (nil = no progress reporting)
 	// Returns a slice of AgentChatSession structs containing session data
@@ -79,7 +79,7 @@ type Provider interface {
 	// projectPath: Agent's working directory
 	// customCommand: empty string = use detected/default binary with default args, non-empty = use this specific command/path
 	// resumeSessionID: empty string = start new session, non-empty = resume this specific session ID
-	// debugRaw: if true, provider should write provider-specific raw debug files to .specstory/debug/<sessionID>/
+	// debugRaw: if true, provider should write provider-specific raw debug files to .tracer/debug/<sessionID>/
 	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
 	// sessionCallback is called with each session update (provider should not block on callback)
 	// The implementation should handle its own file watching and session tracking
@@ -90,7 +90,7 @@ type Provider interface {
 	// Runs until error or context cancellation
 	// ctx: Context for cancellation and timeout control
 	// projectPath: Agent's working directory
-	// debugRaw: if true, provider should write provider-specific raw debug files to .specstory/debug/<sessionID>/
+	// debugRaw: if true, provider should write provider-specific raw debug files to .tracer/debug/<sessionID>/
 	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
 	// sessionCallback: called with AgentChatSession on each update (provider should not block on callback)
 	// The implementation should handle its own file watching and session tracking

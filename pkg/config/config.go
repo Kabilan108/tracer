@@ -1,8 +1,8 @@
-// Package config provides configuration management for the SpecStory CLI.
+// Package config provides configuration management for the Tracer CLI.
 // Configuration is loaded with the following priority (highest to lowest):
 //  1. CLI flags
-//  2. Local project config: .specstory/cli/config.toml
-//  3. User-level config: ~/.specstory/cli/config.toml
+//  2. Local project config: .tracer/cli/config.toml
+//  3. User-level config: ~/.tracer/cli/config.toml
 //
 // Note: For telemetry settings, environment variables (OTEL_*) take highest priority
 // per OpenTelemetry conventions.
@@ -21,51 +21,51 @@ import (
 const (
 	// ConfigFileName is the name of the configuration file
 	ConfigFileName = "config.toml"
-	// SpecStoryDir is the directory name for SpecStory files
-	SpecStoryDir = ".specstory"
+	// TracerDir is the directory name for Tracer files
+	TracerDir = ".tracer"
 	// CLIDir is the subdirectory for CLI-specific files (config, auth, etc.)
 	CLIDir = "cli"
 )
 
 // defaultConfigTemplate is the content written to a newly created config file.
 // All options are commented out so the file is self-documenting but inert.
-const defaultConfigTemplate = `# SpecStory CLI Configuration
+const defaultConfigTemplate = `# Tracer CLI Configuration
 #
-# {u This is the user-level config file for SpecStory CLI.
+# {u This is the user-level config file for Tracer CLI.
 # All settings here apply to every project unless overridden
-# by a project-level config at ./.specstory/cli/config.toml
+# by a project-level config at ./.tracer/cli/config.toml
 # or overridden by CLI flags.}
-# {p This is the project-level config file for SpecStory CLI.
+# {p This is the project-level config file for Tracer CLI.
 # All settings here apply to this project unless overridden by CLI flags.}
 #
 # Uncomment (remove the #) the line and edit any setting below to change the default behavior.
-# For more information, see: https://docs.specstory.com/integrations/terminal-coding-agents/usage
+# For more information, see: https://docs.tracer.com/integrations/terminal-coding-agents/usage
 
 [local_sync]
 # Write markdown files locally. (default: true)
 # enabled = false # equivalent to --only-cloud-sync
 
 # Custom output directory for markdown files.
-# Default: ./.specstory/history (relative to the project directory)
-# output_dir = "~/.specstory/history" # equivalent to --output-dir "~/.specstory/history"
+# Default: ./.tracer/history (relative to the project directory)
+# output_dir = "~/.tracer/history" # equivalent to --output-dir "~/.tracer/history"
 
 # Use local timezone for file name and content timestamps (default: false, UTC)
 # local_time_zone = true # equivalent to --local-time-zone
 
 [cloud_sync]
-# Sync session data to SpecStory Cloud. (default: true, when logged in to SpecStory Cloud)
+# Sync session data to Tracer Cloud. (default: true, when logged in to Tracer Cloud)
 # enabled = false # equivalent to --no-cloud-sync
 
 [logging]
-# Write logs to .specstory/debug/debug.log (default: false)
+# Write logs to .tracer/debug/debug.log (default: false)
 # log = true # equivalent to --log        
 
 # Debug-level output, requires console or log (default: false)
 # debug = true # equivalent to --debug 
 
 # Custom output directory for debug data.
-# Default: ./.specstory/debug (relative to the project directory)
-# debug_dir = "~/.specstory/debug" # equivalent to --debug-dir "~/.specstory/debug"
+# Default: ./.tracer/debug (relative to the project directory)
+# debug_dir = "~/.tracer/debug" # equivalent to --debug-dir "~/.tracer/debug"
 
 # Error/warn/info output to stdout (default: false)
 # console = true # equivalent to --console
@@ -82,14 +82,14 @@ const defaultConfigTemplate = `# SpecStory CLI Configuration
 # OTLP gRPC collector endpoint (e.g., "localhost:4317" or "http://localhost:4317")
 # endpoint = "localhost:4317"
 
-# Override the default service name (default: "specstory-cli")
+# Override the default service name (default: "tracer-cli")
 # service_name = "my-service-name"
 
 # Include user prompt text in telemetry spans (default: true)
 # prompts = false
 
 [providers]
-# Agent execution commands by provider (used by specstory run)
+# Agent execution commands by provider (used by tracer run)
 # Pass custom flags (e.g. claude_cmd = "claude --allow-dangerously-skip-permissions")
 # Use of these is equivalent to -c "custom command"
 
@@ -102,7 +102,7 @@ const defaultConfigTemplate = `# SpecStory CLI Configuration
 [archive]
 # Global archive root for generated markdown.
 # Sessions are written as: provider/project/session.md
-# root_dir = "~/.specstory/archive"
+# root_dir = "~/.tracer/archive"
 
 [ingest]
 # Limit ingest/daemon processing to these providers.
@@ -157,7 +157,7 @@ type LoggingConfig struct {
 	DebugDir string `toml:"debug_dir"`
 	// Console enables error/warn/info output to stdout
 	Console *bool `toml:"console"`
-	// Log enables writing error/warn/info output to .specstory/debug/debug.log
+	// Log enables writing error/warn/info output to .tracer/debug/debug.log
 	Log *bool `toml:"log"`
 	// Debug enables debug-level output (requires Console or Log)
 	Debug *bool `toml:"debug"`
@@ -172,18 +172,18 @@ type TelemetryConfig struct {
 	// Env var: OTEL_EXPORTER_OTLP_ENDPOINT
 	Endpoint string `toml:"endpoint"`
 
-	// ServiceName overrides the default service name ("specstory-cli")
+	// ServiceName overrides the default service name ("tracer-cli")
 	// Env var: OTEL_SERVICE_NAME
 	ServiceName string `toml:"service_name"`
 
 	// Prompts controls whether user prompt text is included in telemetry spans.
 	// Defaults to true (prompts are included). Set to false to exclude prompt text
-	// from the specstory.exchange.prompt_text attribute for privacy.
+	// from the tracer.exchange.prompt_text attribute for privacy.
 	Prompts *bool `toml:"prompts"`
 }
 
 // ProvidersConfig holds custom agent execution commands by provider.
-// These are used by `specstory run` as the equivalent of the -c flag,
+// These are used by `tracer run` as the equivalent of the -c flag,
 // scoped to a specific provider.
 type ProvidersConfig struct {
 	ClaudeCmd string `toml:"claude_cmd"`
@@ -281,34 +281,34 @@ func Load(cliOverrides *CLIOverrides) (*Config, error) {
 	return cfg, nil
 }
 
-// GetUserConfigPath returns the path to ~/.specstory/cli/config.toml
+// GetUserConfigPath returns the path to ~/.tracer/cli/config.toml
 func GetUserConfigPath() string {
 	return getUserConfigPath()
 }
 
-// GetLocalConfigPath returns the path to .specstory/cli/config.toml in the current directory
+// GetLocalConfigPath returns the path to .tracer/cli/config.toml in the current directory
 func GetLocalConfigPath() string {
 	return getLocalConfigPath()
 }
 
-// getUserConfigPath returns the path to ~/.specstory/cli/config.toml
+// getUserConfigPath returns the path to ~/.tracer/cli/config.toml
 func getUserConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		slog.Debug("Could not determine home directory", "error", err)
 		return ""
 	}
-	return filepath.Join(home, SpecStoryDir, CLIDir, ConfigFileName)
+	return filepath.Join(home, TracerDir, CLIDir, ConfigFileName)
 }
 
-// getLocalConfigPath returns the path to .specstory/cli/config.toml in the current directory
+// getLocalConfigPath returns the path to .tracer/cli/config.toml in the current directory
 func getLocalConfigPath() string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		slog.Debug("Could not determine current directory", "error", err)
 		return ""
 	}
-	return filepath.Join(cwd, SpecStoryDir, CLIDir, ConfigFileName)
+	return filepath.Join(cwd, TracerDir, CLIDir, ConfigFileName)
 }
 
 // processTemplate processes the default config template for a given level
@@ -430,7 +430,7 @@ func ensureDefaultUserConfig(path string) {
 }
 
 // EnsureDefaultProjectConfig creates a default project-level config file at
-// .specstory/cli/config.toml if one doesn't already exist. All options are
+// .tracer/cli/config.toml if one doesn't already exist. All options are
 // commented out so the file is self-documenting but inert.
 //
 // This should only be called from commands that imply active project work

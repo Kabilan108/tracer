@@ -402,7 +402,7 @@ func TestConvertToAgentChatSession(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Note: debugRaw=true will attempt to write debug files to .specstory/debug/
+			// Note: debugRaw=true will attempt to write debug files to .tracer/debug/
 			// This is acceptable for testing as it exercises the real code path
 			result := convertToAgentChatSession(tt.session, "/test/workspace", tt.debugRaw)
 

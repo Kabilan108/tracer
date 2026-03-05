@@ -14,18 +14,18 @@ import (
 	"github.com/charmbracelet/fang"
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
-	cmdpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/cmd" // Aliased to avoid shadowing cobra's `cmd` parameter
+	"github.com/tracer-ai/tracer-cli/pkg/cloud"
+	cmdpkg "github.com/tracer-ai/tracer-cli/pkg/cmd" // Aliased to avoid shadowing cobra's `cmd` parameter
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/engine"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/provenance"
-	sessionpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/session"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/telemetry"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	"github.com/tracer-ai/tracer-cli/pkg/config"
+	"github.com/tracer-ai/tracer-cli/pkg/engine"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/provenance"
+	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/telemetry"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 // The current version of the CLI
@@ -149,14 +149,14 @@ tracer sync -s <session-id-1> -s <session-id-2>
 # Watch for any agent activity in the current directory and generate markdown files
 tracer watch`
 
-	longDesc := `SpecStory is a wrapper for terminal coding agents that auto-saves markdown files of all your chat interactions.`
+	longDesc := `Tracer is a wrapper for terminal coding agents that auto-saves markdown files of all your chat interactions.`
 	if providerList != "No providers registered" {
 		longDesc += "\n\nSupported agents: " + providerList + "."
 	}
 
 	return &cobra.Command{
 		Use:               "tracer [command]",
-		Short:             "SpecStory auto-saves terminal coding agent chat interactions",
+		Short:             "Tracer auto-saves terminal coding agent chat interactions",
 		Long:              longDesc,
 		Example:           examples,
 		SilenceUsage:      true,
@@ -188,7 +188,7 @@ tracer watch`
 				}
 
 				// Log startup information
-				slog.Info("=== SpecStory Starting ===")
+				slog.Info("=== Tracer Starting ===")
 				slog.Info("Version", "version", version)
 				slog.Info("Command line", "args", strings.Join(os.Args, " "))
 				if cwd, err := os.Getwd(); err == nil {
@@ -224,7 +224,7 @@ tracer watch`
 					fmt.Fprintf(os.Stderr, "   %v\n", err)
 					fmt.Fprintln(os.Stderr)
 					fmt.Fprintln(os.Stderr, "💡 The token may be invalid, expired, or revoked.")
-					fmt.Fprintln(os.Stderr, "   Please check your token and try again, or use 'specstory login' for interactive authentication.")
+					fmt.Fprintln(os.Stderr, "   Please check your token and try again, or use 'tracer login' for interactive authentication.")
 					fmt.Fprintln(os.Stderr)
 					return fmt.Errorf("authentication failed with provided token")
 				}
@@ -237,14 +237,14 @@ tracer watch`
 
 			// Validate that --only-cloud-sync requires authentication
 			if onlyCloudSync && !cloud.IsAuthenticated() {
-				return utils.ValidationError{Message: "--only-cloud-sync requires authentication. Please run 'specstory login' first"}
+				return utils.ValidationError{Message: "--only-cloud-sync requires authentication. Please run 'tracer login' first"}
 			}
 
 			return nil
 		},
 		Run: func(c *cobra.Command, args []string) {
 			// If no command is specified, show logo then help
-			cmdpkg.DisplayLogoAndHelp(c)
+			cmdpkg.DisplayHelp(c)
 		},
 	}
 }
@@ -260,25 +260,25 @@ func createRunCommand() *cobra.Command {
 	// Build dynamic examples
 	examples := `
 # Run default agent with auto-saving
-specstory run`
+tracer run`
 
 	if len(ids) > 0 {
 		examples += "\n\n# Run specific agent"
 		for _, id := range ids {
-			examples += fmt.Sprintf("\nspecstory run %s", id)
+			examples += fmt.Sprintf("\ntracer run %s", id)
 		}
 
 		// Use first provider for custom command example
-		examples += fmt.Sprintf("\n\n# Run with custom command\nspecstory run %s -c \"/custom/path/to/agent\"", ids[0])
+		examples += fmt.Sprintf("\n\n# Run with custom command\ntracer run %s -c \"/custom/path/to/agent\"", ids[0])
 	}
 
 	examples += `
 
 # Resume a specific session
-specstory run --resume 5c5c2876-febd-4c87-b80c-d0655f1cd3fd
+tracer run --resume 5c5c2876-febd-4c87-b80c-d0655f1cd3fd
 
 # Run with custom output directory
-specstory run --output-dir ~/my-sessions`
+tracer run --output-dir ~/my-sessions`
 
 	// Determine default agent name
 	defaultAgent := "the default agent"
@@ -310,9 +310,9 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 			if customCmd != "" && len(args) == 0 {
 				registry := factory.GetRegistry()
 				ids := registry.ListIDs()
-				example := "specstory run <provider> -c \"/custom/path/to/agent\""
+				example := "tracer run <provider> -c \"/custom/path/to/agent\""
 				if len(ids) > 0 {
-					example = fmt.Sprintf("specstory run %s -c \"/custom/path/to/agent\"", ids[0])
+					example = fmt.Sprintf("tracer run %s -c \"/custom/path/to/agent\"", ids[0])
 				}
 				return utils.ValidationError{
 					Message: "The -c/--command flag requires a provider to be specified.\n" +
@@ -356,7 +356,7 @@ By default, launches %s. Specify a specific agent ID to use a different agent.`,
 							fmt.Printf("  • %s - %s\n", id, p.Name())
 						}
 					}
-					fmt.Println("\nExample: specstory run " + ids[0])
+					fmt.Println("\nExample: tracer run " + ids[0])
 				}
 				return err
 			}
@@ -587,7 +587,7 @@ func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, projectPath s
 	return engine.Options{
 		HistoryDir:     config.GetHistoryDir(),
 		StatisticsPath: config.GetStatisticsPath(),
-		StateDBPath:    filepath.Join(config.GetSpecStoryDir(), "runtime-state.db"),
+		StateDBPath:    filepath.Join(config.GetTracerDir(), "runtime-state.db"),
 		UseUTC:         useUTC,
 		Debounce:       debounce,
 		PathBuilder:    archivePathBuilder(config, projectPath),
@@ -655,10 +655,10 @@ func createIngestCommand() *cobra.Command {
 		},
 	}
 
-	ingestCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.specstory/history)")
+	ingestCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.tracer/history)")
 	ingestCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (deprecated; use --archive-root)")
 	_ = ingestCmd.Flags().MarkHidden("output-dir")
-	ingestCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	ingestCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.tracer/debug)")
 	ingestCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
 	ingestCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")
 	_ = ingestCmd.Flags().MarkHidden("debug-raw")
@@ -722,7 +722,7 @@ func createDaemonCommand() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			lockPath := filepath.Join(outputConfig.GetSpecStoryDir(), "daemon.lock")
+			lockPath := filepath.Join(outputConfig.GetTracerDir(), "daemon.lock")
 			lockFile, err := acquireDaemonLock(lockPath)
 			if err != nil {
 				return err
@@ -743,10 +743,10 @@ func createDaemonCommand() *cobra.Command {
 		},
 	}
 
-	runCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.specstory/history)")
+	runCmd.Flags().StringVar(&outputDir, "archive-root", outputDir, "global archive root for markdown output (default: ./.tracer/history)")
 	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (deprecated; use --archive-root)")
 	_ = runCmd.Flags().MarkHidden("output-dir")
-	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.tracer/debug)")
 	runCmd.Flags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file name and content timestamps (when not present: UTC)")
 	runCmd.Flags().DurationVar(&debounce, "debounce", 750*time.Millisecond, "debounce duration for write updates")
 	runCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")
@@ -765,34 +765,34 @@ func createSyncCommand() *cobra.Command {
 	// Build dynamic examples
 	examples := `
 # Sync all agents with activity
-specstory sync`
+tracer sync`
 
 	if len(ids) > 0 {
 		examples += "\n\n# Sync specific agent"
 		for _, id := range ids {
-			examples += fmt.Sprintf("\nspecstory sync %s", id)
+			examples += fmt.Sprintf("\ntracer sync %s", id)
 		}
 	}
 
 	examples += `
 
 # Sync a specific session by UUID
-specstory sync -s <session-id>
+tracer sync -s <session-id>
 
 # Sync multiple sessions
-specstory sync -s <session-id-1> -s <session-id-2> -s <session-id-3>
+tracer sync -s <session-id-1> -s <session-id-2> -s <session-id-3>
 
 # Output session markdown to stdout without saving
-specstory sync -s <session-id> --print
+tracer sync -s <session-id> --print
 
 # Output multiple sessions to stdout
-specstory sync -s <session-id-1> -s <session-id-2> --print
+tracer sync -s <session-id-1> -s <session-id-2> --print
 
 # Sync all sessions for the current directory, with console output
-specstory sync --console
+tracer sync --console
 
 # Sync all sessions for the current directory, with a log file
-specstory sync --log`
+tracer sync --log`
 
 	longDesc := `Create or update markdown files for the agent sessions in the current working directory.
 
@@ -1036,7 +1036,7 @@ func syncSpecificSessions(cmd *cobra.Command, args []string, sessionIDs []string
 //
 // The function only performs the preload if:
 //   - Cloud sync is enabled (noCloudSync flag is false)
-//   - User is authenticated with SpecStory Cloud
+//   - User is authenticated with Tracer Cloud
 //   - A valid projectID can be determined from the identity manager
 //
 // Parameters:
@@ -1132,7 +1132,7 @@ func syncProvider(provider spi.Provider, providerID string, config utils.OutputC
 			sessionCtx := telemetry.ContextWithSessionTrace(ctx, session.SessionID)
 
 			// Start an OTel span for this session processing
-			sessionCtx, span := telemetry.Tracer("specstory").Start(sessionCtx, "process_session")
+			sessionCtx, span := telemetry.Tracer("tracer").Start(sessionCtx, "process_session")
 			defer span.End()
 
 			// Compute session statistics
@@ -1304,8 +1304,8 @@ func syncAllProviders(registry *factory.Registry, cmd *cobra.Command) error {
 			log.UserMessage("\nBut didn't find any activity.\n\n")
 
 			log.UserMessage("To fix this:\n")
-			log.UserMessage("  1. Run 'specstory run' to start the default agent in this directory\n")
-			log.UserMessage("  2. Run 'specstory run <agent>' to start a specific agent in this directory\n")
+			log.UserMessage("  1. Run 'tracer run' to start the default agent in this directory\n")
+			log.UserMessage("  2. Run 'tracer run <agent>' to start a specific agent in this directory\n")
 			log.UserMessage("  3. Or run the agent directly first, then try syncing again\n")
 			fmt.Println() // Add trailing newline
 		}
@@ -1401,7 +1401,7 @@ func syncSingleProvider(registry *factory.Registry, providerID string, cmd *cobr
 					fmt.Printf("  • %s - %s\n", id, p.Name())
 				}
 			}
-			fmt.Println("\nExample: specstory sync " + ids[0])
+			fmt.Println("\nExample: tracer sync " + ids[0])
 		}
 		return err
 	}
@@ -1609,9 +1609,9 @@ func main() {
 	rootCmd.Version = version
 
 	// Override the default version template to match our version command output
-	rootCmd.SetVersionTemplate("{{.Version}} (SpecStory)")
+	rootCmd.SetVersionTemplate("{{.Version}} (Tracer)")
 
-	// Set our custom help command (for "specstory help")
+	// Set our custom help command (for "tracer help")
 	helpCmd := cmdpkg.CreateHelpCommand(rootCmd)
 	rootCmd.SetHelpCommand(helpCmd)
 
@@ -1630,18 +1630,18 @@ func main() {
 	// Global flags available on all commands
 	// Use current variable values as defaults so config file values are preserved
 	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
-	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ./.specstory/debug/debug.log")
+	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ./.tracer/debug/debug.log")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
 	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
 	rootCmd.PersistentFlags().BoolVar(&noVersionCheck, "no-version-check", noVersionCheck, "skip checking for newer versions")
-	rootCmd.PersistentFlags().StringVar(&cloudToken, "cloud-token", "", "use a SpecStory Cloud refresh token for this session (bypasses login)")
+	rootCmd.PersistentFlags().StringVar(&cloudToken, "cloud-token", "", "use a Tracer Cloud refresh token for this session (bypasses login)")
 	_ = rootCmd.PersistentFlags().MarkHidden("cloud-token") // Hidden flag
 
 	// Command-specific flags
 	syncCmd.Flags().StringSliceP("session", "s", []string{}, "optional session IDs to sync (can be specified multiple times, provider-specific format)")
 	syncCmd.Flags().BoolVar(&printToStdout, "print", printToStdout, "output session markdown to stdout instead of saving (requires -s flag)")
-	syncCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
-	syncCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	syncCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.tracer/history)")
+	syncCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.tracer/debug)")
 	syncCmd.Flags().BoolVar(&noCloudSync, "no-cloud-sync", noCloudSync, "disable cloud sync functionality")
 	syncCmd.Flags().BoolVar(&onlyCloudSync, "only-cloud-sync", onlyCloudSync, "skip local markdown file saves, only upload to cloud (requires authentication)")
 	syncCmd.Flags().BoolVar(&onlyStats, "only-stats", onlyStats, "only update statistics, skip local markdown files and cloud sync")
@@ -1658,8 +1658,8 @@ func main() {
 	_ = runCmd.Flags().MarkHidden("provenance") // Hidden flag
 	runCmd.Flags().StringP("command", "c", "", "custom agent execution command for the provider")
 	runCmd.Flags().String("resume", "", "resume a specific session by ID")
-	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.specstory/history)")
-	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	runCmd.Flags().StringVar(&outputDir, "output-dir", outputDir, "custom output directory for markdown files (default: ./.tracer/history)")
+	runCmd.Flags().StringVar(&debugDir, "debug-dir", debugDir, "custom output directory for debug data (default: ./.tracer/debug)")
 	runCmd.Flags().BoolVar(&noCloudSync, "no-cloud-sync", noCloudSync, "disable cloud sync functionality")
 	runCmd.Flags().BoolVar(&onlyCloudSync, "only-cloud-sync", onlyCloudSync, "skip local markdown file saves, only upload to cloud (requires authentication)")
 	runCmd.Flags().StringVar(&cloudURL, "cloud-url", "", "override the default cloud API base URL")
@@ -1699,7 +1699,7 @@ func main() {
 	// Ensure proper cleanup and logging on exit
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("=== SpecStory PANIC ===", "panic", r)
+			slog.Error("=== Tracer PANIC ===", "panic", r)
 			// Still try to wait for cloud sync even on panic
 			_ = cloud.Shutdown(cloud.CloudSyncTimeout)
 			log.CloseLogger()
@@ -1746,7 +1746,7 @@ func main() {
 				}
 				fmt.Println()
 
-				// Display link to SpecStory Cloud (deep link to session if from run command)
+				// Display link to Tracer Cloud (deep link to session if from run command)
 				cwd, cwdErr := os.Getwd()
 				if cwdErr == nil {
 					identityManager := utils.NewProjectIdentityManager(cwd)
@@ -1754,11 +1754,11 @@ func main() {
 						fmt.Printf("💡 Search and chat with your AI conversation history at:\n")
 						if lastRunSessionID != "" {
 							// Deep link to the specific session from run command
-							fmt.Printf("   %shttps://cloud.specstory.com/projects/%s/sessions/%s%s\n\n",
+							fmt.Printf("   %shttps://cloud.tracer.com/projects/%s/sessions/%s%s\n\n",
 								log.ColorBoldCyan, projectID, lastRunSessionID, log.ColorReset)
 						} else {
 							// Link to project overview for sync command
-							fmt.Printf("   %shttps://cloud.specstory.com/projects/%s%s\n\n",
+							fmt.Printf("   %shttps://cloud.tracer.com/projects/%s%s\n\n",
 								log.ColorBoldCyan, projectID, log.ColorReset)
 						}
 					}
@@ -1767,7 +1767,7 @@ func main() {
 		}
 
 		if console || logFile {
-			slog.Info("=== SpecStory Exiting ===", "code", 0, "status", "normal termination")
+			slog.Info("=== Tracer Exiting ===", "code", 0, "status", "normal termination")
 		}
 		log.CloseLogger()
 	}()
@@ -1777,7 +1777,7 @@ func main() {
 		executedCmd, _, _ := rootCmd.Find(os.Args[1:])
 		if executedCmd == checkCmd {
 			if console || logFile {
-				slog.Error("=== SpecStory Exiting ===", "code", 2, "status", "agent execution failure")
+				slog.Error("=== Tracer Exiting ===", "code", 2, "status", "agent execution failure")
 				slog.Error("Error", "error", err)
 			}
 			// For check command, the error details are handled by checkSingleProvider/checkAllProviders
@@ -1786,7 +1786,7 @@ func main() {
 			os.Exit(2)
 		} else {
 			if console || logFile {
-				slog.Error("=== SpecStory Exiting ===", "code", 1, "status", "error")
+				slog.Error("=== Tracer Exiting ===", "code", 1, "status", "error")
 				slog.Error("Error", "error", err)
 			}
 			fmt.Fprintln(os.Stderr) // Visual separation makes error output more noticeable

@@ -1039,7 +1039,7 @@ func verifyDAGIntegrity(dag []JSONLRecord) bool {
 }
 
 // TestParseLargeJSONLLines tests that the parser can handle JSONL lines of various sizes
-// Regression test for https://github.com/specstoryai/getspecstory/issues/108
+// Regression test for https://github.com/tracer-ai/tracer/issues/108
 func TestParseLargeJSONLLines(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 const (
@@ -292,7 +292,7 @@ func (p *JSONLParser) parseSessionFile(filePath string) ([]JSONLRecord, error) {
 	slog.Info("Parsing session file", "file", filePath)
 
 	// Clean debug directory for jsonl-burst mode only
-	// (specstory-burst cleaning happens later during markdown generation)
+	// (tracer-burst cleaning happens later during markdown generation)
 	if GetJsonlBurst() {
 		uuid := ExtractUUIDFromFilename(filePath)
 		if err := CleanDebugDirectory(uuid); err != nil {

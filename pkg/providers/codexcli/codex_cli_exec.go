@@ -11,7 +11,7 @@ import (
 
 	"log/slog"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // Package-level variables for mocking in tests

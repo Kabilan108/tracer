@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/claudecode"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/providers/codexcli"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/providers/claudecode"
+	"github.com/tracer-ai/tracer-cli/pkg/providers/codexcli"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // Registry manages all registered providers.

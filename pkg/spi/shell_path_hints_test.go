@@ -136,17 +136,17 @@ func TestExtractShellPathHints(t *testing.T) {
 		// --- Build output flags ---
 		{
 			name:          "go build -o",
-			command:       `go build -o specstory`,
+			command:       `go build -o tracer`,
 			cwd:           cwd,
 			workspaceRoot: workspaceRoot,
-			wantPaths:     []string{"src/specstory"},
+			wantPaths:     []string{"src/tracer"},
 		},
 		{
 			name:          "go build -o with relative path",
-			command:       `go build -o ./bin/specstory`,
+			command:       `go build -o ./bin/tracer`,
 			cwd:           cwd,
 			workspaceRoot: workspaceRoot,
-			wantPaths:     []string{"src/bin/specstory"},
+			wantPaths:     []string{"src/bin/tracer"},
 		},
 		{
 			name:          "gcc -o output",

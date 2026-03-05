@@ -1,4 +1,4 @@
-// Package cmd contains CLI command implementations for the SpecStory CLI.
+// Package cmd contains CLI command implementations for the Tracer CLI.
 package cmd
 
 import (
@@ -13,9 +13,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
 )
 
 // Column widths for table output (excluding NAME which is dynamic).
@@ -50,19 +50,19 @@ func CreateListCommand() *cobra.Command {
 	var examplesBuilder strings.Builder
 	examplesBuilder.WriteString(`
 # List all sessions from all agents
-specstory list`)
+tracer list`)
 
 	if len(ids) > 0 {
 		examplesBuilder.WriteString("\n\n# List sessions from specific agent")
 		for _, id := range ids {
-			fmt.Fprintf(&examplesBuilder, "\nspecstory list %s", id)
+			fmt.Fprintf(&examplesBuilder, "\ntracer list %s", id)
 		}
 	}
 
 	examplesBuilder.WriteString(`
 
 # Output as JSON (for programmatic use)
-specstory list --json | jq`)
+tracer list --json | jq`)
 	examples := examplesBuilder.String()
 
 	longDesc := `List all sessions showing session ID, creation date, and name.
@@ -111,7 +111,7 @@ func listSingleProvider(registry *factory.Registry, providerID string) error {
 					fmt.Fprintf(os.Stderr, "  - %s - %s\n", id, p.Name())
 				}
 			}
-			fmt.Fprintf(os.Stderr, "\nExample: specstory list %s\n", ids[0])
+			fmt.Fprintf(os.Stderr, "\nExample: tracer list %s\n", ids[0])
 		}
 		return err
 	}

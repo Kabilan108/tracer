@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 func TestComputeSessionStatistics(t *testing.T) {

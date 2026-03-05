@@ -2,18 +2,18 @@
 
 ## Status
 Session was focused on discovery and planning, not implementation.  
-The user confirmed final product direction for a fork/rewrite of vendored `specstory-cli` into this repo, with reduced provider scope and daemon-first UX.  
+The user confirmed final product direction for a fork/rewrite of vendored `tracer-cli` into this repo, with reduced provider scope and daemon-first UX.  
 We are at pre-implementation: architecture and phase plan are settled, and implementation should start next.
 
 User's last direction:
 - proceed with the plan
-- do not port SpecStory cloud adapter code
+- do not port Tracer cloud adapter code
 - use `justfile` (not makefile)
 - write down the plan and prepare a handoff for the implementing agent
 
 ## Completed
-- Investigated SpecStory watcher/runtime behavior and provider internals in:
-  - `/vault/experiments/2026-03-03-tracer-cli/vendor/getspecsctory/specstory-cli`
+- Investigated Tracer watcher/runtime behavior and provider internals in:
+  - `/vault/experiments/2026-03-03-tracer-cli/vendor/tracer/tracer-cli`
 - Verified current watch behavior:
   - watch updates markdown continuously on session events
   - does not wait for explicit stop/end signal
@@ -23,8 +23,8 @@ User's last direction:
 - Verified tests exist in vendor:
   - 49 `*_test.go` files total
 - Investigated cloud package behavior and endpoints in:
-  - `/vault/experiments/2026-03-03-tracer-cli/vendor/getspecsctory/specstory-cli/pkg/cloud/auth.go`
-  - `/vault/experiments/2026-03-03-tracer-cli/vendor/getspecsctory/specstory-cli/pkg/cloud/sync.go`
+  - `/vault/experiments/2026-03-03-tracer-cli/vendor/tracer/tracer-cli/pkg/cloud/auth.go`
+  - `/vault/experiments/2026-03-03-tracer-cli/vendor/tracer/tracer-cli/pkg/cloud/sync.go`
 - Reviewed local scaffolding patterns in:
   - `/home/kabilan/repos/cli/raindrop/flake.nix`
   - `/home/kabilan/repos/cli/raindrop/nix/hm-module.nix`
@@ -46,14 +46,14 @@ Immediate next step is Phase 0 bootstrap from plan: extract required source from
 
 ## Discussion Summary
 - User wants tool to ingest all projects automatically and continue ingesting new activity, without command wrapping UX.
-- We discussed current SpecStory watch behavior, which is event-driven autosave and can behave daemon-like in foreground mode.
+- We discussed current Tracer watch behavior, which is event-driven autosave and can behave daemon-like in foreground mode.
 - We discussed tradeoffs of wrapper mode vs standalone daemon and agreed on separate `ingest` + `daemon run` entry points sharing core engine.
 - User requested UX/config simplification:
   - provider enable list
   - exclusions in config
   - global output archive layout
-- User explicitly rejected carrying over SpecStory app analytics and requested keeping activity telemetry/statistics.
-- User decided not to port current SpecStory cloud adapter code for v1.
+- User explicitly rejected carrying over Tracer app analytics and requested keeping activity telemetry/statistics.
+- User decided not to port current Tracer cloud adapter code for v1.
 - User requested Nix + Home Manager scaffolding patterns similar to their other Go CLIs.
 
 ## Decisions Made
@@ -81,7 +81,7 @@ Immediate next step is Phase 0 bootstrap from plan: extract required source from
 - **Decision**: Keep local activity telemetry/statistics; OTEL optional and off by default.  
   **Rationale**: Retains useful operational observability with privacy-safe default.
 
-- **Decision**: Do not port existing SpecStory cloud adapter in this phase.  
+- **Decision**: Do not port existing Tracer cloud adapter in this phase.  
   **Rationale**: User plans own backend and expects different sync design.
 
 - **Decision**: Use `justfile` over `makefile`.  
@@ -91,15 +91,15 @@ Immediate next step is Phase 0 bootstrap from plan: extract required source from
   **Rationale**: Align with user’s existing workflow and deployment pattern.
 
 ## Session Learnings
-- SpecStory `watch` command writes markdown on each callback via autosave path, with unchanged-content skip.
+- Tracer `watch` command writes markdown on each callback via autosave path, with unchanged-content skip.
 - Current provider SPI requires `projectPath`, so native “all projects” ingestion requires interface/runtime refactor.
 - Claude/Codex/Gemini watchers currently rely on package-level globals for callback/lifecycle state, which is risky for multi-project daemon orchestration.
 - Cursor watcher is instance-based and better aligned with daemon patterns, but Cursor support is out of scope for this fork.
-- SpecStory cloud sync is a REST API flow (device auth + project/session sync), not OTLP telemetry ingest.
+- Tracer cloud sync is a REST API flow (device auth + project/session sync), not OTLP telemetry ingest.
 
 ## Remaining Work
 1. Phase 0 bootstrap:
-   - Copy required source from vendor `specstory-cli` into repo root (`go.mod`, `go.sum`, `main.go`, `main_test.go`, `pkg/**`).
+   - Copy required source from vendor `tracer-cli` into repo root (`go.mod`, `go.sum`, `main.go`, `main_test.go`, `pkg/**`).
    - Remove non-essential upstream docs/metadata from active codebase.
    - Keep/copy `AGENTS.md` and `CLAUDE.md`.
 2. Phase 1 provider reduction:
@@ -127,7 +127,7 @@ Immediate next step is Phase 0 bootstrap from plan: extract required source from
 
 ## Context
 - Repo root: `/vault/experiments/2026-03-03-tracer-cli`
-- Vendor source used for analysis: `/vault/experiments/2026-03-03-tracer-cli/vendor/getspecsctory/specstory-cli`
+- Vendor source used for analysis: `/vault/experiments/2026-03-03-tracer-cli/vendor/tracer/tracer-cli`
 - Plan doc for implementer: `/vault/experiments/2026-03-03-tracer-cli/FORK_REWRITE_PLAN.md`
 - No running services started in this session.
 
@@ -141,6 +141,6 @@ sed -n '1,260p' FORK_REWRITE_PLAN.md
 sed -n '1,320p' HANDOFF.md
 
 # Inspect vendor source to begin Phase 0 extraction
-ls -la vendor/getspecsctory/specstory-cli
-find vendor/getspecsctory/specstory-cli/pkg -maxdepth 3 -type f | head
+ls -la vendor/tracer/tracer-cli
+find vendor/tracer/tracer-cli/pkg -maxdepth 3 -type f | head
 ```

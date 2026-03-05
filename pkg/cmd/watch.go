@@ -14,15 +14,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/provenance"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/session"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/factory"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	"github.com/tracer-ai/tracer-cli/pkg/cloud"
+	"github.com/tracer-ai/tracer-cli/pkg/config"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/provenance"
+	"github.com/tracer-ai/tracer-cli/pkg/session"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 // truncateSessionID shortens a UUID to first5...last5 for display.
@@ -46,19 +46,19 @@ func CreateWatchCommand(cloudURL *string, localTimeZone bool, debugDir string) *
 	// Build dynamic examples
 	examples := `
 # Watch all registered agent providers for activity
-specstory watch`
+tracer watch`
 
 	if len(ids) > 0 {
 		examples += "\n\n# Watch for activity from a specific agent"
 		for _, id := range ids {
-			examples += fmt.Sprintf("\nspecstory watch %s", id)
+			examples += fmt.Sprintf("\ntracer watch %s", id)
 		}
 	}
 
 	examples += `
 
 # Watch with custom output directory
-specstory watch --output-dir ~/my-sessions`
+tracer watch --output-dir ~/my-sessions`
 
 	longDesc := `Watch for coding agent activity in the current directory and auto-save markdown files.
 
@@ -127,7 +127,7 @@ By default, 'watch' is for activity from all registered agent providers. Specify
 
 			// Validate that --only-cloud-sync requires authentication
 			if onlyCloudSync && !cloud.IsAuthenticated() {
-				return utils.ValidationError{Message: "--only-cloud-sync requires authentication. Please run 'specstory login' first"}
+				return utils.ValidationError{Message: "--only-cloud-sync requires authentication. Please run 'tracer login' first"}
 			}
 
 			// Start provenance engine if enabled (used in later phases for event correlation)
@@ -309,8 +309,8 @@ By default, 'watch' is for activity from all registered agent providers. Specify
 
 	// Watch-specific flags
 	watchCmd.Flags().Bool("json", false, "output session updates as JSON lines (one JSON object per line)")
-	watchCmd.Flags().String("output-dir", "", "custom output directory for markdown files (default: ./.specstory/history)")
-	watchCmd.Flags().String("debug-dir", debugDir, "custom output directory for debug data (default: ./.specstory/debug)")
+	watchCmd.Flags().String("output-dir", "", "custom output directory for markdown files (default: ./.tracer/history)")
+	watchCmd.Flags().String("debug-dir", debugDir, "custom output directory for debug data (default: ./.tracer/debug)")
 	watchCmd.Flags().Bool("only-cloud-sync", false, "skip local markdown file saves, only upload to cloud (requires authentication)")
 	watchCmd.Flags().Bool("no-cloud-sync", false, "disable cloud sync functionality")
 	watchCmd.Flags().Bool("debug-raw", false, "debug mode to output pretty-printed raw data files")

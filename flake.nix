@@ -35,7 +35,7 @@
 
           meta = with pkgs.lib; {
             description = "Tracer CLI and daemon for Claude/Codex session archiving";
-            homepage = "https://github.com/specstoryai/getspecstory/specstory-cli";
+            homepage = "https://github.com/tracer-ai/tracer-cli";
             license = licenses.asl20;
             platforms = [ "x86_64-linux" ];
             mainProgram = "tracer";
@@ -74,6 +74,9 @@
               just
               nixfmt
             ];
+            shellHook = ''
+              export PATH="$PATH:$PWD/bin"
+            '';
           };
         }
       );

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 func TestShouldWatch(t *testing.T) {
@@ -27,7 +27,7 @@ func TestShouldWatch(t *testing.T) {
 		// Excluded directories
 		{".git dir", "/tmp/test-project/.git", true, false},
 		{"node_modules dir", "/tmp/test-project/node_modules", true, false},
-		{".specstory dir", "/tmp/test-project/.specstory", true, false},
+		{".tracer dir", "/tmp/test-project/.tracer", true, false},
 		{"vendor dir", "/tmp/test-project/vendor", true, false},
 		{".vscode dir", "/tmp/test-project/.vscode", true, false},
 		{"__pycache__ dir", "/tmp/test-project/__pycache__", true, false},

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 // ===== Device Metadata Types =====
@@ -118,7 +118,7 @@ var (
 
 	// Lazy refresh state for GetCloudToken()
 	// Access token refresh is deferred from IsAuthenticated() to GetCloudToken()
-	// to avoid blocking startup when SpecStory Cloud is unreachable
+	// to avoid blocking startup when Tracer Cloud is unreachable
 	refreshMu          sync.Mutex        // Serializes access token refresh attempts across goroutines
 	lastRefreshAttempt time.Time         // When the last refresh was attempted (success or failure)
 	refreshCooldown    = 2 * time.Minute // Minimum time between refresh attempts when cloud is down
@@ -275,7 +275,7 @@ func IsAuthenticated() bool {
 
 	// Check if we have a valid refresh token
 	// Access token refresh is deferred to GetCloudToken() to avoid blocking
-	// startup when SpecStory Cloud is unreachable (the refresh HTTP call has
+	// startup when Tracer Cloud is unreachable (the refresh HTTP call has
 	// a 30-second timeout that would delay agent launch)
 	if authData.CloudRefresh != nil && authData.CloudRefresh.Token != "" {
 		if !isTokenExpired(authData.CloudRefresh.ExpiresAt) {

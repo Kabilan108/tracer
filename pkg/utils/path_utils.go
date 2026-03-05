@@ -9,7 +9,7 @@ import (
 )
 
 // Directory and file constants
-const SPECSTORY_DIR = ".specstory"
+const TRACER_DIR = ".tracer"
 const HISTORY_DIR = "history"
 const DEBUG_DIR = "debug"
 const DEBUG_LOG_FILE = "debug.log"
@@ -64,7 +64,7 @@ func validateDirectory(dir, label string) (string, error) {
 			return "", ValidationError{Message: fmt.Sprintf("%s exists but is not a directory: %s", label, absPath)}
 		}
 		// Check write permissions by attempting to create a temp file
-		if file, err := os.CreateTemp(absPath, ".specstory_write_test_*"); err != nil {
+		if file, err := os.CreateTemp(absPath, ".tracer_write_test_*"); err != nil {
 			return "", ValidationError{Message: fmt.Sprintf("%s is not writable: %s", label, absPath)}
 		} else {
 			// Clean up test file
@@ -112,16 +112,16 @@ func NewOutputPathConfig(dir string, debugDir string) (*OutputPathConfig, error)
 	return config, nil
 }
 
-// getBasePath returns the base path for specstory files
+// getBasePath returns the base path for tracer files
 func (c *OutputPathConfig) getBasePath() string {
 	if c.BaseDir != "" {
 		return c.BaseDir
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		return SPECSTORY_DIR
+		return TRACER_DIR
 	}
-	return filepath.Join(cwd, SPECSTORY_DIR)
+	return filepath.Join(cwd, TRACER_DIR)
 }
 
 // GetHistoryDir returns the history directory path
@@ -147,15 +147,15 @@ func (c *OutputPathConfig) GetLogPath() string {
 	return filepath.Join(c.GetDebugDir(), DEBUG_LOG_FILE)
 }
 
-// GetSpecStoryDir returns the .specstory directory path.
-// With a custom output dir this is the output dir itself; otherwise cwd/.specstory.
-func (c *OutputPathConfig) GetSpecStoryDir() string {
+// GetTracerDir returns the .tracer directory path.
+// With a custom output dir this is the output dir itself; otherwise cwd/.tracer.
+func (c *OutputPathConfig) GetTracerDir() string {
 	return c.getBasePath()
 }
 
 // GetStatisticsPath returns the full path to the statistics.json file
 func (c *OutputPathConfig) GetStatisticsPath() string {
-	return filepath.Join(c.GetSpecStoryDir(), STATISTICS_FILE)
+	return filepath.Join(c.GetTracerDir(), STATISTICS_FILE)
 }
 
 // ValidationError represents errors from flag validation that should not display usage
@@ -167,7 +167,7 @@ func (e ValidationError) Error() string {
 	return e.Message
 }
 
-// EnsureHistoryDirectoryExists creates the .specstory/history directory if it doesn't exist.
+// EnsureHistoryDirectoryExists creates the .tracer/history directory if it doesn't exist.
 // This should be called before writing markdown files to handle cases where the directory
 // is deleted during a long-running watch or run command.
 func EnsureHistoryDirectoryExists(config OutputConfig) error {
@@ -203,5 +203,5 @@ func GetAuthPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
 	}
-	return filepath.Join(homeDir, ".specstory", "cli", "auth.json"), nil
+	return filepath.Join(homeDir, ".tracer", "cli", "auth.json"), nil
 }

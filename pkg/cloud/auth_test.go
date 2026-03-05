@@ -23,8 +23,8 @@ func TestIsAuthenticated(t *testing.T) {
 		}
 	}()
 
-	// Create the .specstory/cli directory structure
-	authDir := filepath.Join(tempDir, ".specstory", "cli")
+	// Create the .tracer/cli directory structure
+	authDir := filepath.Join(tempDir, ".tracer", "cli")
 	authPath := filepath.Join(authDir, "auth.json")
 
 	tests := []struct {
@@ -39,7 +39,7 @@ func TestIsAuthenticated(t *testing.T) {
 				// Reset cache before each test
 				ResetAuthCache()
 				// Ensure directory doesn't exist
-				_ = os.RemoveAll(filepath.Join(tempDir, ".specstory"))
+				_ = os.RemoveAll(filepath.Join(tempDir, ".tracer"))
 			},
 			expectedResult: false,
 			description:    "Should return false when auth.json doesn't exist",
@@ -377,8 +377,8 @@ func TestAuthenticationCaching(t *testing.T) {
 		}
 	}()
 
-	// Create the .specstory/cli directory structure
-	authDir := filepath.Join(tempDir, ".specstory", "cli")
+	// Create the .tracer/cli directory structure
+	authDir := filepath.Join(tempDir, ".tracer", "cli")
 	authPath := filepath.Join(authDir, "auth.json")
 
 	// Reset cache before test
@@ -421,7 +421,7 @@ func TestAuthenticationCaching(t *testing.T) {
 	}
 
 	// Remove auth file
-	_ = os.RemoveAll(filepath.Join(tempDir, ".specstory"))
+	_ = os.RemoveAll(filepath.Join(tempDir, ".tracer"))
 
 	// Should still return true (cached)
 	result4 := IsAuthenticated()

@@ -17,12 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 const (
 	// ClientName is the name of this client for API identification
-	ClientName = "specstory-cli"
+	ClientName = "tracer-cli"
 
 	// CloudSyncTimeout is the maximum time to wait for cloud sync operations to complete
 	CloudSyncTimeout = 120 * time.Second // Allow 2 minutes for large sessions to upload
@@ -93,7 +93,7 @@ type APIRequestMetadata struct {
 	DeviceID      string `json:"deviceId"`
 }
 
-// ProjectData represents the structure of the .specstory/.project.json file
+// ProjectData represents the structure of the .tracer/.project.json file
 type ProjectData struct {
 	ProjectName string `json:"project_name"`
 	GitID       string `json:"git_id"`
@@ -277,7 +277,7 @@ func (syncMgr *SyncManager) acquireHTTPSemaphore(sessionID, requestType string) 
 	return releaseFunc
 }
 
-// fetchBulkSessionSizes fetches markdown sizes for all sessions in a project from the SpecStory Cloud API.
+// fetchBulkSessionSizes fetches markdown sizes for all sessions in a project from the Tracer Cloud API.
 // This enables batch sync optimization by avoiding individual HEAD requests for each session.
 //
 // The function makes a GET request to /api/v1/projects/{projectID}/sessions/sizes with automatic
@@ -612,14 +612,14 @@ func SetAPIBaseURL(url string) {
 // GetAPIBaseURL returns the base URL for API requests
 func GetAPIBaseURL() string {
 	if apiBaseURL == "" {
-		return "https://cloud.specstory.com" // Default API base URL
+		return "https://cloud.tracer.com" // Default API base URL
 	}
 	return apiBaseURL
 }
 
 // GetUserAgent returns the User-Agent string for API requests
 func GetUserAgent() string {
-	return fmt.Sprintf("%s/%s SpecStory, Inc.", ClientName, clientVersion)
+	return fmt.Sprintf("%s/%s Tracer, Inc.", ClientName, clientVersion)
 }
 
 // getDeviceID generates a unique device ID based on MAC address
@@ -635,7 +635,7 @@ func getDeviceID() string {
 		slog.Warn("Failed to get network interfaces", "error", err)
 		// Fallback to hostname-based ID
 		hostname, _ := os.Hostname()
-		h := sha256.Sum256([]byte("specstory-" + hostname))
+		h := sha256.Sum256([]byte("tracer-" + hostname))
 		deviceID = hex.EncodeToString(h[:])
 		return deviceID
 	}
@@ -653,7 +653,7 @@ func getDeviceID() string {
 
 	// Fallback if no suitable interface found
 	hostname, _ := os.Hostname()
-	h := sha256.Sum256([]byte("specstory-fallback-" + hostname))
+	h := sha256.Sum256([]byte("tracer-fallback-" + hostname))
 	deviceID = hex.EncodeToString(h[:])
 	slog.Debug("Using fallback device ID based on hostname")
 	return deviceID
@@ -748,7 +748,7 @@ func (syncMgr *SyncManager) performSync(sessionID, mdPath, mdContent string, raw
 		projectName = projectData.ProjectName
 	} else {
 		// Fallback to extracting from mdPath for display purposes only
-		dir := filepath.Dir(filepath.Dir(mdPath))      // Go up from history to .specstory
+		dir := filepath.Dir(filepath.Dir(mdPath))      // Go up from history to .tracer
 		projectName = filepath.Base(filepath.Dir(dir)) // Get the project directory name
 		slog.Debug("No project name in config, using directory name", "projectName", projectName)
 	}
@@ -1179,13 +1179,13 @@ func Shutdown(timeout time.Duration) *CloudSyncStats {
 	}
 }
 
-// readProjectConfig reads the .specstory/.project.json file
+// readProjectConfig reads the .tracer/.project.json file
 func readProjectConfig() (*ProjectData, error) {
 	var projectData ProjectData
 	var err error
 
 	// Read the project config file
-	configPath := filepath.Join(utils.SPECSTORY_DIR, utils.PROJECT_JSON_FILE)
+	configPath := filepath.Join(utils.TRACER_DIR, utils.PROJECT_JSON_FILE)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read project config: %w", err)

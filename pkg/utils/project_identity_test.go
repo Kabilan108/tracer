@@ -11,16 +11,16 @@ import (
 // TestProjectIdentityManager_EnsureProjectIdentity tests the project identity creation and update logic
 func TestProjectIdentityManager_EnsureProjectIdentity(t *testing.T) {
 	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "specstory-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	// Create .specstory directory (simulating it was created by other code)
-	specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-	if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-		t.Fatalf("Failed to create .specstory directory: %v", err)
+	// Create .tracer directory (simulating it was created by other code)
+	tracerDir := filepath.Join(tempDir, TRACER_DIR)
+	if err := os.MkdirAll(tracerDir, 0755); err != nil {
+		t.Fatalf("Failed to create .tracer directory: %v", err)
 	}
 
 	// Test case 1: No .project.json yet
@@ -73,7 +73,7 @@ func TestProjectIdentityManager_EnsureProjectIdentity(t *testing.T) {
 		gitConfig := `[core]
 	repositoryformatversion = 0
 [remote "origin"]
-	url = https://github.com/specstoryai/test-repo.git
+	url = https://github.com/tracerai/test-repo.git
 	fetch = +refs/heads/*:refs/remotes/origin/*`
 
 		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(gitConfig), 0644); err != nil {
@@ -133,12 +133,12 @@ func TestProjectIdentityManager_generateGitID(t *testing.T) {
 	}{
 		{
 			name:        "GitHub HTTPS",
-			gitURL:      "https://github.com/specstoryai/specstory-cli.git",
+			gitURL:      "https://github.com/tracerai/tracer-cli.git",
 			shouldMatch: true,
 		},
 		{
 			name:        "GitHub SSH",
-			gitURL:      "git@github.com:specstoryai/specstory-cli.git",
+			gitURL:      "git@github.com:tracerai/tracer-cli.git",
 			shouldMatch: true,
 		},
 		{
@@ -156,7 +156,7 @@ func TestProjectIdentityManager_generateGitID(t *testing.T) {
 	// Create temporary directory for each test
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempDir, err := os.MkdirTemp("", "specstory-git-test-*")
+			tempDir, err := os.MkdirTemp("", "tracer-git-test-*")
 			if err != nil {
 				t.Fatalf("Failed to create temp dir: %v", err)
 			}
@@ -218,7 +218,7 @@ func TestProjectIdentityManager_generateGitID(t *testing.T) {
 		for _, testName := range testNames {
 			for _, tt := range tests {
 				if tt.name == testName {
-					tempDir, _ := os.MkdirTemp("", "specstory-git-test-*")
+					tempDir, _ := os.MkdirTemp("", "tracer-git-test-*")
 					defer func() { _ = os.RemoveAll(tempDir) }()
 
 					gitDir := filepath.Join(tempDir, ".git")
@@ -265,7 +265,7 @@ func TestProjectIdentityManager_createHash(t *testing.T) {
 		},
 		{
 			name:  "GitHub repo path",
-			input: "specstoryai/specstory-cli.git",
+			input: "tracerai/tracer-cli.git",
 		},
 		{
 			name:  "Full path",
@@ -370,20 +370,20 @@ func TestProjectIdentityManager_ReadProjectIdentity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempDir, err := os.MkdirTemp("", "specstory-read-test-*")
+			tempDir, err := os.MkdirTemp("", "tracer-read-test-*")
 			if err != nil {
 				t.Fatalf("Failed to create temp dir: %v", err)
 			}
 			defer func() { _ = os.RemoveAll(tempDir) }()
 
-			// Create .specstory directory and .project.json file
-			specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-			if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-				t.Fatalf("Failed to create .specstory directory: %v", err)
+			// Create .tracer directory and .project.json file
+			tracerDir := filepath.Join(tempDir, TRACER_DIR)
+			if err := os.MkdirAll(tracerDir, 0755); err != nil {
+				t.Fatalf("Failed to create .tracer directory: %v", err)
 			}
 
 			if tt.fileContent != "" {
-				projectFile := filepath.Join(specstoryDir, PROJECT_JSON_FILE)
+				projectFile := filepath.Join(tracerDir, PROJECT_JSON_FILE)
 				if err := os.WriteFile(projectFile, []byte(tt.fileContent), 0644); err != nil {
 					t.Fatalf("Failed to write project file: %v", err)
 				}
@@ -522,21 +522,21 @@ func TestGetProjectID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempDir, err := os.MkdirTemp("", "specstory-getid-test-*")
+			tempDir, err := os.MkdirTemp("", "tracer-getid-test-*")
 			if err != nil {
 				t.Fatalf("Failed to create temp dir: %v", err)
 			}
 			defer func() { _ = os.RemoveAll(tempDir) }()
 
-			// Create .specstory directory
-			specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-			if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-				t.Fatalf("Failed to create .specstory directory: %v", err)
+			// Create .tracer directory
+			tracerDir := filepath.Join(tempDir, TRACER_DIR)
+			if err := os.MkdirAll(tracerDir, 0755); err != nil {
+				t.Fatalf("Failed to create .tracer directory: %v", err)
 			}
 
 			// Write identity file if provided
 			if tt.identity != nil {
-				projectFile := filepath.Join(specstoryDir, PROJECT_JSON_FILE)
+				projectFile := filepath.Join(tracerDir, PROJECT_JSON_FILE)
 				data, _ := json.MarshalIndent(tt.identity, "", "  ")
 				if err := os.WriteFile(projectFile, data, 0644); err != nil {
 					t.Fatalf("Failed to write project file: %v", err)
@@ -574,13 +574,13 @@ func TestNormalizeGitURL(t *testing.T) {
 		// GitHub tests
 		{
 			name:     "GitHub HTTPS with .git",
-			gitURL:   "https://github.com/specstoryai/specstory-cli.git",
-			expected: "github.com/specstoryai/specstory-cli",
+			gitURL:   "https://github.com/tracerai/tracer-cli.git",
+			expected: "github.com/tracerai/tracer-cli",
 		},
 		{
 			name:     "GitHub SSH with .git",
-			gitURL:   "git@github.com:specstoryai/specstory-cli.git",
-			expected: "github.com/specstoryai/specstory-cli",
+			gitURL:   "git@github.com:tracerai/tracer-cli.git",
+			expected: "github.com/tracerai/tracer-cli",
 		},
 		// GitLab tests
 		{
@@ -673,8 +673,8 @@ func TestNormalizedGitURLConsistency(t *testing.T) {
 	}{
 		{
 			name:  "GitHub",
-			https: "https://github.com/specstoryai/specstory-cli.git",
-			ssh:   "git@github.com:specstoryai/specstory-cli.git",
+			https: "https://github.com/tracerai/tracer-cli.git",
+			ssh:   "git@github.com:tracerai/tracer-cli.git",
 		},
 		{
 			name:  "GitLab",
@@ -717,7 +717,7 @@ func TestNormalizedGitURLConsistency(t *testing.T) {
 
 // TestWorkspaceIDConsistency tests that workspace ID is consistent for the same path
 func TestWorkspaceIDConsistency(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "specstory-consistency-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-consistency-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
@@ -738,16 +738,16 @@ func TestWorkspaceIDConsistency(t *testing.T) {
 
 // TestTimestampFormat tests that timestamps are in correct ISO 8601 format
 func TestTimestampFormat(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "specstory-timestamp-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-timestamp-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	// Create .specstory directory
-	specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-	if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-		t.Fatalf("Failed to create .specstory directory: %v", err)
+	// Create .tracer directory
+	tracerDir := filepath.Join(tempDir, TRACER_DIR)
+	if err := os.MkdirAll(tracerDir, 0755); err != nil {
+		t.Fatalf("Failed to create .tracer directory: %v", err)
 	}
 
 	manager := NewProjectIdentityManager(tempDir)
@@ -789,13 +789,13 @@ func TestParseGitRemoteURL(t *testing.T) {
 		// SSH format
 		{
 			name:         "SSH with .git",
-			url:          "git@github.com:specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "git@github.com:tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		{
 			name:         "SSH without .git",
-			url:          "git@github.com:specstoryai/specstory-monorepo",
-			expectedName: "specstory-monorepo",
+			url:          "git@github.com:tracerai/tracer-monorepo",
+			expectedName: "tracer-monorepo",
 		},
 		{
 			name:         "SSH GitLab",
@@ -805,37 +805,37 @@ func TestParseGitRemoteURL(t *testing.T) {
 		// HTTPS format
 		{
 			name:         "HTTPS with .git",
-			url:          "https://github.com/specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "https://github.com/tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		{
 			name:         "HTTPS without .git",
-			url:          "https://github.com/specstoryai/specstory-monorepo",
-			expectedName: "specstory-monorepo",
+			url:          "https://github.com/tracerai/tracer-monorepo",
+			expectedName: "tracer-monorepo",
 		},
 		// HTTP format
 		{
 			name:         "HTTP with .git",
-			url:          "http://github.com/specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "http://github.com/tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		// GIT protocol
 		{
 			name:         "GIT protocol",
-			url:          "git://github.com/specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "git://github.com/tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		// GIT+SSH protocol
 		{
 			name:         "GIT+SSH protocol",
-			url:          "git+ssh://github.com/specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "git+ssh://github.com/tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		// Implicit HTTPS
 		{
 			name:         "Implicit HTTPS",
-			url:          "github.com/specstoryai/specstory-monorepo.git",
-			expectedName: "specstory-monorepo",
+			url:          "github.com/tracerai/tracer-monorepo.git",
+			expectedName: "tracer-monorepo",
 		},
 		{
 			name:         "Implicit HTTPS nested path",
@@ -857,7 +857,7 @@ func TestParseGitRemoteURL(t *testing.T) {
 // TestGenerateProjectName tests project name generation with git and fallback
 func TestGenerateProjectName(t *testing.T) {
 	t.Run("WithGitRemote", func(t *testing.T) {
-		tempDir, err := os.MkdirTemp("", "specstory-projectname-test-*")
+		tempDir, err := os.MkdirTemp("", "tracer-projectname-test-*")
 		if err != nil {
 			t.Fatalf("Failed to create temp dir: %v", err)
 		}
@@ -872,7 +872,7 @@ func TestGenerateProjectName(t *testing.T) {
 		gitConfig := `[core]
 	repositoryformatversion = 0
 [remote "origin"]
-	url = https://github.com/specstoryai/my-awesome-project.git
+	url = https://github.com/tracerai/my-awesome-project.git
 	fetch = +refs/heads/*:refs/remotes/origin/*`
 
 		if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(gitConfig), 0644); err != nil {
@@ -908,16 +908,16 @@ func TestGenerateProjectName(t *testing.T) {
 
 // TestProjectNameInFullFlow tests project_name in the complete identity flow
 func TestProjectNameInFullFlow(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "specstory-fullflow-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-fullflow-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	// Create .specstory directory
-	specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-	if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-		t.Fatalf("Failed to create .specstory directory: %v", err)
+	// Create .tracer directory
+	tracerDir := filepath.Join(tempDir, TRACER_DIR)
+	if err := os.MkdirAll(tracerDir, 0755); err != nil {
+		t.Fatalf("Failed to create .tracer directory: %v", err)
 	}
 
 	// Create a git config
@@ -965,16 +965,16 @@ func TestProjectNameInFullFlow(t *testing.T) {
 
 // TestProjectNameMigration tests adding project_name to existing identity
 func TestProjectNameMigration(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "specstory-migration-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-migration-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	// Create .specstory directory
-	specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-	if err := os.MkdirAll(specstoryDir, 0755); err != nil {
-		t.Fatalf("Failed to create .specstory directory: %v", err)
+	// Create .tracer directory
+	tracerDir := filepath.Join(tempDir, TRACER_DIR)
+	if err := os.MkdirAll(tracerDir, 0755); err != nil {
+		t.Fatalf("Failed to create .tracer directory: %v", err)
 	}
 
 	// Create an existing .project.json without project_name
@@ -985,7 +985,7 @@ func TestProjectNameMigration(t *testing.T) {
   "git_id_at": "2024-01-01T00:00:00Z"
 }`
 
-	projectFile := filepath.Join(specstoryDir, ".project.json")
+	projectFile := filepath.Join(tracerDir, ".project.json")
 	if err := os.WriteFile(projectFile, []byte(existingIdentity), 0644); err != nil {
 		t.Fatalf("Failed to write existing project file: %v", err)
 	}
@@ -1032,34 +1032,34 @@ func TestProjectNameMigration(t *testing.T) {
 	}
 }
 
-// TestProjectIdentityManager_EnsureProjectIdentity_NoSpecstoryDir tests behavior when .specstory doesn't exist
-func TestProjectIdentityManager_EnsureProjectIdentity_NoSpecstoryDir(t *testing.T) {
+// TestProjectIdentityManager_EnsureProjectIdentity_NoTracerDir tests behavior when .tracer doesn't exist
+func TestProjectIdentityManager_EnsureProjectIdentity_NoTracerDir(t *testing.T) {
 	// Create a temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "specstory-nodir-test-*")
+	tempDir, err := os.MkdirTemp("", "tracer-nodir-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
-	// DO NOT create .specstory directory - it should be created automatically
+	// DO NOT create .tracer directory - it should be created automatically
 	manager := NewProjectIdentityManager(tempDir)
 
 	modified, err := manager.EnsureProjectIdentity()
 	if err != nil {
-		t.Errorf("Expected no error when .specstory directory doesn't exist (should create it), but got: %v", err)
+		t.Errorf("Expected no error when .tracer directory doesn't exist (should create it), but got: %v", err)
 	}
 	if !modified {
 		t.Error("Expected modification when creating new project identity")
 	}
 
-	// Verify .specstory directory was created
-	specstoryDir := filepath.Join(tempDir, SPECSTORY_DIR)
-	if _, err := os.Stat(specstoryDir); os.IsNotExist(err) {
-		t.Error("Expected .specstory directory to be created")
+	// Verify .tracer directory was created
+	tracerDir := filepath.Join(tempDir, TRACER_DIR)
+	if _, err := os.Stat(tracerDir); os.IsNotExist(err) {
+		t.Error("Expected .tracer directory to be created")
 	}
 
 	// Verify project.json was created
-	projectJSONPath := filepath.Join(specstoryDir, PROJECT_JSON_FILE)
+	projectJSONPath := filepath.Join(tracerDir, PROJECT_JSON_FILE)
 	if _, err := os.Stat(projectJSONPath); os.IsNotExist(err) {
 		t.Error("Expected .project.json file to be created")
 	}

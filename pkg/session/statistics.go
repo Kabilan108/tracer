@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 // SessionStatistics contains computed statistics for a single session

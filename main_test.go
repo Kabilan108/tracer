@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/config"
+	"github.com/tracer-ai/tracer-cli/pkg/config"
 )
 
 func TestValidateFlags_CloudSyncMutualExclusion(t *testing.T) {

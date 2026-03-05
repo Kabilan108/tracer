@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // Global variable to track jsonl burst mode
 var jsonlBurstMode bool
 
-// Global variable to track specstory burst mode
-var specstoryBurstMode bool
+// Global variable to track tracer burst mode
+var tracerBurstMode bool
 
 // Global variable to track target file for conditional debug output
 var debugTargetFile string
@@ -30,14 +30,14 @@ func GetJsonlBurst() bool {
 	return jsonlBurstMode
 }
 
-// SetSpecstoryBurst sets the specstory burst debug mode
-func SetSpecstoryBurst(enabled bool) {
-	specstoryBurstMode = enabled
+// SetTracerBurst sets the tracer burst debug mode
+func SetTracerBurst(enabled bool) {
+	tracerBurstMode = enabled
 }
 
-// GetSpecstoryBurst returns whether specstory burst mode is enabled
-func GetSpecstoryBurst() bool {
-	return specstoryBurstMode
+// GetTracerBurst returns whether tracer burst mode is enabled
+func GetTracerBurst() bool {
+	return tracerBurstMode
 }
 
 // SetDebugTargetFile sets the target file for conditional debug output
@@ -57,7 +57,7 @@ func ExtractUUIDFromFilename(filename string) string {
 	base = strings.TrimSuffix(base, ".jsonl")
 
 	// The UUID is the last part of the filename after the last hyphen
-	// e.g., "-Users-sean-Source-SpecStory-compositions-game-4-30cc3569-a9d4-429e-981a-ab73e3ddee5f"
+	// e.g., "-Users-sean-Source-Tracer-compositions-game-4-30cc3569-a9d4-429e-981a-ab73e3ddee5f"
 	parts := strings.Split(base, "-")
 	if len(parts) >= 5 {
 		// UUID format: 8-4-4-4-12 characters
@@ -168,18 +168,18 @@ func CleanDebugDirectory(uuid string) error {
 	return nil
 }
 
-// WriteSpecstoryBurstJSON writes a pretty-printed JSON file for a record in specstory burst mode
-func WriteSpecstoryBurstJSON(sessionUuid string, lineNumber int, data map[string]interface{}) error {
-	if !specstoryBurstMode {
+// WriteTracerBurstJSON writes a pretty-printed JSON file for a record in tracer burst mode
+func WriteTracerBurstJSON(sessionUuid string, lineNumber int, data map[string]interface{}) error {
+	if !tracerBurstMode {
 		return nil
 	}
 
 	filename := fmt.Sprintf("%d.json", lineNumber)
-	return writeJSONToDebugDir(sessionUuid, filename, data, "Specstory burst")
+	return writeJSONToDebugDir(sessionUuid, filename, data, "Tracer burst")
 }
 
 // WriteDebugRawJSON writes a pretty-printed JSON file for a record in debug-raw mode
-// This replaces the old specstory-burst functionality
+// This replaces the old tracer-burst functionality
 func WriteDebugRawJSON(sessionUuid string, lineNumber int, data map[string]interface{}) error {
 	filename := fmt.Sprintf("%d.json", lineNumber)
 	return writeJSONToDebugDir(sessionUuid, filename, data, "Debug raw")

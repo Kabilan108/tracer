@@ -4,17 +4,17 @@ This file provides guidance to coding agents when working with code in this repo
 
 ## Project Overview
 
-SpecStory CLI is a wrapper for coding agents that tracks conversations and generates markdown files. The project uses the Go language and follows standard Go project conventions.
+Tracer CLI is a wrapper for coding agents that tracks conversations and generates markdown files. The project uses the Go language and follows standard Go project conventions.
 
 ## Key Commands
 
 ### Building
 
-The command is always built as `specstory`, located in the root of the repository.
+The command is always built as `tracer`, located in the root of the repository.
 
 ```zsh
 # Build for current platform
-go build -o specstory
+go build -o tracer
 ```
 
 ### Testing
@@ -52,13 +52,13 @@ There are two main modes of operation:
 
 ```zsh
 # Interactive interactive auto-save mode
-./specstory run
+./tracer run
 
 # Sync mode - process all sessions
-./specstory sync
+./tracer sync
 
 # Sync mode - process specific session
-./specstory sync -u <uuid>
+./tracer sync -u <uuid>
 ```
 
 ### Debugging
@@ -67,13 +67,13 @@ To see debug output, you can use the following commands:
 
 ```zsh
 # Debug output to stdout
-./specstory sync --debug
+./tracer sync --debug
 
-# Debug log output in ./.specstory/debug/debug.log
-./specstory sync --log
+# Debug log output in ./.tracer/debug/debug.log
+./tracer sync --log
 
 # Hidden debug flag (not in public docs)
-./specstory sync --debug-raw          # Debug mode to output pretty-printed raw data files
+./tracer sync --debug-raw          # Debug mode to output pretty-printed raw data files
 ```
 
 ## Technical Details
@@ -140,7 +140,7 @@ The codebase package structure:
 
 ## Development Workflow
 
-When searching for code, ALWAYS exclude the `.specstory` directory.
+When searching for code, ALWAYS exclude the `.tracer` directory.
 
 Don't just make your own decision, explain the options, the pros and cons, and what you recommend. Have the user make the decision.
 

@@ -11,8 +11,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 // --- Session Statistics ---
@@ -87,29 +87,29 @@ func ComputeSessionStats(agentName string, session *spi.AgentChatSession) Sessio
 // Token usage attributes are provider-specific and only non-zero values are set.
 func SetSessionSpanAttributes(span trace.Span, stats SessionStats) {
 	span.SetAttributes(
-		attribute.String("specstory.agent", stats.AgentName),
-		attribute.String("specstory.session.id", stats.SessionID),
-		attribute.Int("specstory.session.exchange_count", stats.ExchangeCount),
-		attribute.Int("specstory.session.message_count", stats.MessageCount),
-		attribute.Int("specstory.session.tool_count", stats.ToolCount),
-		attribute.Int("specstory.session.tool_type_count", stats.ToolTypeCount),
-		attribute.String("specstory.project.path", stats.ProjectPath),
+		attribute.String("tracer.agent", stats.AgentName),
+		attribute.String("tracer.session.id", stats.SessionID),
+		attribute.Int("tracer.session.exchange_count", stats.ExchangeCount),
+		attribute.Int("tracer.session.message_count", stats.MessageCount),
+		attribute.Int("tracer.session.tool_count", stats.ToolCount),
+		attribute.Int("tracer.session.tool_type_count", stats.ToolTypeCount),
+		attribute.String("tracer.project.path", stats.ProjectPath),
 		// Token usage attributes - common (all providers)
-		attribute.Int("specstory.session.tokens.input", stats.TokenUsage.InputTokens),
-		attribute.Int("specstory.session.tokens.output", stats.TokenUsage.OutputTokens),
+		attribute.Int("tracer.session.tokens.input", stats.TokenUsage.InputTokens),
+		attribute.Int("tracer.session.tokens.output", stats.TokenUsage.OutputTokens),
 	)
 	// Provider-specific token attributes - only set non-zero values to reduce telemetry noise
-	span.SetAttributes(stats.TokenUsage.providerAttrs("specstory.session.tokens")...)
+	span.SetAttributes(stats.TokenUsage.providerAttrs("tracer.session.tokens")...)
 }
 
 // startExchangeSpan creates a child span for processing a single exchange.
 // The returned span should be ended by the caller when exchange processing is complete.
 func startExchangeSpan(ctx context.Context, sessionID string, exchangeID string, idx int) (context.Context, trace.Span) {
-	return Tracer("specstory").Start(ctx, "process_exchange",
+	return Tracer("tracer").Start(ctx, "process_exchange",
 		trace.WithAttributes(
-			attribute.String("specstory.session.id", sessionID),
-			attribute.String("specstory.exchange.id", exchangeID),
-			attribute.Int("specstory.exchange.index", idx),
+			attribute.String("tracer.session.id", sessionID),
+			attribute.String("tracer.exchange.id", exchangeID),
+			attribute.Int("tracer.exchange.index", idx),
 		),
 	)
 }
@@ -118,22 +118,22 @@ func startExchangeSpan(ctx context.Context, sessionID string, exchangeID string,
 // Token usage attributes are provider-specific and only non-zero values are set.
 func setExchangeSpanAttributes(span trace.Span, stats ExchangeStats) {
 	span.SetAttributes(
-		attribute.String("specstory.exchange.id", stats.ExchangeID),
-		attribute.Int("specstory.exchange.index", stats.ExchangeIdx),
-		attribute.String("specstory.exchange.model", stats.Model),
-		attribute.String("specstory.exchange.prompt_text", stats.PromptText),
-		attribute.String("specstory.exchange.start_time", stats.StartTime),
-		attribute.String("specstory.exchange.end_time", stats.EndTime),
-		attribute.Int("specstory.exchange.message_count", stats.MessageCount),
-		attribute.String("specstory.exchange.tools_used", stats.ToolNames),
-		attribute.String("specstory.exchange.tool_types", stats.ToolTypes),
-		attribute.Int("specstory.exchange.tool_count", stats.ToolCount),
+		attribute.String("tracer.exchange.id", stats.ExchangeID),
+		attribute.Int("tracer.exchange.index", stats.ExchangeIdx),
+		attribute.String("tracer.exchange.model", stats.Model),
+		attribute.String("tracer.exchange.prompt_text", stats.PromptText),
+		attribute.String("tracer.exchange.start_time", stats.StartTime),
+		attribute.String("tracer.exchange.end_time", stats.EndTime),
+		attribute.Int("tracer.exchange.message_count", stats.MessageCount),
+		attribute.String("tracer.exchange.tools_used", stats.ToolNames),
+		attribute.String("tracer.exchange.tool_types", stats.ToolTypes),
+		attribute.Int("tracer.exchange.tool_count", stats.ToolCount),
 		// Token usage attributes - common (all providers)
-		attribute.Int("specstory.exchange.tokens.input", stats.TokenUsage.InputTokens),
-		attribute.Int("specstory.exchange.tokens.output", stats.TokenUsage.OutputTokens),
+		attribute.Int("tracer.exchange.tokens.input", stats.TokenUsage.InputTokens),
+		attribute.Int("tracer.exchange.tokens.output", stats.TokenUsage.OutputTokens),
 	)
 	// Provider-specific token attributes - only set non-zero values to reduce telemetry noise
-	span.SetAttributes(stats.TokenUsage.providerAttrs("specstory.exchange.tokens")...)
+	span.SetAttributes(stats.TokenUsage.providerAttrs("tracer.exchange.tokens")...)
 }
 
 // ProcessExchangeSpans creates child spans for all exchanges in a session.

@@ -1,4 +1,4 @@
-// Package telemetry provides OpenTelemetry trace and metric initialization for the SpecStory CLI.
+// Package telemetry provides OpenTelemetry trace and metric initialization for the Tracer CLI.
 // It follows an idempotent-init pattern: first call to Init wins, and the
 // disabled path uses the OTel no-op provider (zero overhead, no nil checks needed).
 package telemetry
@@ -47,7 +47,7 @@ const (
 
 // Options configures telemetry initialisation.
 type Options struct {
-	ServiceName string // OTel service.name resource attribute (default "specstory-cli")
+	ServiceName string // OTel service.name resource attribute (default "tracer-cli")
 	Endpoint    string // OTLP gRPC collector address; must be non-empty when Enabled is true
 	Enabled     bool   // When false, Init is a no-op and the global no-op provider is used
 }
@@ -157,7 +157,7 @@ func Init(ctx context.Context, opts Options) error {
 
 		serviceName := opts.ServiceName
 		if serviceName == "" {
-			serviceName = "specstory-cli"
+			serviceName = "tracer-cli"
 		}
 
 		// Parse the endpoint to extract a bare host:port for WithEndpoint and
@@ -275,7 +275,7 @@ func initMetrics(ctx context.Context, host string, insecure bool, res *resource.
 	)
 	otel.SetMeterProvider(meterProvider)
 
-	meter = meterProvider.Meter("specstory-cli")
+	meter = meterProvider.Meter("tracer-cli")
 
 	// Initialize metric instruments
 	if err := initMetricInstruments(); err != nil {
@@ -289,7 +289,7 @@ func initMetrics(ctx context.Context, host string, insecure bool, res *resource.
 func initMetricInstruments() error {
 	var err error
 
-	sessionsProcessed, err = meter.Int64Counter("specstory.sessions.processed",
+	sessionsProcessed, err = meter.Int64Counter("tracer.sessions.processed",
 		metric.WithDescription("Number of sessions processed"),
 		metric.WithUnit("{session}"),
 	)
@@ -297,7 +297,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	exchangesProcessed, err = meter.Int64Counter("specstory.exchanges.processed",
+	exchangesProcessed, err = meter.Int64Counter("tracer.exchanges.processed",
 		metric.WithDescription("Number of exchanges processed across all sessions"),
 		metric.WithUnit("{exchange}"),
 	)
@@ -305,7 +305,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	messagesProcessed, err = meter.Int64Counter("specstory.messages.processed",
+	messagesProcessed, err = meter.Int64Counter("tracer.messages.processed",
 		metric.WithDescription("Number of messages processed across all sessions"),
 		metric.WithUnit("{message}"),
 	)
@@ -313,7 +313,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	toolsUsed, err = meter.Int64Counter("specstory.tools.used",
+	toolsUsed, err = meter.Int64Counter("tracer.tools.used",
 		metric.WithDescription("Number of tool invocations across all sessions"),
 		metric.WithUnit("{invocation}"),
 	)
@@ -321,7 +321,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	processingDuration, err = meter.Float64Histogram("specstory.session.duration",
+	processingDuration, err = meter.Float64Histogram("tracer.session.duration",
 		metric.WithDescription("Session processing duration"),
 		metric.WithUnit("s"),
 	)
@@ -330,7 +330,7 @@ func initMetricInstruments() error {
 	}
 
 	// Token usage metrics
-	inputTokensTotal, err = meter.Int64Counter("specstory.tokens.input",
+	inputTokensTotal, err = meter.Int64Counter("tracer.tokens.input",
 		metric.WithDescription("Total input tokens consumed across all sessions"),
 		metric.WithUnit("{token}"),
 	)
@@ -338,7 +338,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	outputTokensTotal, err = meter.Int64Counter("specstory.tokens.output",
+	outputTokensTotal, err = meter.Int64Counter("tracer.tokens.output",
 		metric.WithDescription("Total output tokens generated across all sessions"),
 		metric.WithUnit("{token}"),
 	)
@@ -346,7 +346,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	cacheCreationTokens, err = meter.Int64Counter("specstory.tokens.cache_creation",
+	cacheCreationTokens, err = meter.Int64Counter("tracer.tokens.cache_creation",
 		metric.WithDescription("Total tokens written to cache across all sessions"),
 		metric.WithUnit("{token}"),
 	)
@@ -354,7 +354,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	cacheReadTokens, err = meter.Int64Counter("specstory.tokens.cache_read",
+	cacheReadTokens, err = meter.Int64Counter("tracer.tokens.cache_read",
 		metric.WithDescription("Total tokens read from cache across all sessions (Claude)"),
 		metric.WithUnit("{token}"),
 	)
@@ -363,7 +363,7 @@ func initMetricInstruments() error {
 	}
 
 	// Codex CLI specific counters
-	cachedInputTokens, err = meter.Int64Counter("specstory.tokens.cached_input",
+	cachedInputTokens, err = meter.Int64Counter("tracer.tokens.cached_input",
 		metric.WithDescription("Total cached input tokens across all sessions (Codex)"),
 		metric.WithUnit("{token}"),
 	)
@@ -371,7 +371,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	reasoningOutputTokens, err = meter.Int64Counter("specstory.tokens.reasoning_output",
+	reasoningOutputTokens, err = meter.Int64Counter("tracer.tokens.reasoning_output",
 		metric.WithDescription("Total reasoning output tokens across all sessions (Codex)"),
 		metric.WithUnit("{token}"),
 	)
@@ -380,7 +380,7 @@ func initMetricInstruments() error {
 	}
 
 	// Gemini CLI specific counters
-	cachedTokens, err = meter.Int64Counter("specstory.tokens.cached",
+	cachedTokens, err = meter.Int64Counter("tracer.tokens.cached",
 		metric.WithDescription("Total cached input tokens across all sessions (Gemini)"),
 		metric.WithUnit("{token}"),
 	)
@@ -388,7 +388,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	thoughtTokens, err = meter.Int64Counter("specstory.tokens.thought",
+	thoughtTokens, err = meter.Int64Counter("tracer.tokens.thought",
 		metric.WithDescription("Total thought/reasoning tokens across all sessions (Gemini)"),
 		metric.WithUnit("{token}"),
 	)
@@ -396,7 +396,7 @@ func initMetricInstruments() error {
 		return err
 	}
 
-	toolTokens, err = meter.Int64Counter("specstory.tokens.tool",
+	toolTokens, err = meter.Int64Counter("tracer.tokens.tool",
 		metric.WithDescription("Total tool-related tokens across all sessions (Gemini)"),
 		metric.WithUnit("{token}"),
 	)
@@ -405,7 +405,7 @@ func initMetricInstruments() error {
 	}
 
 	// Droid CLI specific counters
-	thinkingTokens, err = meter.Int64Counter("specstory.tokens.thinking",
+	thinkingTokens, err = meter.Int64Counter("tracer.tokens.thinking",
 		metric.WithDescription("Total thinking/reasoning tokens across all sessions (Droid)"),
 		metric.WithUnit("{token}"),
 	)
@@ -489,7 +489,7 @@ func Meter() metric.Meter {
 	if meter != nil {
 		return meter
 	}
-	return otel.Meter("specstory-cli")
+	return otel.Meter("tracer-cli")
 }
 
 // ContextWithSessionTrace returns a context that will cause any spans started
@@ -549,8 +549,8 @@ func buildMetricAttrs(specific ...attribute.KeyValue) []attribute.KeyValue {
 // recordSessionProcessed increments the sessions processed counter.
 func recordSessionProcessed(ctx context.Context, agent string, sessionID string) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 	sessionsProcessed.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
@@ -558,8 +558,8 @@ func recordSessionProcessed(ctx context.Context, agent string, sessionID string)
 // recordExchanges increments the exchanges counter by the given count.
 func recordExchanges(ctx context.Context, agent string, sessionID string, count int64) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 	exchangesProcessed.Add(ctx, count, metric.WithAttributes(attrs...))
 }
@@ -567,8 +567,8 @@ func recordExchanges(ctx context.Context, agent string, sessionID string, count 
 // recordMessages increments the messages counter by the given count.
 func recordMessages(ctx context.Context, agent string, sessionID string, count int64) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 	messagesProcessed.Add(ctx, count, metric.WithAttributes(attrs...))
 }
@@ -576,8 +576,8 @@ func recordMessages(ctx context.Context, agent string, sessionID string, count i
 // recordToolUsage increments the tool usage counter by the given count.
 func recordToolUsage(ctx context.Context, agent string, sessionID string, count int64) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 	toolsUsed.Add(ctx, count, metric.WithAttributes(attrs...))
 }
@@ -585,8 +585,8 @@ func recordToolUsage(ctx context.Context, agent string, sessionID string, count 
 // recordProcessingDuration records the session processing duration.
 func recordProcessingDuration(ctx context.Context, agent string, sessionID string, duration time.Duration) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 	processingDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
 }
@@ -621,7 +621,7 @@ type TokenUsage struct {
 
 // providerAttrs returns OTel span attributes for provider-specific token fields,
 // including only non-zero values to reduce telemetry noise. The prefix is the
-// attribute namespace (e.g. "specstory.session.tokens" or "specstory.exchange.tokens").
+// attribute namespace (e.g. "tracer.session.tokens" or "tracer.exchange.tokens").
 func (u TokenUsage) providerAttrs(prefix string) []attribute.KeyValue {
 	var attrs []attribute.KeyValue
 	// Claude Code specific (also used by Droid CLI)
@@ -659,8 +659,8 @@ func (u TokenUsage) providerAttrs(prefix string) []attribute.KeyValue {
 // Only non-zero values are recorded.
 func recordTokenUsage(ctx context.Context, agent string, sessionID string, usage TokenUsage) {
 	attrs := buildMetricAttrs(
-		attribute.String("specstory.agent", agent),
-		attribute.String("specstory.session.id", sessionID),
+		attribute.String("tracer.agent", agent),
+		attribute.String("tracer.session.id", sessionID),
 	)
 
 	// Common metrics

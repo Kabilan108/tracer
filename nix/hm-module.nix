@@ -33,12 +33,12 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          archive.root_dir = "~/.specstory/archive";
+          archive.root_dir = "~/.tracer/archive";
           ingest.enabled_providers = [ "claude" "codex" ];
           ingest.exclude_projects = [ "scratch-playground" ];
         }
       '';
-      description = "Configuration written to ~/.specstory/cli/config.toml";
+      description = "Configuration written to ~/.tracer/cli/config.toml";
     };
 
     daemon = {
@@ -57,7 +57,7 @@ in
           "--debounce"
           "1s"
           "--archive-root"
-          "~/.specstory/archive"
+          "~/.tracer/archive"
         ];
         description = "Additional arguments passed to `tracer daemon run`.";
       };
@@ -74,7 +74,7 @@ in
 
     home.packages = lib.mkIf (tracerPkg != null) [ tracerPkg ];
 
-    home.file.".specstory/cli/config.toml" = lib.mkIf (cfg.settings != { }) {
+    home.file.".tracer/cli/config.toml" = lib.mkIf (cfg.settings != { }) {
       source = tomlFormat.generate "tracer-config" cfg.settings;
     };
 

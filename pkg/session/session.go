@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/telemetry"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	"github.com/tracer-ai/tracer-cli/pkg/cloud"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/telemetry"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 // ValidateSessionData runs schema validation on SessionData when in debug mode.
@@ -92,7 +92,7 @@ func ProcessSingleSession(ctx context.Context, session *spi.AgentChatSession, co
 	ctx = telemetry.ContextWithSessionTrace(ctx, session.SessionID)
 
 	// Start an OTel span for this session processing (no-op when telemetry is disabled)
-	ctx, span := telemetry.Tracer("specstory").Start(ctx, "process_session")
+	ctx, span := telemetry.Tracer("tracer").Start(ctx, "process_session")
 	defer span.End()
 
 	// Compute session statistics

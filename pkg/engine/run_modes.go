@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // RunIngest executes a one-shot historical ingest using the shared engine.

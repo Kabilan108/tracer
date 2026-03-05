@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 const (
@@ -77,13 +77,13 @@ func buildCheckErrorMessage(errorType string, codexCmd string, isCustom bool, st
 			errorMsg.WriteString("     2. If it's already installed, try:\n")
 			errorMsg.WriteString("        • Check if 'codex' is in your PATH\n")
 			errorMsg.WriteString("        • Use -c flag to specify the full path\n")
-			errorMsg.WriteString("        • Example: specstory check codex -c \"/opt/local/bin/codex\"")
+			errorMsg.WriteString("        • Example: tracer check codex -c \"/opt/local/bin/codex\"")
 		}
 	case "permission_denied":
 		fmt.Fprintf(&errorMsg, "  🔒 Permission denied when trying to run: %s\n\n", codexCmd)
 		errorMsg.WriteString("  💡 Try the following:\n")
 		fmt.Fprintf(&errorMsg, "     • Ensure the binary is executable: chmod +x %s\n", codexCmd)
-		errorMsg.WriteString("     • Run the command manually to confirm it works outside SpecStory\n")
+		errorMsg.WriteString("     • Run the command manually to confirm it works outside Tracer\n")
 	case "no_output":
 		errorMsg.WriteString("  ⚠️  No version information from codex\n\n")
 		errorMsg.WriteString("  🤔 The command ran but produced no output\n")
@@ -183,8 +183,8 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 				log.UserWarn("No Codex CLI sessions were found for this directory.\n")
 				log.UserMessage("Codex CLI stores activity under ~/.codex/sessions/YYYY/MM/DD/. We couldn't find that directory.\n\n")
 				log.UserMessage("To fix this:\n")
-				log.UserMessage("  1. Run `specstory run codex` to launch Codex CLI in this project\n")
-				log.UserMessage("  2. Or start Codex CLI manually, then run `specstory sync codex` afterward\n\n")
+				log.UserMessage("  1. Run `tracer run codex` to launch Codex CLI in this project\n")
+				log.UserMessage("  2. Or start Codex CLI manually, then run `tracer sync codex` afterward\n\n")
 				log.UserMessage("Expected sessions directory: %s\n", sessionsRoot)
 				fmt.Println()
 			}
@@ -215,7 +215,7 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 		log.UserMessage("Codex CLI hasn't saved a session with this working directory yet.\n")
 		log.UserMessage("Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/ as JSONL files.\n\n")
 		log.UserMessage("To fix this:\n")
-		log.UserMessage("  1. Run `specstory run codex` to launch Codex CLI here\n")
+		log.UserMessage("  1. Run `tracer run codex` to launch Codex CLI here\n")
 		log.UserMessage("  2. Or open Codex CLI manually in this project, then try syncing again\n\n")
 		log.UserMessage("Checked sessions directory: %s\n", sessionsRoot)
 		fmt.Println()
@@ -741,7 +741,7 @@ func processSessionToAgentChat(sessionInfo *codexSessionInfo, workspaceRoot stri
 }
 
 // writeDebugRawFiles writes debug JSON files for a Codex CLI session.
-// Each record is written as a numbered JSON file in .specstory/debug/<session-id>/
+// Each record is written as a numbered JSON file in .tracer/debug/<session-id>/
 func writeDebugRawFiles(sessionID string, records []map[string]interface{}) error {
 	// Get the debug directory path
 	debugDir := spi.GetDebugDir(sessionID)

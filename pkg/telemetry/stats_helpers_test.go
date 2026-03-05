@@ -3,8 +3,8 @@ package telemetry
 import (
 	"testing"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi/schema"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 // --- extractToolInfo tests ---

@@ -1,4 +1,4 @@
-module github.com/specstoryai/getspecstory/specstory-cli
+module github.com/tracer-ai/tracer-cli
 
 // When updating the Go version, also update:
 //   - README.md

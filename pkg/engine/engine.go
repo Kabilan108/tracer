@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	sessionpkg "github.com/specstoryai/getspecstory/specstory-cli/pkg/session"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/utils"
+	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
 
 const (

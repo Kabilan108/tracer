@@ -1,4 +1,4 @@
-// Package cmd contains CLI command implementations for the SpecStory CLI.
+// Package cmd contains CLI command implementations for the Tracer CLI.
 package cmd
 
 import (
@@ -13,7 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
+	"github.com/tracer-ai/tracer-cli/pkg/cloud"
 )
 
 // Login command quit constants - commands that cancel the login flow
@@ -29,11 +29,11 @@ const (
 func CreateLoginCommand(cloudURL *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Log in to SpecStory Cloud",
-		Long:  `Log in to SpecStory Cloud to enable cloud sync functionality.`,
+		Short: "Log in to Tracer Cloud",
+		Long:  `Log in to Tracer Cloud to enable cloud sync functionality.`,
 		Example: `
 # Log in
-specstory login`,
+tracer login`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slog.Info("Running login command")
 
@@ -62,7 +62,7 @@ specstory login`,
 				}
 
 				fmt.Println()
-				fmt.Println("🚀 Ready to sync with SpecStory Cloud! 💪")
+				fmt.Println("🚀 Ready to sync with Tracer Cloud! 💪")
 				fmt.Println()
 				return nil
 			}
@@ -72,7 +72,7 @@ specstory login`,
 			loginURL := cloud.GetAPIBaseURL() + "/cli-login"
 
 			fmt.Println()
-			fmt.Println("🌐 Opening your browser to log in to SpecStory Cloud...")
+			fmt.Println("🌐 Opening your browser to log in to Tracer Cloud...")
 			fmt.Println()
 
 			// Try to open the browser
@@ -169,14 +169,14 @@ specstory login`,
 				// Get user details to show who they logged in as
 				username, _ := cloud.AuthenticatedAs()
 
-				fmt.Println("🎉 Success! You're now logged in to SpecStory Cloud!")
+				fmt.Println("🎉 Success! You're now logged in to Tracer Cloud!")
 				if username != "" {
 					fmt.Printf("👤 Logged in as: %s\n", username)
 				}
 				fmt.Println()
-				fmt.Println("🚀 Ready to sync your sessions to SpecStory Cloud! 💪")
-				fmt.Println("   • specstory run  - Launch terminal coding agents with auto-sync'ing")
-				fmt.Println("   • specstory sync - Sync markdown files for existing sessions")
+				fmt.Println("🚀 Ready to sync your sessions to Tracer Cloud! 💪")
+				fmt.Println("   • tracer run  - Launch terminal coding agents with auto-sync'ing")
+				fmt.Println("   • tracer sync - Sync markdown files for existing sessions")
 				fmt.Println()
 
 				slog.Info("Login flow completed successfully", "user", username)

@@ -13,20 +13,20 @@ import (
 
 const defaultMatchWindow = 5 * time.Second
 
-// defaultDBPath returns ~/.specstory/provenance/provenance.db.
+// defaultDBPath returns ~/.tracer/provenance/provenance.db.
 // Returns an error if the home directory cannot be determined.
 func defaultDBPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("determining home directory: %w", err)
 	}
-	return filepath.Join(home, ".specstory", "provenance", "provenance.db"), nil
+	return filepath.Join(home, ".tracer", "provenance", "provenance.db"), nil
 }
 
 // Option configures the Engine.
 type Option func(*Engine)
 
-// WithDBPath overrides the default database location (~/.specstory/provenance/provenance.db).
+// WithDBPath overrides the default database location (~/.tracer/provenance/provenance.db).
 func WithDBPath(path string) Option {
 	return func(e *Engine) { e.dbPath = path }
 }
@@ -46,7 +46,7 @@ type Engine struct {
 }
 
 // NewEngine creates a correlation engine backed by a SQLite database.
-// By default the database is stored at ~/.specstory/provenance/provenance.db.
+// By default the database is stored at ~/.tracer/provenance/provenance.db.
 // Use WithDBPath to override.
 func NewEngine(opts ...Option) (*Engine, error) {
 	e := &Engine{

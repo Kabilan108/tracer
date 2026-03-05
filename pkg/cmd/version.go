@@ -1,4 +1,4 @@
-// Package cmd contains CLI command implementations for the SpecStory CLI.
+// Package cmd contains CLI command implementations for the Tracer CLI.
 package cmd
 
 import (
@@ -13,9 +13,9 @@ func CreateVersionCommand(version string) *cobra.Command {
 	return &cobra.Command{
 		Use:     "version",
 		Aliases: []string{"v", "ver"},
-		Short:   "Show SpecStory version information",
+		Short:   "Show Tracer version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("%s (SpecStory)\n", version)
+			fmt.Printf("%s (Tracer)\n", version)
 		},
 	}
 }

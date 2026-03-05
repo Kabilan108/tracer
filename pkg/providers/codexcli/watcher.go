@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 var (

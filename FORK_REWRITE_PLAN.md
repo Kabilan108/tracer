@@ -24,11 +24,11 @@ Build a streamlined Go CLI and daemon for extracting agent sessions, with:
 - Remove app/product analytics entirely.
 - Keep local activity telemetry and `statistics.json`.
 - OTEL optional, off by default.
-- Do not port existing SpecStory cloud sync/auth code.
+- Do not port existing Tracer cloud sync/auth code.
 - Use `justfile` (not `makefile`).
 - Add Nix scaffolding and Home Manager module, including a user service for daemon.
 
-## Current SpecStory Cloud Behavior (For Reference Only)
+## Current Tracer Cloud Behavior (For Reference Only)
 This is informational only and will not be ported as-is.
 - Auth endpoints:
   - `POST /api/v1/device-login`

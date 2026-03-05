@@ -31,7 +31,7 @@ func CheckForUpdates(currentVersion string, noVersionCheck bool, silent bool) {
 	}
 
 	// Make HEAD request to get redirect URL
-	resp, err := client.Head("https://github.com/specstoryai/getspecstory/releases/latest")
+	resp, err := client.Head("https://github.com/tracer-ai/tracer/releases/latest")
 	if err != nil {
 		slog.Error("Version check failed", "error", err)
 		return
@@ -78,7 +78,7 @@ func CheckForUpdates(currentVersion string, noVersionCheck bool, silent bool) {
 			fmt.Printf("│ Current version: %-42s │\n", currentVersion)
 			fmt.Printf("│ Latest version:  %-42s │\n", latestVersion)
 			fmt.Println("├─────────────────────────────────────────────────────────────┤")
-			fmt.Println("│ Visit https://docs.specstory.com/quickstart for updates     │")
+			fmt.Println("│ Visit https://docs.tracer.com/quickstart for updates     │")
 			fmt.Println("╰─────────────────────────────────────────────────────────────╯")
 			fmt.Println()
 		}

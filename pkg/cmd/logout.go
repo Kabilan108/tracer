@@ -1,4 +1,4 @@
-// Package cmd contains CLI command implementations for the SpecStory CLI.
+// Package cmd contains CLI command implementations for the Tracer CLI.
 package cmd
 
 import (
@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/cloud"
+	"github.com/tracer-ai/tracer-cli/pkg/cloud"
 )
 
 // CreateLogoutCommand creates the logout command.
@@ -19,14 +19,14 @@ import (
 func CreateLogoutCommand(cloudURL *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logout",
-		Short: "Log out from SpecStory Cloud",
-		Long:  `Log out from SpecStory Cloud by removing authentication credentials.`,
+		Short: "Log out from Tracer Cloud",
+		Long:  `Log out from Tracer Cloud by removing authentication credentials.`,
 		Example: `
 # Log out
-specstory logout
+tracer logout
 
 # Log out without a confirmation prompt
-specstory logout --force`,
+tracer logout --force`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slog.Info("Running logout command")
 
@@ -50,7 +50,7 @@ specstory logout --force`,
 			if !force {
 				// User is logged in - ask for confirmation with style
 				fmt.Println()
-				fmt.Println("🔐 You're currently logged in to SpecStory Cloud.")
+				fmt.Println("🔐 You're currently logged in to Tracer Cloud.")
 				fmt.Println("🤔 Are you sure you want to log out?")
 				fmt.Println()
 				fmt.Print("Type 'yes' to confirm logout, or anything else to stay connected: ")
@@ -88,8 +88,8 @@ specstory logout --force`,
 
 			// Success!
 			fmt.Println()
-			fmt.Println("👋 Successfully logged out from SpecStory Cloud.")
-			fmt.Println("💝 Thanks for using SpecStory! See you again soon! ✨")
+			fmt.Println("👋 Successfully logged out from Tracer Cloud.")
+			fmt.Println("💝 Thanks for using Tracer! See you again soon! ✨")
 			fmt.Println()
 
 			return nil

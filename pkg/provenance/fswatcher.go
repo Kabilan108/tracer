@@ -12,7 +12,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	ignore "github.com/sabhiram/go-gitignore"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 const debounceWindow = 100 * time.Millisecond
@@ -21,7 +21,7 @@ const debounceWindow = 100 * time.Millisecond
 // Checked via filepath.Base for O(1) lookup.
 var excludedDirs = map[string]bool{
 	".git":          true,
-	".specstory":    true,
+	".tracer":       true,
 	"node_modules":  true,
 	".next":         true,
 	"__pycache__":   true,

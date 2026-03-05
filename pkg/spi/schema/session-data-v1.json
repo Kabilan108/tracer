@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://specstory.ai/schemas/session-data-v1.json",
+  "$id": "https://tracer.ai/schemas/session-data-v1.json",
   "title": "Session Data",
   "type": "object",
   "additionalProperties": false,

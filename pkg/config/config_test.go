@@ -12,7 +12,7 @@ import (
 // Helper to create a temporary config file with the given content
 func createTempConfigFile(t *testing.T, dir, content string) string {
 	t.Helper()
-	configDir := filepath.Join(dir, SpecStoryDir, CLIDir)
+	configDir := filepath.Join(dir, TracerDir, CLIDir)
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestProcessTemplate(t *testing.T) {
 			t.Errorf("Processed default template should not contain raw markers, got:\n%s", result)
 		}
 		// Should still contain the shared content
-		if !strings.Contains(result, "SpecStory CLI Configuration") {
+		if !strings.Contains(result, "Tracer CLI Configuration") {
 			t.Errorf("Processed template should contain header, got:\n%s", result)
 		}
 	})
@@ -662,7 +662,7 @@ func TestMissingFileHandling(t *testing.T) {
 			wantError:      false,
 		},
 		{
-			name:           ".specstory dirs exist but no config files - no error",
+			name:           ".tracer dirs exist but no config files - no error",
 			createUserDir:  true,
 			createProjDir:  true,
 			createUserConf: false,
@@ -689,7 +689,7 @@ func TestMissingFileHandling(t *testing.T) {
 
 			// Create directories if needed
 			if tt.createUserDir {
-				userConfigDir := filepath.Join(tempHome, SpecStoryDir, CLIDir)
+				userConfigDir := filepath.Join(tempHome, TracerDir, CLIDir)
 				if err := os.MkdirAll(userConfigDir, 0755); err != nil {
 					t.Fatalf("Failed to create user config dir: %v", err)
 				}
@@ -702,7 +702,7 @@ func TestMissingFileHandling(t *testing.T) {
 			}
 
 			if tt.createProjDir {
-				projConfigDir := filepath.Join(tempProject, SpecStoryDir, CLIDir)
+				projConfigDir := filepath.Join(tempProject, TracerDir, CLIDir)
 				if err := os.MkdirAll(projConfigDir, 0755); err != nil {
 					t.Fatalf("Failed to create project config dir: %v", err)
 				}
@@ -822,7 +822,7 @@ func TestEnsureDefaultUserConfig(t *testing.T) {
 		}
 
 		// Verify the file was created at the correct path
-		expectedPath := filepath.Join(tempHome, SpecStoryDir, CLIDir, ConfigFileName)
+		expectedPath := filepath.Join(tempHome, TracerDir, CLIDir, ConfigFileName)
 		if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
 			t.Fatalf("Default config file was not created at %s", expectedPath)
 		}
@@ -879,7 +879,7 @@ func TestEnsureDefaultUserConfig(t *testing.T) {
 		}
 
 		// Verify file content is still the original
-		configPath := filepath.Join(tempHome, SpecStoryDir, CLIDir, ConfigFileName)
+		configPath := filepath.Join(tempHome, TracerDir, CLIDir, ConfigFileName)
 		content, err := os.ReadFile(configPath)
 		if err != nil {
 			t.Fatalf("Failed to read config: %v", err)
@@ -900,16 +900,16 @@ func TestEnsureDefaultUserConfig(t *testing.T) {
 			t.Fatalf("Failed to chdir: %v", err)
 		}
 
-		// Make .specstory directory read-only so config creation fails
-		specstoryDir := filepath.Join(tempHome, SpecStoryDir)
-		if err := os.MkdirAll(specstoryDir, 0755); err != nil {
+		// Make .tracer directory read-only so config creation fails
+		tracerDir := filepath.Join(tempHome, TracerDir)
+		if err := os.MkdirAll(tracerDir, 0755); err != nil {
 			t.Fatalf("Failed to create dir: %v", err)
 		}
-		if err := os.Chmod(specstoryDir, 0555); err != nil {
+		if err := os.Chmod(tracerDir, 0555); err != nil {
 			t.Fatalf("Failed to chmod: %v", err)
 		}
 		// Restore permissions for cleanup
-		defer func() { _ = os.Chmod(specstoryDir, 0755) }()
+		defer func() { _ = os.Chmod(tracerDir, 0755) }()
 
 		// Load should succeed even though config creation fails
 		_, err := Load(nil)
@@ -918,7 +918,7 @@ func TestEnsureDefaultUserConfig(t *testing.T) {
 		}
 
 		// Verify no config file was created
-		configPath := filepath.Join(tempHome, SpecStoryDir, CLIDir, ConfigFileName)
+		configPath := filepath.Join(tempHome, TracerDir, CLIDir, ConfigFileName)
 		if _, statErr := os.Stat(configPath); !os.IsNotExist(statErr) {
 			t.Errorf("Config file should not exist at %s", configPath)
 		}

@@ -293,16 +293,16 @@ func TestOutputPathConfigMethods(t *testing.T) {
 	t.Run("with empty base directory", func(t *testing.T) {
 		config := &OutputPathConfig{}
 
-		// Test GetHistoryDir - should include .specstory/history
+		// Test GetHistoryDir - should include .tracer/history
 		historyDir := config.GetHistoryDir()
-		if !strings.Contains(historyDir, SPECSTORY_DIR) || !strings.Contains(historyDir, HISTORY_DIR) {
-			t.Errorf("GetHistoryDir() = %v, want path containing %s/%s", historyDir, SPECSTORY_DIR, HISTORY_DIR)
+		if !strings.Contains(historyDir, TRACER_DIR) || !strings.Contains(historyDir, HISTORY_DIR) {
+			t.Errorf("GetHistoryDir() = %v, want path containing %s/%s", historyDir, TRACER_DIR, HISTORY_DIR)
 		}
 
-		// Test GetDebugDir - should include .specstory/debug
+		// Test GetDebugDir - should include .tracer/debug
 		debugDir := config.GetDebugDir()
-		if !strings.Contains(debugDir, SPECSTORY_DIR) || !strings.Contains(debugDir, DEBUG_DIR) {
-			t.Errorf("GetDebugDir() = %v, want path containing %s/%s", debugDir, SPECSTORY_DIR, DEBUG_DIR)
+		if !strings.Contains(debugDir, TRACER_DIR) || !strings.Contains(debugDir, DEBUG_DIR) {
+			t.Errorf("GetDebugDir() = %v, want path containing %s/%s", debugDir, TRACER_DIR, DEBUG_DIR)
 		}
 
 		// Test GetLogPath

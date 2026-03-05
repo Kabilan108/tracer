@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/log"
-	"github.com/specstoryai/getspecstory/specstory-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // Provider implements the SPI Provider interface for Claude Code
@@ -129,7 +129,7 @@ func buildCheckErrorMessage(errorType string, claudeCmd string, isCustom bool, s
 			errorMsg.WriteString("     2. If it's already installed, try:\n")
 			errorMsg.WriteString("        • Check if 'claude' is in your PATH\n")
 			errorMsg.WriteString("        • Use -c flag to specify the full path\n")
-			errorMsg.WriteString("        • Example: specstory check claude -c \"~/.claude/local/claude\"")
+			errorMsg.WriteString("        • Example: tracer check claude -c \"~/.claude/local/claude\"")
 		}
 	case "permission_denied":
 		fmt.Fprintf(&errorMsg, "  🔒 Permission denied when trying to run: %s\n", claudeCmd)
@@ -259,7 +259,7 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 		log.UserMessage("Claude Code hasn't created a project folder for your current directory yet.\n")
 		log.UserMessage("This happens when Claude Code hasn't been run in this directory.\n\n")
 		log.UserMessage("To fix this:\n")
-		log.UserMessage("  1. Run 'specstory run' to start Claude Code in this directory\n")
+		log.UserMessage("  1. Run 'tracer run' to start Claude Code in this directory\n")
 		log.UserMessage("  2. Or run Claude Code directly with `claude`, then try syncing again\n\n")
 		log.UserMessage("Expected project folder: %s\n", claudeProjectPath)
 		fmt.Println() // Add trailing newline
