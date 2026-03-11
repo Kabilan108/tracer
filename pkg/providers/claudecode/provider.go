@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/tracer-ai/tracer-cli/pkg/log"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
@@ -289,79 +288,6 @@ func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progr
 	return parseProjectSessions(claudeProjectDir, projectPath, debugRaw, progress)
 }
 
-// GetAgentChatSession retrieves a single chat session by ID for the given project path
-func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
-	if strings.TrimSpace(projectPath) == "" {
-		projectDirs, err := ListClaudeCodeProjectDirs()
-		if err != nil {
-			return nil, err
-		}
-
-		for _, projectDir := range projectDirs {
-			parser := NewJSONLParser()
-			err := parser.ParseSingleSession(projectDir, sessionID)
-			if err != nil {
-				if strings.Contains(err.Error(), "not found") {
-					continue
-				}
-				slog.Warn("GetAgentChatSession: failed to parse Claude project session",
-					"projectDir", projectDir,
-					"sessionID", sessionID,
-					"error", err)
-				continue
-			}
-
-			sessionPointer := parser.FindSession(sessionID)
-			if sessionPointer == nil {
-				continue
-			}
-			session := *sessionPointer
-			if len(session.Records) == 0 {
-				return nil, nil
-			}
-			return processSession(session, "", debugRaw), nil
-		}
-
-		return nil, nil
-	}
-
-	// Get the Claude Code project directory
-	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if project directory exists
-	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
-		return nil, nil // No sessions if no project
-	}
-
-	// Parse only the session we're looking for
-	parser := NewJSONLParser()
-	err = parser.ParseSingleSession(claudeProjectDir, sessionID)
-	if err != nil {
-		// If session not found, return nil (not an error)
-		if strings.Contains(err.Error(), "not found") {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	// Find the session
-	sessionPointer := parser.FindSession(sessionID)
-	if sessionPointer == nil {
-		return nil, nil
-	}
-	session := *sessionPointer
-
-	// Skip empty sessions (no records)
-	if len(session.Records) == 0 {
-		return nil, nil
-	}
-
-	return processSession(session, projectPath, debugRaw), nil
-}
-
 func parseProjectSessions(claudeProjectDir string, workspaceRoot string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
 	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
 		return []spi.AgentChatSession{}, nil
@@ -385,58 +311,6 @@ func parseProjectSessions(claudeProjectDir string, workspaceRoot string, debugRa
 	return result, nil
 }
 
-// ExecAgentAndWatch executes Claude Code in interactive mode and watches for session updates
-func (p *Provider) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	slog.Info("ExecAgentAndWatch: Starting Claude Code execution and monitoring",
-		"projectPath", projectPath,
-		"customCommand", customCommand,
-		"resumeSessionID", resumeSessionID,
-		"debugRaw", debugRaw)
-
-	// Validate resume session ID if provided (Claude Code uses UUID format)
-	if resumeSessionID != "" {
-		resumeSessionID = strings.TrimSpace(resumeSessionID)
-		// Simple UUID validation for Claude Code sessions
-		if len(resumeSessionID) != 36 || !strings.Contains(resumeSessionID, "-") {
-			return fmt.Errorf("invalid session ID format for Claude Code: %s (must be a UUID)", resumeSessionID)
-		}
-		slog.Info("Resuming Claude Code session", "sessionId", resumeSessionID)
-	}
-
-	// Set up the callback which enables real-time markdown generation during
-	// interactive sessions. As Claude Code writes JSONL updates, the watcher detects
-	// changes and invokes this callback, allowing immediate processing without blocking
-	// the agent's execution. The defer ensures cleanup when the agent exits.
-	SetWatcherCallback(sessionCallback)
-	defer ClearWatcherCallback()
-
-	// Set debug raw mode for the watcher
-	SetWatcherDebugRaw(debugRaw)
-
-	// Start watching for project directory in the background
-	slog.Info("Initializing project directory monitoring...")
-
-	if err := WatchForProjectDir(); err != nil {
-		// Log the error but don't fail - watcher might work later
-		slog.Error("Failed to start project directory watcher", "error", err)
-	}
-
-	// Execute Claude Code - this blocks until Claude exits
-	slog.Info("Executing Claude Code", "command", customCommand)
-	err := ExecuteClaude(customCommand, resumeSessionID)
-
-	// Stop the watcher goroutine before returning
-	slog.Info("Claude Code has exited, stopping watcher")
-	StopWatcher()
-
-	// Return any execution error
-	if err != nil {
-		return fmt.Errorf("claude Code execution failed: %w", err)
-	}
-
-	return nil
-}
-
 // WatchAgent watches for Claude Code agent activity and calls the callback with AgentChatSession
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation
@@ -446,82 +320,9 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 		"debugRaw", debugRaw)
 
 	if strings.TrimSpace(projectPath) == "" {
-		slog.Info("WatchAgent: Using global polling mode for Claude projects")
-
-		type sessionFingerprint struct {
-			messageCount int
-			updatedAt    string
-		}
-
-		current := make(map[string]sessionFingerprint)
-		updateState := func(emit bool) {
-			sessions, err := p.GetAgentChatSessions("", debugRaw, nil)
-			if err != nil {
-				slog.Warn("WatchAgent: failed to poll Claude sessions", "error", err)
-				return
-			}
-
-			next := make(map[string]sessionFingerprint, len(sessions))
-			for i := range sessions {
-				session := sessions[i]
-				if session.SessionData == nil {
-					continue
-				}
-
-				messageCount := 0
-				for _, exchange := range session.SessionData.Exchanges {
-					messageCount += len(exchange.Messages)
-				}
-
-				fp := sessionFingerprint{
-					messageCount: messageCount,
-					updatedAt:    session.SessionData.UpdatedAt,
-				}
-				next[session.SessionID] = fp
-
-				prev, seen := current[session.SessionID]
-				if emit && (!seen || prev != fp) {
-					sessionCopy := session
-					sessionCallback(&sessionCopy)
-				}
-			}
-
-			current = next
-		}
-
-		updateState(false)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-ticker.C:
-				updateState(true)
-			}
-		}
+		slog.Info("WatchAgent: Using global event-driven mode for Claude projects")
+		return watchClaudeProjects(ctx, debugRaw, sessionCallback)
 	}
-
-	// The watcher callback directly passes AgentChatSession (which now contains SessionData)
-	wrappedCallback := func(agentChatSession *spi.AgentChatSession) {
-		slog.Debug("WatchAgent: Received AgentChatSession",
-			"sessionID", agentChatSession.SessionID,
-			"hasSessionData", agentChatSession.SessionData != nil)
-
-		// Call the user's callback with the AgentChatSession
-		sessionCallback(agentChatSession)
-	}
-
-	// Set up the callback for the watcher
-	SetWatcherCallback(wrappedCallback)
-	defer ClearWatcherCallback()
-
-	// Set debug raw mode for the watcher
-	SetWatcherDebugRaw(debugRaw)
-
-	// Get the Claude Code project directory for the specified project path
-	slog.Info("WatchAgent: Initializing project directory monitoring...")
 
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
 	if err != nil {
@@ -530,24 +331,7 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 	}
 
 	slog.Info("WatchAgent: Project directory found", "directory", claudeProjectDir)
-
-	if err := startProjectWatcher(claudeProjectDir); err != nil {
-		slog.Error("WatchAgent: Failed to start project watcher", "error", err)
-		return fmt.Errorf("failed to start watcher: %w", err)
-	}
-
-	// Block until context is cancelled
-	// The watcher runs in a background goroutine and will continue
-	// until context is cancelled or the process exits
-	slog.Info("WatchAgent: Watcher started, blocking until context cancelled")
-
-	// Wait for context cancellation
-	<-ctx.Done()
-
-	slog.Info("WatchAgent: Context cancelled, stopping watcher")
-	StopWatcher()
-
-	return ctx.Err()
+	return watchClaudeProject(ctx, claudeProjectDir, debugRaw, sessionCallback)
 }
 
 // isSyntheticMessage checks if a message is synthetic/internal and should be skipped
@@ -685,6 +469,7 @@ func extractSessionMetadata(filePath string) (*spi.SessionMetadata, error) {
 	var sessionID string
 	var timestamp string
 	var firstUserMessage string
+	var workspaceRoot string
 	foundRealMessage := false
 
 	// Read records until we find everything we need.
@@ -713,6 +498,11 @@ func extractSessionMetadata(filePath string) (*spi.SessionMetadata, error) {
 				if sessionID == "" {
 					if sid, ok := record["sessionId"].(string); ok {
 						sessionID = sid
+					}
+				}
+				if workspaceRoot == "" {
+					if cwd, ok := record["cwd"].(string); ok && strings.TrimSpace(cwd) != "" {
+						workspaceRoot = strings.TrimSpace(cwd)
 					}
 				}
 
@@ -765,9 +555,10 @@ func extractSessionMetadata(filePath string) (*spi.SessionMetadata, error) {
 	name := spi.GenerateReadableName(firstUserMessage)
 
 	return &spi.SessionMetadata{
-		SessionID: sessionID,
-		CreatedAt: timestamp,
-		Slug:      slug,
-		Name:      name,
+		SessionID:     sessionID,
+		CreatedAt:     timestamp,
+		Slug:          slug,
+		Name:          name,
+		WorkspaceRoot: workspaceRoot,
 	}, nil
 }

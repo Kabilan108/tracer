@@ -56,9 +56,6 @@ func TestGetUserConfigPath(t *testing.T) {
 func TestLoadPathAndOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfigFile(t, dir, `
-[version_check]
-enabled = true
-
 [archive]
 root_dir = "/tmp/archive"
 
@@ -87,14 +84,12 @@ exclude_path_globs = ["/tmp/*"]
 		OutputDir:            "/override/archive",
 		DebugDir:             "/override/debug",
 		LocalTimeZone:        true,
-		NoVersionCheck:       true,
 		Console:              true,
 		Log:                  true,
 		Debug:                true,
 		Silent:               true,
 		TelemetryEndpoint:    "collector:4317",
 		TelemetryServiceName: "override-service",
-		NoTelemetryPrompts:   true,
 	})
 	if err != nil {
 		t.Fatalf("LoadPath() error = %v", err)
@@ -105,9 +100,6 @@ exclude_path_globs = ["/tmp/*"]
 	}
 	if got := cfg.GetDebugDir(); got != "/override/debug" {
 		t.Fatalf("GetDebugDir() = %q, want %q", got, "/override/debug")
-	}
-	if cfg.IsVersionCheckEnabled() {
-		t.Fatal("IsVersionCheckEnabled() = true, want false")
 	}
 	if !cfg.IsLocalTimeZoneEnabled() {
 		t.Fatal("IsLocalTimeZoneEnabled() = false, want true")
@@ -120,9 +112,6 @@ exclude_path_globs = ["/tmp/*"]
 	}
 	if got := cfg.GetTelemetryServiceName(); got != "override-service" {
 		t.Fatalf("GetTelemetryServiceName() = %q, want %q", got, "override-service")
-	}
-	if !cfg.IsTelemetryPromptsDisabled() {
-		t.Fatal("IsTelemetryPromptsDisabled() = false, want true")
 	}
 
 	providers := cfg.GetEnabledProviders()
@@ -166,6 +155,28 @@ foo = "bar"
 	}
 	if len(result.UnknownKeys) == 0 {
 		t.Fatal("ValidateConfigFile().UnknownKeys should include unknown_section")
+	}
+}
+
+func TestValidateConfigFile_IgnoresLegacyRemovedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfigFile(t, dir, `
+[version_check]
+enabled = false
+
+[telemetry]
+prompts = false
+`)
+
+	result := ValidateConfigFile(path)
+	if !result.Exists {
+		t.Fatal("ValidateConfigFile().Exists = false, want true")
+	}
+	if !result.ValidTOML {
+		t.Fatalf("ValidateConfigFile().ValidTOML = false, parse error: %s", result.ParseError)
+	}
+	if len(result.UnknownKeys) != 0 {
+		t.Fatalf("ValidateConfigFile().UnknownKeys = %#v, want none", result.UnknownKeys)
 	}
 }
 

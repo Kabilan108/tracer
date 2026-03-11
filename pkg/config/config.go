@@ -17,6 +17,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+var ignoredLegacyKeys = map[string]struct{}{
+	"telemetry.prompts":     {},
+	"version_check":         {},
+	"version_check.enabled": {},
+}
+
 const (
 	// ConfigFileName is the name of the configuration file.
 	ConfigFileName = "config.toml"
@@ -26,10 +32,6 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 #
 # This file configures Tracer globally for your user account.
 # Path: ~/.config/tracer/config.toml
-
-[version_check]
-# Check for new versions on startup (default: true)
-# enabled = false
 
 [archive]
 # Global archive root for generated markdown.
@@ -65,9 +67,6 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 # Override default telemetry service name (default: tracer-cli)
 # service_name = "my-service"
 
-# Include prompt text in telemetry spans (default: true)
-# prompts = false
-
 [ingest]
 # Limit sync/watch processing to these providers.
 # Empty means all registered providers.
@@ -82,17 +81,11 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 
 // Config represents the complete CLI configuration.
 type Config struct {
-	VersionCheck VersionCheckConfig `toml:"version_check"`
-	LocalSync    LocalSyncConfig    `toml:"local_sync"`
-	Logging      LoggingConfig      `toml:"logging"`
-	Telemetry    TelemetryConfig    `toml:"telemetry"`
-	Archive      ArchiveConfig      `toml:"archive"`
-	Ingest       IngestConfig       `toml:"ingest"`
-}
-
-// VersionCheckConfig holds version check settings.
-type VersionCheckConfig struct {
-	Enabled *bool `toml:"enabled"`
+	LocalSync LocalSyncConfig `toml:"local_sync"`
+	Logging   LoggingConfig   `toml:"logging"`
+	Telemetry TelemetryConfig `toml:"telemetry"`
+	Archive   ArchiveConfig   `toml:"archive"`
+	Ingest    IngestConfig    `toml:"ingest"`
 }
 
 // LocalSyncConfig holds local file sync settings.
@@ -113,7 +106,6 @@ type LoggingConfig struct {
 type TelemetryConfig struct {
 	Endpoint    string `toml:"endpoint"`
 	ServiceName string `toml:"service_name"`
-	Prompts     *bool  `toml:"prompts"`
 }
 
 // ArchiveConfig configures the global markdown archive output root.
@@ -133,8 +125,6 @@ type CLIOverrides struct {
 	OutputDir     string
 	LocalTimeZone bool
 
-	NoVersionCheck bool
-
 	DebugDir string
 	Console  bool
 	Log      bool
@@ -143,7 +133,6 @@ type CLIOverrides struct {
 
 	TelemetryEndpoint    string
 	TelemetryServiceName string
-	NoTelemetryPrompts   bool
 }
 
 // ConfigValidationResult holds the result of validating a config file.
@@ -248,11 +237,17 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 	undecoded := md.Undecoded()
 	unknownSections := make(map[string]bool)
 	for _, key := range undecoded {
+		if isIgnoredLegacyKey(key) {
+			continue
+		}
 		if len(key) == 1 {
 			unknownSections[key[0]] = true
 		}
 	}
 	for _, key := range undecoded {
+		if isIgnoredLegacyKey(key) {
+			continue
+		}
 		if len(key) > 1 && unknownSections[key[0]] {
 			continue
 		}
@@ -260,6 +255,11 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 	}
 
 	return result
+}
+
+func isIgnoredLegacyKey(key toml.Key) bool {
+	_, ok := ignoredLegacyKeys[key.String()]
+	return ok
 }
 
 func applyCLIOverrides(cfg *Config, o *CLIOverrides) {
@@ -273,12 +273,6 @@ func applyCLIOverrides(cfg *Config, o *CLIOverrides) {
 	if o.DebugDir != "" {
 		cfg.Logging.DebugDir = o.DebugDir
 	}
-
-	if o.NoVersionCheck {
-		disabled := false
-		cfg.VersionCheck.Enabled = &disabled
-	}
-
 	if o.Console {
 		enabled := true
 		cfg.Logging.Console = &enabled
@@ -302,10 +296,6 @@ func applyCLIOverrides(cfg *Config, o *CLIOverrides) {
 	if o.TelemetryServiceName != "" {
 		cfg.Telemetry.ServiceName = o.TelemetryServiceName
 	}
-	if o.NoTelemetryPrompts {
-		disabled := false
-		cfg.Telemetry.Prompts = &disabled
-	}
 }
 
 func (c *Config) GetOutputDir() string {
@@ -314,13 +304,6 @@ func (c *Config) GetOutputDir() string {
 
 func (c *Config) GetArchiveRoot() string {
 	return c.Archive.RootDir
-}
-
-func (c *Config) IsVersionCheckEnabled() bool {
-	if c.VersionCheck.Enabled != nil {
-		return *c.VersionCheck.Enabled
-	}
-	return true
 }
 
 func (c *Config) IsConsoleEnabled() bool {
@@ -364,13 +347,6 @@ func (c *Config) GetTelemetryEndpoint() string {
 
 func (c *Config) GetTelemetryServiceName() string {
 	return c.Telemetry.ServiceName
-}
-
-func (c *Config) IsTelemetryPromptsDisabled() bool {
-	if c.Telemetry.Prompts != nil {
-		return !*c.Telemetry.Prompts
-	}
-	return false
 }
 
 func (c *Config) GetDebugDir() string {

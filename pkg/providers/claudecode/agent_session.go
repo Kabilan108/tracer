@@ -238,8 +238,7 @@ func mergeToolResultIntoExchange(exchange *Exchange, messageContent []interface{
 				"content":  content,
 				"is_error": isError,
 			}
-			// Update message timestamp to when the tool actually completed,
-			// not when the agent requested it (needed for provenance correlation)
+			// Update the message timestamp to when the tool actually completed.
 			msg.Timestamp = resultTimestamp
 			return
 		}

@@ -31,10 +31,11 @@ type AgentChatSession struct {
 // SessionMetadata contains lightweight metadata about a session without full content
 // Used by ListAgentChatSessions for efficient session listing
 type SessionMetadata struct {
-	SessionID string `json:"session_id" csv:"session_id"` // Stable and unique identifier for the session
-	CreatedAt string `json:"created_at" csv:"created_at"` // Stable ISO 8601 timestamp when session was created
-	Slug      string `json:"slug" csv:"slug"`             // Stable human-readable session name/slug
-	Name      string `json:"name" csv:"name"`             // Human-readable description of the session (may be empty if not available)
+	SessionID     string `json:"session_id" csv:"session_id"`         // Stable and unique identifier for the session
+	CreatedAt     string `json:"created_at" csv:"created_at"`         // Stable ISO 8601 timestamp when session was created
+	Slug          string `json:"slug" csv:"slug"`                     // Stable human-readable session name/slug
+	Name          string `json:"name" csv:"name"`                     // Human-readable description of the session (may be empty if not available)
+	WorkspaceRoot string `json:"workspace_root" csv:"workspace_root"` // Absolute project path for the session when known
 }
 
 // Provider defines the interface that all agent coding tool providers must implement
@@ -52,14 +53,6 @@ type Provider interface {
 	// Returns true if the agent has created artifacts/sessions in the specified path
 	DetectAgent(projectPath string, helpOutput bool) bool
 
-	// GetAgentChatSession retrieves a single chat session by ID for the given project path
-	// projectPath: Agent's working directory
-	// sessionID: specific session identifier to retrieve (always provided, never empty)
-	// debugRaw: if true, provider should write provider-specific raw debug files to ~/.local/state/tracer/debug/<sessionID>/
-	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
-	// Returns nil if the session is not found, error for actual errors
-	GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*AgentChatSession, error)
-
 	// GetAgentChatSessions retrieves all chat sessions for the given project path
 	// projectPath: Agent's working directory
 	// debugRaw: if true, provider should write provider-specific raw debug files to ~/.local/state/tracer/debug/<sessionID>/
@@ -73,17 +66,6 @@ type Provider interface {
 	// projectPath: Agent's working directory
 	// Returns a slice of SessionMetadata (ordering is provider-defined; consumers will sort if needed)
 	ListAgentChatSessions(projectPath string) ([]SessionMetadata, error)
-
-	// ExecAgentAndWatch executes the agent in interactive mode and watches for session updates
-	// Blocks until the agent exits, calling sessionCallback for each new/updated session
-	// projectPath: Agent's working directory
-	// customCommand: empty string = use detected/default binary with default args, non-empty = use this specific command/path
-	// resumeSessionID: empty string = start new session, non-empty = resume this specific session ID
-	// debugRaw: if true, provider should write provider-specific raw debug files to ~/.local/state/tracer/debug/<sessionID>/
-	//           (e.g., numbered JSON files). The unified session-data.json is written centrally by the CLI.
-	// sessionCallback is called with each session update (provider should not block on callback)
-	// The implementation should handle its own file watching and session tracking
-	ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*AgentChatSession)) error
 
 	// WatchAgent watches for agent activity and calls the callback with an updated AgentChatSession
 	// Does NOT execute the agent - only watches for new activity

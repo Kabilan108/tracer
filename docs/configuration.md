@@ -49,13 +49,9 @@ Default output layout:
 ### `[local_sync]`
 - `local_time_zone`
 
-### `[version_check]`
-- `enabled`
-
 ### `[telemetry]` (optional)
 - `endpoint`
 - `service_name`
-- `prompts`
 
 Environment overrides:
 - `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -72,8 +68,6 @@ Persistent flags override config values at runtime, for example:
 - `--local-time-zone`
 - `--telemetry-endpoint`
 - `--telemetry-service-name`
-- `--no-version-check`
-- `--no-telemetry-prompts`
 
 ## Home Manager (Linux)
 This repo exposes a Home Manager module at `nix/hm-module.nix`.
@@ -120,4 +114,3 @@ tracer config check
 tracer sync
 tracer watch
 ```
-

@@ -50,7 +50,7 @@ type Options struct {
 	UseUTC                 bool
 	Debounce               time.Duration
 	PathBuilder            PathBuilder
-	NoTelemetryText        bool
+	ShouldProcessSession   func(providerID string, session *spi.AgentChatSession) bool
 	OnProviderScanStart    func(providerID string)
 	OnProviderScanComplete func(providerID string, totalSessions int, err error)
 	OnSessionProcessed     func(providerID string, outcome ProcessOutcome, processed int, total int)
@@ -94,10 +94,14 @@ func New(opts Options) (*Engine, error) {
 	}
 	if opts.PathBuilder == nil {
 		historyDir := opts.HistoryDir
-		useUTC := opts.UseUTC
 		opts.PathBuilder = func(providerID string, session *spi.AgentChatSession) string {
-			legacyPath := sessionpkg.BuildSessionFilePath(session, historyDir, useUTC)
-			return filepath.Join(historyDir, providerID, filepath.Base(legacyPath))
+			timestamp, _ := time.Parse(time.RFC3339, session.CreatedAt)
+			timestampStr := formatSessionFilenameTimestamp(timestamp, opts.UseUTC)
+			filename := timestampStr
+			if session.Slug != "" {
+				filename = fmt.Sprintf("%s-%s", timestampStr, session.Slug)
+			}
+			return filepath.Join(historyDir, providerID, filename+".md")
 		}
 	}
 
@@ -191,6 +195,16 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 				default:
 				}
 
+				if !e.shouldProcessSession(result.providerID, &result.sessions[i]) {
+					runSummary.Skipped++
+					e.recordOutcome(OutcomeSkipped)
+					processedCount++
+					if e.opts.OnSessionProcessed != nil {
+						e.opts.OnSessionProcessed(result.providerID, OutcomeSkipped, processedCount, len(result.sessions))
+					}
+					continue
+				}
+
 				outcome, err := e.processSession(result.providerID, &result.sessions[i])
 				if err != nil {
 					runSummary.Errors++
@@ -232,6 +246,9 @@ func (e *Engine) WatchProviders(ctx context.Context, projectPath string, provide
 // QueueSessionUpdate debounces repeated updates for the same provider/session pair.
 func (e *Engine) QueueSessionUpdate(providerID string, session *spi.AgentChatSession) {
 	if session == nil {
+		return
+	}
+	if !e.shouldProcessSession(providerID, session) {
 		return
 	}
 
@@ -408,4 +425,18 @@ func (e *Engine) recordOutcome(outcome ProcessOutcome) {
 func hashMarkdown(content string) string {
 	sum := sha256.Sum256([]byte(content))
 	return hex.EncodeToString(sum[:])
+}
+
+func (e *Engine) shouldProcessSession(providerID string, session *spi.AgentChatSession) bool {
+	if e.opts.ShouldProcessSession == nil {
+		return true
+	}
+	return e.opts.ShouldProcessSession(providerID, session)
+}
+
+func formatSessionFilenameTimestamp(t time.Time, useUTC bool) string {
+	if useUTC {
+		return t.UTC().Format("2006-01-02_15-04-05") + "Z"
+	}
+	return t.Local().Format("2006-01-02_15-04-05-0700")
 }

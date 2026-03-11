@@ -1,6 +1,8 @@
 package claudecode
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -237,6 +239,32 @@ func TestFindFirstUserMessage(t *testing.T) {
 				t.Errorf("findFirstUserMessage() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestEnsureClaudeDirWatch_WatchesProjectsIfAlreadyPresent(t *testing.T) {
+	tempDir := t.TempDir()
+	claudeDir := filepath.Join(tempDir, ".claude")
+	projectsDir := filepath.Join(claudeDir, "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	var watched []string
+	watchProjectsRootCalled := false
+
+	ensureClaudeDirWatch(claudeDir, projectsDir, func(dir string) error {
+		watched = append(watched, dir)
+		return nil
+	}, func() {
+		watchProjectsRootCalled = true
+	})
+
+	if len(watched) != 1 || watched[0] != claudeDir {
+		t.Fatalf("watched directories = %v, want [%s]", watched, claudeDir)
+	}
+	if !watchProjectsRootCalled {
+		t.Fatal("watchProjectsRoot was not called when projects directory already existed")
 	}
 }
 

@@ -12,8 +12,7 @@ go 1.26.0
 require (
 	github.com/BurntSushi/toml v1.6.0 // TOML parsing for configuration files
 	github.com/fsnotify/fsnotify v1.9.0 // Cross-platform file system event notifications
-	github.com/google/uuid v1.6.0 // Generates and inspects UUIDs
-	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06 // Git ignore file parsing
+	github.com/google/uuid v1.6.0 // indirect; Generates and inspects UUIDs
 	github.com/spf13/cobra v1.10.2 // Command-line interface framework
 	github.com/xeipuuv/gojsonschema v1.2.0 // JSON document validation against a JSON schema
 	go.opentelemetry.io/otel v1.40.0 // send observability data to observability platforms

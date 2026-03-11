@@ -1,17 +1,14 @@
-// Package telemetry provides OpenTelemetry trace and metric initialization for the Tracer CLI.
+// Package telemetry provides OpenTelemetry initialization for the Tracer CLI.
 // It follows an idempotent-init pattern: first call to Init wins, and the
-// disabled path uses the OTel no-op provider (zero overhead, no nil checks needed).
+// disabled path uses the OTel no-op provider.
 package telemetry
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +16,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -32,7 +27,6 @@ var (
 	logger  *slog.Logger
 )
 
-// telemetryLogger returns a cached slog.Logger tagged with component=telemetry.
 func telemetryLogger() *slog.Logger {
 	logOnce.Do(func() {
 		logger = slog.Default().With("component", "telemetry")
@@ -40,117 +34,40 @@ func telemetryLogger() *slog.Logger {
 	return logger
 }
 
-const (
-	// metricExportInterval is how often metrics are exported to the collector.
-	metricExportInterval = 10 * time.Second
-)
+const metricExportInterval = 10 * time.Second
 
-// Options configures telemetry initialisation.
 type Options struct {
-	ServiceName string // OTel service.name resource attribute (default "tracer-cli")
-	Endpoint    string // OTLP gRPC collector address; must be non-empty when Enabled is true
-	Enabled     bool   // When false, Init is a no-op and the global no-op provider is used
+	ServiceName string
+	Endpoint    string
+	Enabled     bool
 }
 
 var (
-	initOnce       sync.Once
-	traceProvider  *sdktrace.TracerProvider
-	meterProvider  *sdkmetric.MeterProvider
-	meter          metric.Meter
-	metricsEnabled bool
-
-	// Metric instruments
-	sessionsProcessed  metric.Int64Counter
-	exchangesProcessed metric.Int64Counter
-	messagesProcessed  metric.Int64Counter
-	toolsUsed          metric.Int64Counter
-	processingDuration metric.Float64Histogram
-
-	// Token usage metrics (common)
-	inputTokensTotal  metric.Int64Counter
-	outputTokensTotal metric.Int64Counter
-
-	// Token usage metrics (Claude Code specific)
-	cacheCreationTokens metric.Int64Counter
-	cacheReadTokens     metric.Int64Counter
-
-	// Token usage metrics (Codex CLI specific)
-	cachedInputTokens     metric.Int64Counter
-	reasoningOutputTokens metric.Int64Counter
-
-	// Token usage metrics (Gemini CLI specific)
-	cachedTokens  metric.Int64Counter
-	thoughtTokens metric.Int64Counter
-	toolTokens    metric.Int64Counter
-
-	// Token usage metrics (Droid CLI specific)
-	thinkingTokens metric.Int64Counter
-
-	// Common attributes parsed from OTEL_RESOURCE_ATTRIBUTES to include on all metrics
-	commonMetricAttrs []attribute.KeyValue
+	initOnce      sync.Once
+	traceProvider *sdktrace.TracerProvider
+	meterProvider *sdkmetric.MeterProvider
 )
 
-// parseResourceAttributes parses OTEL_RESOURCE_ATTRIBUTES env var into attribute.KeyValue slice.
-// Format: "key1=value1,key2=value2"
-func parseResourceAttributes() []attribute.KeyValue {
-	envVal := os.Getenv("OTEL_RESOURCE_ATTRIBUTES")
-	if envVal == "" {
-		return nil
-	}
-
-	var attrs []attribute.KeyValue
-	pairs := strings.Split(envVal, ",")
-	for _, pair := range pairs {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		kv := strings.SplitN(pair, "=", 2)
-		if len(kv) == 2 {
-			key := strings.TrimSpace(kv[0])
-			value := strings.TrimSpace(kv[1])
-			if key != "" {
-				attrs = append(attrs, attribute.String(key, value))
-			}
-		}
-	}
-	return attrs
-}
-
-// parseEndpoint normalises an OTLP endpoint string into a bare host:port suitable
-// for otlptracegrpc.WithEndpoint and a flag indicating whether TLS should be disabled.
-//
-// Accepted formats:
-//
-//	"localhost:4317"                 → host="localhost:4317",          insecure=true
-//	"http://localhost:4317"          → host="localhost:4317",          insecure=true
-//	"https://collector.example:4317" → host="collector.example:4317",  insecure=false
 func parseEndpoint(raw string) (host string, insecure bool) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
-		// Not a URL — treat the whole string as host:port (bare address).
 		return raw, true
 	}
 
-	// Parsed successfully as a URL with a scheme.
 	host = u.Host
 	insecure = u.Scheme != "https"
 	return host, insecure
 }
 
-// Init configures the OTel tracing and metrics subsystem. Thread-safe and idempotent — only the
-// first call takes effect. When Enabled is false the global no-op provider remains
-// active, so callers can emit spans/events and record metrics safely with zero overhead.
 func Init(ctx context.Context, opts Options) error {
 	var initErr error
+
 	initOnce.Do(func() {
 		if !opts.Enabled {
 			telemetryLogger().Info("Telemetry disabled, using no-op provider")
 			return
 		}
 
-		// Route OTel SDK errors (export failures, connection issues) through slog
-		// so they appear in debug logs alongside our own telemetry messages.
 		otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 			telemetryLogger().Warn("OTel SDK error", "error", err)
 		}))
@@ -160,64 +77,34 @@ func Init(ctx context.Context, opts Options) error {
 			serviceName = "tracer-cli"
 		}
 
-		// Parse the endpoint to extract a bare host:port for WithEndpoint and
-		// determine TLS mode from the scheme. OTEL_EXPORTER_OTLP_ENDPOINT is
-		// conventionally a full URL (e.g. "http://localhost:4317"), but
-		// WithEndpoint expects just "host:port".
 		host, insecure := parseEndpoint(opts.Endpoint)
-
-		// Create shared resource for both traces and metrics.
-		// Use resource.New() with detectors to pick up OTEL_RESOURCE_ATTRIBUTES env var.
 		res, err := resource.New(ctx,
-			resource.WithFromEnv(),      // OTEL_RESOURCE_ATTRIBUTES and OTEL_SERVICE_NAME
-			resource.WithTelemetrySDK(), // telemetry.sdk.* attributes
-			resource.WithHost(),         // host.* attributes
-			resource.WithAttributes(attribute.String("service.name", serviceName)), // explicit service name (can override env)
+			resource.WithFromEnv(),
+			resource.WithTelemetrySDK(),
+			resource.WithHost(),
+			resource.WithAttributes(attribute.String("service.name", serviceName)),
 		)
 		if err != nil {
 			initErr = fmt.Errorf("create OTel resource: %w", err)
 			return
 		}
 
-		// Log the resource attributes for debugging
-		telemetryLogger().Debug("Resource attributes created",
-			"attributes", res.Attributes(),
-			"OTEL_RESOURCE_ATTRIBUTES", os.Getenv("OTEL_RESOURCE_ATTRIBUTES"),
-		)
-
-		// Initialize tracing
 		if err := initTracing(ctx, host, insecure, res); err != nil {
 			initErr = err
 			return
 		}
 
-		// Initialize metrics
 		if err := initMetrics(ctx, host, insecure, res); err != nil {
-			// Roll back tracing initialization to avoid half-initialized state
 			telemetryLogger().Warn("Metrics init failed, rolling back tracing", "error", err)
 			if traceProvider != nil {
 				if shutdownErr := traceProvider.Shutdown(ctx); shutdownErr != nil {
 					telemetryLogger().Warn("Failed to shutdown trace provider during rollback", "error", shutdownErr)
 				}
 				traceProvider = nil
-				// Use no-op provider instead of nil per OTel documentation
 				otel.SetTracerProvider(noop.NewTracerProvider())
 			}
 			initErr = err
 			return
-		}
-
-		metricsEnabled = true
-
-		// Parse OTEL_RESOURCE_ATTRIBUTES and store as common metric attributes.
-		// This ensures resource attributes appear as metric tags in backends like Datadog
-		// that may not automatically promote resource-level attributes to metric tags.
-		commonMetricAttrs = parseResourceAttributes()
-		if len(commonMetricAttrs) > 0 {
-			telemetryLogger().Debug("Parsed OTEL_RESOURCE_ATTRIBUTES for metrics",
-				"count", len(commonMetricAttrs),
-				"attributes", commonMetricAttrs,
-			)
 		}
 
 		telemetryLogger().Info("Telemetry initialised",
@@ -230,7 +117,6 @@ func Init(ctx context.Context, opts Options) error {
 	return initErr
 }
 
-// initTracing sets up the trace provider and exporter.
 func initTracing(ctx context.Context, host string, insecure bool, res *resource.Resource) error {
 	exporterOpts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(host),
@@ -253,7 +139,6 @@ func initTracing(ctx context.Context, host string, insecure bool, res *resource.
 	return nil
 }
 
-// initMetrics sets up the meter provider, exporter, and metric instruments.
 func initMetrics(ctx context.Context, host string, insecure bool, res *resource.Resource) error {
 	exporterOpts := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(host),
@@ -275,159 +160,14 @@ func initMetrics(ctx context.Context, host string, insecure bool, res *resource.
 	)
 	otel.SetMeterProvider(meterProvider)
 
-	meter = meterProvider.Meter("tracer-cli")
-
-	// Initialize metric instruments
-	if err := initMetricInstruments(); err != nil {
-		return fmt.Errorf("create metric instruments: %w", err)
-	}
-
 	return nil
 }
 
-// initMetricInstruments creates all the metric instruments used by the CLI.
-func initMetricInstruments() error {
-	var err error
-
-	sessionsProcessed, err = meter.Int64Counter("tracer.sessions.processed",
-		metric.WithDescription("Number of sessions processed"),
-		metric.WithUnit("{session}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	exchangesProcessed, err = meter.Int64Counter("tracer.exchanges.processed",
-		metric.WithDescription("Number of exchanges processed across all sessions"),
-		metric.WithUnit("{exchange}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	messagesProcessed, err = meter.Int64Counter("tracer.messages.processed",
-		metric.WithDescription("Number of messages processed across all sessions"),
-		metric.WithUnit("{message}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	toolsUsed, err = meter.Int64Counter("tracer.tools.used",
-		metric.WithDescription("Number of tool invocations across all sessions"),
-		metric.WithUnit("{invocation}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	processingDuration, err = meter.Float64Histogram("tracer.session.duration",
-		metric.WithDescription("Session processing duration"),
-		metric.WithUnit("s"),
-	)
-	if err != nil {
-		return err
-	}
-
-	// Token usage metrics
-	inputTokensTotal, err = meter.Int64Counter("tracer.tokens.input",
-		metric.WithDescription("Total input tokens consumed across all sessions"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	outputTokensTotal, err = meter.Int64Counter("tracer.tokens.output",
-		metric.WithDescription("Total output tokens generated across all sessions"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	cacheCreationTokens, err = meter.Int64Counter("tracer.tokens.cache_creation",
-		metric.WithDescription("Total tokens written to cache across all sessions"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	cacheReadTokens, err = meter.Int64Counter("tracer.tokens.cache_read",
-		metric.WithDescription("Total tokens read from cache across all sessions (Claude)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	// Codex CLI specific counters
-	cachedInputTokens, err = meter.Int64Counter("tracer.tokens.cached_input",
-		metric.WithDescription("Total cached input tokens across all sessions (Codex)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	reasoningOutputTokens, err = meter.Int64Counter("tracer.tokens.reasoning_output",
-		metric.WithDescription("Total reasoning output tokens across all sessions (Codex)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	// Gemini CLI specific counters
-	cachedTokens, err = meter.Int64Counter("tracer.tokens.cached",
-		metric.WithDescription("Total cached input tokens across all sessions (Gemini)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	thoughtTokens, err = meter.Int64Counter("tracer.tokens.thought",
-		metric.WithDescription("Total thought/reasoning tokens across all sessions (Gemini)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	toolTokens, err = meter.Int64Counter("tracer.tokens.tool",
-		metric.WithDescription("Total tool-related tokens across all sessions (Gemini)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	// Droid CLI specific counters
-	thinkingTokens, err = meter.Int64Counter("tracer.tokens.thinking",
-		metric.WithDescription("Total thinking/reasoning tokens across all sessions (Droid)"),
-		metric.WithUnit("{token}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Shutdown flushes pending spans/metrics and shuts down both providers.
-// Safe to call even when Init was never called or telemetry is disabled.
-// For short-lived CLIs, this performs explicit ForceFlush calls before shutdown
-// to ensure all data is exported before the process exits.
 func Shutdown(ctx context.Context) error {
 	var errs []error
 
 	if traceProvider != nil {
 		telemetryLogger().Info("Flushing and shutting down trace provider")
-		// ForceFlush ensures all pending spans are exported before shutdown.
-		// This is critical for short-lived CLIs that may exit before the
-		// periodic exporter has time to run.
 		if err := traceProvider.ForceFlush(ctx); err != nil {
 			telemetryLogger().Warn("Failed to flush trace provider", "error", err)
 		}
@@ -438,9 +178,6 @@ func Shutdown(ctx context.Context) error {
 
 	if meterProvider != nil {
 		telemetryLogger().Info("Flushing and shutting down meter provider")
-		// ForceFlush ensures all pending metrics are exported before shutdown.
-		// The periodic reader has a 10-second interval, so without this,
-		// metrics from short CLI runs would never be sent.
 		if err := meterProvider.ForceFlush(ctx); err != nil {
 			telemetryLogger().Warn("Failed to flush meter provider", "error", err)
 		}
@@ -452,9 +189,6 @@ func Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// ForceFlush explicitly flushes all pending spans and metrics.
-// Call this at the end of short-lived commands to ensure data is exported
-// before the command returns. Safe to call when telemetry is disabled.
 func ForceFlush(ctx context.Context) error {
 	var errs []error
 
@@ -475,231 +209,4 @@ func ForceFlush(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// Tracer returns a named tracer from the global provider. When telemetry is
-// disabled the returned tracer is a no-op (standard OTel behaviour).
-func Tracer(name string) trace.Tracer {
-	return otel.Tracer(name)
-}
-
-// Meter returns the meter instance. When telemetry is disabled, returns the
-// global no-op meter.
-func Meter() metric.Meter {
-	if meter != nil {
-		return meter
-	}
-	return otel.Meter("tracer-cli")
-}
-
-// ContextWithSessionTrace returns a context that will cause any spans started
-// from it to share the same trace ID (derived deterministically from sessionID).
-// This groups all spans for a given session into a single trace, even across
-// multiple invocations (e.g., in autosave mode where processSingleSession is
-// called repeatedly as the session file grows).
-func ContextWithSessionTrace(ctx context.Context, sessionID string) context.Context {
-	traceID := traceIDFromSessionID(sessionID)
-	spanID := spanIDFromSessionID(sessionID)
-
-	// Create a SpanContext with both deterministic trace ID and span ID.
-	// In OpenTelemetry-Go, a SpanContext is only valid if both TraceID and SpanID
-	// are valid. We mark it as Remote so child spans inherit the trace ID.
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    traceID,
-		SpanID:     spanID,
-		TraceFlags: trace.FlagsSampled, // Ensure it's sampled
-		Remote:     true,               // Mark as remote parent
-	})
-
-	// Inject the SpanContext as a remote parent so child spans inherit the trace ID
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
-}
-
-// traceIDFromSessionID generates a deterministic 16-byte trace ID from a session ID
-// by hashing the session ID with SHA-256 and taking the first 16 bytes.
-func traceIDFromSessionID(sessionID string) trace.TraceID {
-	hash := sha256.Sum256([]byte(sessionID))
-	var traceID trace.TraceID
-	copy(traceID[:], hash[:16])
-	return traceID
-}
-
-// spanIDFromSessionID generates a deterministic 8-byte span ID from a session ID
-// by hashing the session ID with SHA-256 and taking bytes 16-24.
-// This ensures the span ID is different from the trace ID but still deterministic.
-func spanIDFromSessionID(sessionID string) trace.SpanID {
-	hash := sha256.Sum256([]byte(sessionID))
-	var spanID trace.SpanID
-	copy(spanID[:], hash[16:24])
-	return spanID
-}
-
-// --- Metric Recording Functions ---
-// These are internal functions called by RecordSessionMetrics in session_helpers.go.
-// The metricsEnabled check is done once in RecordSessionMetrics.
-
-// buildMetricAttrs combines specific metric attributes with common attributes from OTEL_RESOURCE_ATTRIBUTES.
-func buildMetricAttrs(specific ...attribute.KeyValue) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, len(specific)+len(commonMetricAttrs))
-	attrs = append(attrs, specific...)
-	attrs = append(attrs, commonMetricAttrs...)
-	return attrs
-}
-
-// recordSessionProcessed increments the sessions processed counter.
-func recordSessionProcessed(ctx context.Context, agent string, sessionID string) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-	sessionsProcessed.Add(ctx, 1, metric.WithAttributes(attrs...))
-}
-
-// recordExchanges increments the exchanges counter by the given count.
-func recordExchanges(ctx context.Context, agent string, sessionID string, count int64) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-	exchangesProcessed.Add(ctx, count, metric.WithAttributes(attrs...))
-}
-
-// recordMessages increments the messages counter by the given count.
-func recordMessages(ctx context.Context, agent string, sessionID string, count int64) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-	messagesProcessed.Add(ctx, count, metric.WithAttributes(attrs...))
-}
-
-// recordToolUsage increments the tool usage counter by the given count.
-func recordToolUsage(ctx context.Context, agent string, sessionID string, count int64) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-	toolsUsed.Add(ctx, count, metric.WithAttributes(attrs...))
-}
-
-// recordProcessingDuration records the session processing duration.
-func recordProcessingDuration(ctx context.Context, agent string, sessionID string, duration time.Duration) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-	processingDuration.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
-}
-
-// TokenUsage holds aggregated token counts for telemetry recording.
-// Different providers track different token types:
-//   - Claude Code: InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens
-//   - Codex CLI: InputTokens, OutputTokens, CachedInputTokens, ReasoningOutputTokens
-//   - Gemini CLI: InputTokens, OutputTokens, CachedTokens, ThoughtTokens, ToolTokens
-//   - Droid CLI: InputTokens, OutputTokens, CacheCreationInputTokens, CacheReadInputTokens, ThinkingTokens
-type TokenUsage struct {
-	// Common fields (all providers)
-	InputTokens  int
-	OutputTokens int
-
-	// Claude Code specific (also used by Droid CLI)
-	CacheCreationInputTokens int
-	CacheReadInputTokens     int
-
-	// Codex CLI specific
-	CachedInputTokens     int
-	ReasoningOutputTokens int
-
-	// Gemini CLI specific
-	CachedTokens  int
-	ThoughtTokens int
-	ToolTokens    int
-
-	// Droid CLI specific
-	ThinkingTokens int
-}
-
-// providerAttrs returns OTel span attributes for provider-specific token fields,
-// including only non-zero values to reduce telemetry noise. The prefix is the
-// attribute namespace (e.g. "tracer.session.tokens" or "tracer.exchange.tokens").
-func (u TokenUsage) providerAttrs(prefix string) []attribute.KeyValue {
-	var attrs []attribute.KeyValue
-	// Claude Code specific (also used by Droid CLI)
-	if u.CacheCreationInputTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".cache_creation", u.CacheCreationInputTokens))
-	}
-	if u.CacheReadInputTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".cache_read", u.CacheReadInputTokens))
-	}
-	// Codex CLI specific
-	if u.CachedInputTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".cached_input", u.CachedInputTokens))
-	}
-	if u.ReasoningOutputTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".reasoning_output", u.ReasoningOutputTokens))
-	}
-	// Gemini CLI specific
-	if u.CachedTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".cached", u.CachedTokens))
-	}
-	if u.ThoughtTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".thought", u.ThoughtTokens))
-	}
-	if u.ToolTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".tool", u.ToolTokens))
-	}
-	// Droid CLI specific
-	if u.ThinkingTokens > 0 {
-		attrs = append(attrs, attribute.Int(prefix+".thinking", u.ThinkingTokens))
-	}
-	return attrs
-}
-
-// recordTokenUsage records token usage metrics for a session.
-// Only non-zero values are recorded.
-func recordTokenUsage(ctx context.Context, agent string, sessionID string, usage TokenUsage) {
-	attrs := buildMetricAttrs(
-		attribute.String("tracer.agent", agent),
-		attribute.String("tracer.session.id", sessionID),
-	)
-
-	// Common metrics
-	if usage.InputTokens > 0 {
-		inputTokensTotal.Add(ctx, int64(usage.InputTokens), metric.WithAttributes(attrs...))
-	}
-	if usage.OutputTokens > 0 {
-		outputTokensTotal.Add(ctx, int64(usage.OutputTokens), metric.WithAttributes(attrs...))
-	}
-
-	// Claude Code specific
-	if usage.CacheCreationInputTokens > 0 {
-		cacheCreationTokens.Add(ctx, int64(usage.CacheCreationInputTokens), metric.WithAttributes(attrs...))
-	}
-	if usage.CacheReadInputTokens > 0 {
-		cacheReadTokens.Add(ctx, int64(usage.CacheReadInputTokens), metric.WithAttributes(attrs...))
-	}
-
-	// Codex CLI specific
-	if usage.CachedInputTokens > 0 {
-		cachedInputTokens.Add(ctx, int64(usage.CachedInputTokens), metric.WithAttributes(attrs...))
-	}
-	if usage.ReasoningOutputTokens > 0 {
-		reasoningOutputTokens.Add(ctx, int64(usage.ReasoningOutputTokens), metric.WithAttributes(attrs...))
-	}
-
-	// Gemini CLI specific
-	if usage.CachedTokens > 0 {
-		cachedTokens.Add(ctx, int64(usage.CachedTokens), metric.WithAttributes(attrs...))
-	}
-	if usage.ThoughtTokens > 0 {
-		thoughtTokens.Add(ctx, int64(usage.ThoughtTokens), metric.WithAttributes(attrs...))
-	}
-	if usage.ToolTokens > 0 {
-		toolTokens.Add(ctx, int64(usage.ToolTokens), metric.WithAttributes(attrs...))
-	}
-
-	// Droid CLI specific
-	if usage.ThinkingTokens > 0 {
-		thinkingTokens.Add(ctx, int64(usage.ThinkingTokens), metric.WithAttributes(attrs...))
-	}
 }

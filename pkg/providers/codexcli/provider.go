@@ -274,78 +274,6 @@ func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progr
 	return result, nil
 }
 
-// GetAgentChatSession retrieves a chat session by ID.
-func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
-	// Find the specific session (will short-circuit when found)
-	sessions, err := findCodexSessions(projectPath, sessionID, false)
-	if err != nil {
-		// If sessions directory doesn't exist, return nil (not an error)
-		if strings.Contains(err.Error(), "sessions directory not accessible") ||
-			strings.Contains(err.Error(), "sessions root") ||
-			strings.Contains(err.Error(), "home directory") {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to find codex sessions: %w", err)
-	}
-
-	// Session not found (empty result)
-	if len(sessions) == 0 {
-		return nil, nil
-	}
-
-	// Process the first (and only) session using shared helper
-	return processSessionToAgentChat(&sessions[0], projectPath, debugRaw)
-}
-
-// ExecAgentAndWatch executes the Codex CLI in interactive mode and monitors for session updates.
-// The function blocks until the Codex CLI exits. During execution, it watches for JSONL file changes
-// and invokes sessionCallback for each update, enabling real-time markdown generation.
-func (p *Provider) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	slog.Info("ExecAgentAndWatch: Starting Codex CLI execution and monitoring",
-		"projectPath", projectPath,
-		"customCommand", customCommand,
-		"resumeSessionID", resumeSessionID,
-		"debugRaw", debugRaw)
-
-	// Log if resuming a specific session
-	if resumeSessionID != "" {
-		slog.Info("ExecAgentAndWatch: Will resume specific Codex session", "sessionID", resumeSessionID)
-	}
-
-	// Set up the callback which enables real-time markdown generation during
-	// interactive sessions. As Codex CLI writes JSONL updates, the watcher detects changes
-	// and invokes this callback, allowing immediate processing without blocking the agent's
-	// execution. The defer ensures cleanup when the agent exits.
-	SetWatcherCallback(sessionCallback)
-	defer ClearWatcherCallback()
-
-	// Set debug raw mode for the watcher
-	SetWatcherDebugRaw(debugRaw)
-
-	// Start watching for Codex sessions in the background
-	slog.Info("Initializing Codex session monitoring...")
-
-	if err := WatchForCodexSessions(projectPath, resumeSessionID); err != nil {
-		// Log the error but don't fail - watcher might work later
-		slog.Error("Failed to start Codex session watcher", "error", err)
-	}
-
-	// Execute Codex CLI - this blocks until Codex exits
-	slog.Info("Executing Codex CLI", "command", customCommand, "resumeSessionID", resumeSessionID)
-	err := ExecuteCodex(customCommand, resumeSessionID)
-
-	// Stop the watcher goroutine and wait for it to finish before returning
-	slog.Info("Codex CLI has exited, stopping watcher")
-	StopWatcher()
-
-	// Return any execution error
-	if err != nil {
-		return fmt.Errorf("codex CLI execution failed: %w", err)
-	}
-
-	return nil
-}
-
 // WatchAgent watches for Codex CLI agent activity and calls the callback with AgentChatSession
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation (blocks indefinitely)
@@ -353,44 +281,21 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 	slog.Info("WatchAgent: Starting Codex CLI activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
+	slog.Info("WatchAgent: Initializing Codex session monitoring")
 
-	// The watcher callback directly passes AgentChatSession (which now contains SessionData)
 	wrappedCallback := func(agentChatSession *spi.AgentChatSession) {
 		slog.Debug("WatchAgent: Received AgentChatSession",
 			"sessionID", agentChatSession.SessionID,
 			"hasSessionData", agentChatSession.SessionData != nil)
-
-		// Call the user's callback with the AgentChatSession
 		sessionCallback(agentChatSession)
 	}
 
-	// Set up the callback for the watcher
-	SetWatcherCallback(wrappedCallback)
-	defer ClearWatcherCallback()
-
-	// Set debug raw mode for the watcher
-	SetWatcherDebugRaw(debugRaw)
-
-	// Start watching for Codex sessions in the background
-	slog.Info("WatchAgent: Initializing Codex session monitoring...")
-
-	if err := WatchForCodexSessions(projectPath, ""); err != nil {
-		slog.Error("WatchAgent: Failed to start Codex session watcher", "error", err)
-		return fmt.Errorf("failed to start watcher: %w", err)
+	if err := WatchForCodexSessions(ctx, projectPath, "", debugRaw, wrappedCallback); err != nil {
+		slog.Error("WatchAgent: Codex session watcher stopped", "error", err)
+		return fmt.Errorf("watch codex sessions: %w", err)
 	}
 
-	// Block until context is cancelled
-	// The watcher runs in a background goroutine and will continue
-	// until context is cancelled or the process exits
-	slog.Info("WatchAgent: Watcher started, blocking until context cancelled")
-
-	// Wait for context cancellation
-	<-ctx.Done()
-
-	slog.Info("WatchAgent: Context cancelled, stopping watcher")
-	StopWatcher()
-
-	return ctx.Err()
+	return nil
 }
 
 // findCodexSessions traverses the Codex CLI sessions directory structure and finds
@@ -920,9 +825,10 @@ func extractCodexSessionMetadata(sessionInfo *codexSessionInfo) (*spi.SessionMet
 	name := spi.GenerateReadableName(firstUserMessage)
 
 	return &spi.SessionMetadata{
-		SessionID: sessionInfo.SessionID,
-		CreatedAt: sessionInfo.Meta.Timestamp,
-		Slug:      slug,
-		Name:      name,
+		SessionID:     sessionInfo.SessionID,
+		CreatedAt:     sessionInfo.Meta.Timestamp,
+		Slug:          slug,
+		Name:          name,
+		WorkspaceRoot: strings.TrimSpace(sessionInfo.Meta.Payload.CWD),
 	}, nil
 }

@@ -2,6 +2,9 @@ package utils
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,17 +44,15 @@ func WatchAgents(ctx context.Context, projectPath string, debugRaw bool, session
 func WatchProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool, sessionCallback func(providerID string, session *spi.AgentChatSession)) error {
 	slog.Info("WatchProviders: Starting multi-provider watch", "projectPath", projectPath, "providerCount", len(providers), "debugRaw", debugRaw)
 
-	// Track last-seen message count per session to suppress duplicate callbacks.
-	// Providers fire callbacks on every JSONL change, but not all changes produce
-	// new messages in the parsed SessionData. Messages are append-only, so a
-	// matching total count means nothing meaningful changed.
 	var mu sync.Mutex
-	lastMsgCount := make(map[string]int)
+	lastFingerprints := make(map[string]string)
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(providers))
 
 	for providerID, provider := range providers {
+		providerID := providerID
+		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -64,30 +65,24 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 					return
 				}
 
-				// Count total messages across all exchanges
-				totalMsgs := 0
-				for _, exchange := range session.SessionData.Exchanges {
-					totalMsgs += len(exchange.Messages)
-				}
+				fingerprint := sessionFingerprint(session)
 
-				// Skip if message count hasn't changed for this session
+				// Skip if the session content fingerprint hasn't changed.
 				mu.Lock()
-				prev, seen := lastMsgCount[session.SessionID]
-				if seen && prev == totalMsgs {
+				prev, seen := lastFingerprints[providerID+":"+session.SessionID]
+				if seen && prev == fingerprint {
 					mu.Unlock()
 					slog.Debug("WatchProviders: Skipping duplicate callback",
 						"providerID", providerID,
-						"sessionID", session.SessionID,
-						"totalMsgs", totalMsgs)
+						"sessionID", session.SessionID)
 					return
 				}
-				lastMsgCount[session.SessionID] = totalMsgs
+				lastFingerprints[providerID+":"+session.SessionID] = fingerprint
 				mu.Unlock()
 
 				slog.Debug("WatchProviders: Provider callback fired",
 					"providerID", providerID,
-					"sessionID", session.SessionID,
-					"totalMsgs", totalMsgs)
+					"sessionID", session.SessionID)
 
 				sessionCallback(providerID, session)
 			}
@@ -108,13 +103,41 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 		}()
 	}
 
-	// Wait for all watchers to complete (they run until Ctrl+C)
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
 
-	// Drain error channel — errors are already logged in the goroutines with full context
-	for range len(providers) {
-		<-errChan
+	var errs []error
+	for err := range errChan {
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 
+	if ctx.Err() != nil {
+		return nil
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
+}
+
+func sessionFingerprint(session *spi.AgentChatSession) string {
+	if session == nil {
+		return ""
+	}
+
+	content := session.RawData
+	if session.SessionData != nil {
+		if data, err := json.Marshal(session.SessionData); err == nil {
+			content += string(data)
+		} else {
+			content += session.SessionData.UpdatedAt
+		}
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
 }

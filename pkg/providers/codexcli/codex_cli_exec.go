@@ -3,7 +3,6 @@ package codexcli
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -236,50 +235,4 @@ func classifyCheckError(err error) string {
 	}
 
 	return "unknown"
-}
-
-// ExecuteCodex executes the Codex CLI in interactive mode and blocks until it exits.
-// The customCommand parameter specifies the codex binary and optional arguments to use.
-// If customCommand is empty, falls back to the detected default codex binary.
-// If resumeSessionID is provided, runs "codex resume <sessionId>" to continue that session.
-// Otherwise, starts a new codex session.
-func ExecuteCodex(customCommand string, resumeSessionID string) error {
-	var cmd *exec.Cmd
-
-	if resumeSessionID != "" {
-		// Parse custom command to get binary and args
-		codexCmd, customArgs := parseCodexCommand(customCommand)
-
-		// Build args: custom args + resume subcommand + sessionID
-		args := append(customArgs, "resume", resumeSessionID)
-
-		slog.Info("ExecuteCodex: Resuming Codex session",
-			"command", codexCmd,
-			"sessionID", resumeSessionID,
-			"customArgs", customArgs)
-		cmd = exec.Command(codexCmd, args...)
-	} else {
-		// Parse the command and get binary + args
-		codexCmd, args := parseCodexCommand(customCommand)
-
-		slog.Info("ExecuteCodex: Starting new Codex session",
-			"command", codexCmd,
-			"args", args)
-		cmd = exec.Command(codexCmd, args...)
-	}
-
-	// Configure interactive mode - connect to user's terminal
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// Run the command and wait for it to complete
-	slog.Info("ExecuteCodex: Executing Codex CLI (blocking until exit)")
-	if err := cmd.Run(); err != nil {
-		slog.Error("ExecuteCodex: Codex execution failed", "error", err)
-		return fmt.Errorf("codex execution failed: %w", err)
-	}
-
-	slog.Info("ExecuteCodex: Codex CLI exited successfully")
-	return nil
 }

@@ -32,7 +32,6 @@ import (
 var version = "dev"
 
 var (
-	noVersionCheck       bool
 	outputDir            string
 	debugDir             string
 	localTimeZone        bool
@@ -42,7 +41,6 @@ var (
 	silent               bool
 	telemetryEndpoint    string
 	telemetryServiceName string
-	noTelemetryPrompts   bool
 
 	loadedConfig       *config.Config
 	telemetryInitError error
@@ -377,14 +375,26 @@ func archivePathBuilder(outputConfig *utils.OutputPathConfig) engine.PathBuilder
 }
 
 func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, useUTC bool, debounce time.Duration) engine.Options {
+	shouldProcessSession := func(providerID string, session *spi.AgentChatSession) bool {
+		_ = providerID
+		if loadedConfig == nil || session == nil || session.SessionData == nil {
+			return true
+		}
+		projectPath := strings.TrimSpace(session.SessionData.WorkspaceRoot)
+		if projectPath == "" {
+			return true
+		}
+		return !loadedConfig.IsProjectExcluded(projectPath)
+	}
+
 	return engine.Options{
-		HistoryDir:      config.GetHistoryDir(),
-		StatisticsPath:  config.GetStatisticsPath(),
-		StateDBPath:     config.GetRuntimeStateDBPath(),
-		UseUTC:          useUTC,
-		Debounce:        debounce,
-		PathBuilder:     archivePathBuilder(config),
-		NoTelemetryText: noTelemetryPrompts,
+		HistoryDir:           config.GetHistoryDir(),
+		StatisticsPath:       config.GetStatisticsPath(),
+		StateDBPath:          config.GetRuntimeStateDBPath(),
+		UseUTC:               useUTC,
+		Debounce:             debounce,
+		PathBuilder:          archivePathBuilder(config),
+		ShouldProcessSession: shouldProcessSession,
 	}
 }
 
@@ -738,7 +748,7 @@ func createListCommand() *cobra.Command {
 
 			buckets := map[string]*projectBucket{}
 			for providerID, provider := range providers {
-				sessions, err := provider.GetAgentChatSessions("", false, nil)
+				sessions, err := provider.ListAgentChatSessions("")
 				if err != nil {
 					slog.Warn("Failed to list sessions for provider", "provider", providerID, "error", err)
 					continue
@@ -746,10 +756,7 @@ func createListCommand() *cobra.Command {
 
 				for i := range sessions {
 					s := sessions[i]
-					path := ""
-					if s.SessionData != nil {
-						path = strings.TrimSpace(s.SessionData.WorkspaceRoot)
-					}
+					path := strings.TrimSpace(s.WorkspaceRoot)
 					project := sanitizeArchiveSegment(filepath.Base(path))
 					if project == "unknown" {
 						project = "unknown-project"
@@ -934,14 +941,12 @@ func applyConfigDefaults(cfg *config.Config) {
 		debugDir = utils.ExpandTilde(cfg.GetDebugDir())
 	}
 	localTimeZone = cfg.IsLocalTimeZoneEnabled()
-	noVersionCheck = !cfg.IsVersionCheckEnabled()
 	console = cfg.IsConsoleEnabled()
 	logFile = cfg.IsLogEnabled()
 	debug = cfg.IsDebugEnabled()
 	silent = cfg.IsSilentEnabled()
 	telemetryEndpoint = cfg.GetTelemetryEndpoint()
 	telemetryServiceName = cfg.GetTelemetryServiceName()
-	noTelemetryPrompts = cfg.IsTelemetryPromptsDisabled()
 }
 
 func main() {
@@ -967,7 +972,6 @@ func main() {
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)
 
-	rootCmd.PersistentFlags().BoolVar(&noVersionCheck, "no-version-check", noVersionCheck, "skip checking for newer versions")
 	rootCmd.PersistentFlags().StringVar(&outputDir, "archive-root", outputDir, "archive root for markdown output (default: ~/.local/share/tracer/archive)")
 	rootCmd.PersistentFlags().StringVar(&debugDir, "debug-dir", debugDir, "debug output directory (default: ~/.local/state/tracer/debug)")
 	rootCmd.PersistentFlags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file names and timestamps")
@@ -977,9 +981,6 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
 	rootCmd.PersistentFlags().StringVar(&telemetryEndpoint, "telemetry-endpoint", telemetryEndpoint, "OTLP gRPC collector endpoint (default off)")
 	rootCmd.PersistentFlags().StringVar(&telemetryServiceName, "telemetry-service-name", telemetryServiceName, "override telemetry service name")
-	rootCmd.PersistentFlags().BoolVar(&noTelemetryPrompts, "no-telemetry-prompts", noTelemetryPrompts, "exclude prompt text from telemetry spans")
-
-	utils.CheckForUpdates(version, noVersionCheck, silent)
 
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		if !silent {

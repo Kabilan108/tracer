@@ -45,15 +45,6 @@ func (p *testProvider) DetectAgent(projectPath string, helpOutput bool) bool {
 	return p.detect
 }
 
-func (p *testProvider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
-	session, ok := p.sessions[sessionID]
-	if !ok {
-		return nil, nil
-	}
-	copy := session
-	return &copy, nil
-}
-
 func (p *testProvider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
 	result := make([]spi.AgentChatSession, 0, len(p.sessions))
 	for _, session := range p.sessions {
@@ -64,10 +55,6 @@ func (p *testProvider) GetAgentChatSessions(projectPath string, debugRaw bool, p
 
 func (p *testProvider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
 	return nil, nil
-}
-
-func (p *testProvider) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	return nil
 }
 
 func (p *testProvider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
@@ -358,6 +345,48 @@ func TestRunDaemon_DebouncesLiveUpdates(t *testing.T) {
 	}
 }
 
+func TestRunDaemon_KeepsWatchingWhenOneProviderFails(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := newRunModeOptions(tempDir, 25*time.Millisecond)
+
+	failingProvider := newTestProvider("Codex CLI")
+	failingProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+		return fmt.Errorf("sessions directory not accessible")
+	}
+
+	liveProvider := newTestProvider("Claude Code")
+	liveUpdate := newSession("claude", "Claude Code", "session-live-survives", "daemon-live-survives", "LIVE_PROVIDER_UPDATE")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	liveProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+		sessionCallback(&liveUpdate)
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	summary, err := RunDaemon(ctx, opts, "/tmp/workspace", map[string]spi.Provider{
+		"codex":  failingProvider,
+		"claude": liveProvider,
+	}, false)
+	if err != nil {
+		t.Fatalf("RunDaemon() error = %v", err)
+	}
+	if summary.Created != 1 || summary.Errors != 0 {
+		t.Fatalf("RunDaemon summary = %+v", summary)
+	}
+
+	outputPath := filepath.Join(tempDir, "history", "claude", "session-live-survives.md")
+	content, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !strings.Contains(string(content), "LIVE_PROVIDER_UPDATE") {
+		t.Fatalf("output markdown missing live provider content")
+	}
+}
+
 func TestIngestProviders_ProgressCallbacks(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -440,20 +469,12 @@ func (p *testProviderWithListError) DetectAgent(projectPath string, helpOutput b
 	return true
 }
 
-func (p *testProviderWithListError) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
-	return nil, nil
-}
-
 func (p *testProviderWithListError) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
 	return nil, p.err
 }
 
 func (p *testProviderWithListError) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
 	return nil, nil
-}
-
-func (p *testProviderWithListError) ExecAgentAndWatch(projectPath string, customCommand string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	return nil
 }
 
 func (p *testProviderWithListError) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {

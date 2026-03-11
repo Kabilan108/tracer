@@ -15,70 +15,10 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
-var (
-	watcherCtx      context.Context
-	watcherCancel   context.CancelFunc
-	watcherWg       sync.WaitGroup
-	watcherCallback func(*spi.AgentChatSession) // Callback for session updates
-	watcherDebugRaw bool                        // Whether to write debug raw data files
-	watcherMutex    sync.RWMutex                // Protects watcherCallback and watcherDebugRaw
-)
-
-func init() {
-	watcherCtx, watcherCancel = context.WithCancel(context.Background())
-}
-
-// SetWatcherCallback sets the callback function for session updates.
-func SetWatcherCallback(callback func(*spi.AgentChatSession)) {
-	watcherMutex.Lock()
-	defer watcherMutex.Unlock()
-	watcherCallback = callback
-	slog.Info("SetWatcherCallback: Callback set", "isNil", callback == nil)
-}
-
-// ClearWatcherCallback clears the callback function.
-func ClearWatcherCallback() {
-	watcherMutex.Lock()
-	defer watcherMutex.Unlock()
-	watcherCallback = nil
-	slog.Info("ClearWatcherCallback: Callback cleared")
-}
-
-// getWatcherCallback returns the current callback function (thread-safe).
-func getWatcherCallback() func(*spi.AgentChatSession) {
-	watcherMutex.RLock()
-	defer watcherMutex.RUnlock()
-	return watcherCallback
-}
-
-// SetWatcherDebugRaw sets whether to write debug raw data files.
-func SetWatcherDebugRaw(debugRaw bool) {
-	watcherMutex.Lock()
-	defer watcherMutex.Unlock()
-	watcherDebugRaw = debugRaw
-	slog.Debug("SetWatcherDebugRaw: Debug raw set", "debugRaw", debugRaw)
-}
-
-// getWatcherDebugRaw returns the current debug raw setting (thread-safe).
-func getWatcherDebugRaw() bool {
-	watcherMutex.RLock()
-	defer watcherMutex.RUnlock()
-	return watcherDebugRaw
-}
-
-// StopWatcher gracefully stops the watcher goroutine.
-func StopWatcher() {
-	slog.Info("StopWatcher: Signaling watcher to stop")
-	watcherCancel()
-	slog.Info("StopWatcher: Waiting for watcher goroutine to finish")
-	watcherWg.Wait()
-	slog.Info("StopWatcher: Watcher stopped")
-}
-
 // WatchForCodexSessions watches for Codex CLI sessions that match the given project path.
 // If resumeSessionID is provided, it finds and watches the directory containing that session.
 // Otherwise, watches hierarchically for new sessions, handling date changes across days/months/years.
-func WatchForCodexSessions(projectPath string, resumeSessionID string) error {
+func WatchForCodexSessions(ctx context.Context, projectPath string, resumeSessionID string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("WatchForCodexSessions: Starting Codex session watcher",
 		"projectPath", projectPath,
 		"resumeSessionID", resumeSessionID)
@@ -121,7 +61,7 @@ func WatchForCodexSessions(projectPath string, resumeSessionID string) error {
 		slog.Info("WatchForCodexSessions: Initial day directory", "path", initialDayDir)
 	}
 
-	return startCodexSessionWatcher(projectPath, sessionsRoot, initialDayDir)
+	return startCodexSessionWatcher(ctx, projectPath, sessionsRoot, initialDayDir, debugRaw, sessionCallback)
 }
 
 // dirType determines the type of directory relative to sessionsRoot based on the
@@ -153,7 +93,7 @@ func dirType(path string, sessionsRoot string) string {
 // startCodexSessionWatcher starts watching hierarchically for Codex sessions.
 // Watches sessionsRoot/YYYY/MM/DD/ structure to handle date changes across days, months, and years.
 // The initialDayDir is scanned immediately if it exists.
-func startCodexSessionWatcher(projectPath string, sessionsRoot string, initialDayDir string) error {
+func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsRoot string, initialDayDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("startCodexSessionWatcher: Creating hierarchical watcher",
 		"sessionsRoot", sessionsRoot,
 		"initialDayDir", initialDayDir)
@@ -163,225 +103,189 @@ func startCodexSessionWatcher(projectPath string, sessionsRoot string, initialDa
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %v", err)
 	}
-
-	// Increment wait group before starting goroutine
-	watcherWg.Add(1)
-
-	// Start watching in a goroutine
-	go func() {
-		// Decrement wait group when done
-		defer watcherWg.Done()
-
-		// Log when goroutine starts
-		slog.Info("startCodexSessionWatcher: Goroutine started")
-
-		// Defer cleanup
-		defer func() {
-			slog.Info("startCodexSessionWatcher: Goroutine exiting, closing watcher")
-			if err := watcher.Close(); err != nil {
-				slog.Debug("startCodexSessionWatcher: Error closing watcher", "error", err)
-			}
-		}()
-
-		// Track which directories are being watched to avoid duplicates
-		watchedDirs := make(map[string]bool)
-		var watchedDirsMutex sync.Mutex
-
-		// Helper to add a directory to watcher if not already watched
-		addWatch := func(dir string) error {
-			watchedDirsMutex.Lock()
-			defer watchedDirsMutex.Unlock()
-
-			if watchedDirs[dir] {
-				return nil // Already watching
-			}
-
-			if err := watcher.Add(dir); err != nil {
-				return err
-			}
-			watchedDirs[dir] = true
-			slog.Info("startCodexSessionWatcher: Added watch", "directory", dir)
-			return nil
-		}
-
-		// Helper to scan a day directory for existing sessions
-		scanDayDir := func(dayDir string) {
-			if _, err := os.Stat(dayDir); err == nil {
-				slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir)
-				ScanCodexSessions(projectPath, dayDir, nil)
-			}
-		}
-
-		// Helper to watch a day directory and scan it
-		watchDayDir := func(dayDir string) {
-			if err := addWatch(dayDir); err != nil {
-				slog.Error("startCodexSessionWatcher: Failed to watch day directory",
-					"directory", dayDir,
-					"error", err)
-				return
-			}
-			scanDayDir(dayDir)
-		}
-
-		// Helper to watch a month directory and its existing day directories
-		watchMonthDir := func(monthDir string) {
-			if err := addWatch(monthDir); err != nil {
-				slog.Error("startCodexSessionWatcher: Failed to watch month directory",
-					"directory", monthDir,
-					"error", err)
-				return
-			}
-
-			// Scan for existing day directories
-			entries, err := os.ReadDir(monthDir)
-			if err != nil {
-				slog.Debug("startCodexSessionWatcher: Cannot read month directory",
-					"directory", monthDir,
-					"error", err)
-				return
-			}
-
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				// Day directories are named 01-31
-				if len(entry.Name()) == 2 {
-					dayDir := filepath.Join(monthDir, entry.Name())
-					watchDayDir(dayDir)
-				}
-			}
-		}
-
-		// Helper to watch a year directory and its existing month directories
-		watchYearDir := func(yearDir string) {
-			if err := addWatch(yearDir); err != nil {
-				slog.Error("startCodexSessionWatcher: Failed to watch year directory",
-					"directory", yearDir,
-					"error", err)
-				return
-			}
-
-			// Scan for existing month directories
-			entries, err := os.ReadDir(yearDir)
-			if err != nil {
-				slog.Debug("startCodexSessionWatcher: Cannot read year directory",
-					"directory", yearDir,
-					"error", err)
-				return
-			}
-
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				// Month directories are named 01-12
-				if len(entry.Name()) == 2 {
-					monthDir := filepath.Join(yearDir, entry.Name())
-					watchMonthDir(monthDir)
-				}
-			}
-		}
-
-		// Watch sessions root for year directories
-		if err := addWatch(sessionsRoot); err != nil {
-			log.UserError("Error watching sessions root: %v", err)
-			slog.Error("startCodexSessionWatcher: Failed to watch sessions root", "error", err)
-			return
-		}
-
-		// Scan for existing year directories
-		entries, err := os.ReadDir(sessionsRoot)
-		if err != nil {
-			slog.Warn("startCodexSessionWatcher: Cannot read sessions root",
-				"directory", sessionsRoot,
-				"error", err)
-		} else {
-			for _, entry := range entries {
-				if !entry.IsDir() {
-					continue
-				}
-				// Year directories are named YYYY (4 digits)
-				if len(entry.Name()) == 4 {
-					yearDir := filepath.Join(sessionsRoot, entry.Name())
-					watchYearDir(yearDir)
-				}
-			}
-		}
-
-		// Scan the initial day directory if it exists
-		scanDayDir(initialDayDir)
-
-		// Watch for events
-		slog.Info("startCodexSessionWatcher: Now watching for file and directory events")
-		for {
-			select {
-			case <-watcherCtx.Done():
-				slog.Info("startCodexSessionWatcher: Context cancelled, stopping watcher")
-				return
-
-			case event, ok := <-watcher.Events:
-				if !ok {
-					slog.Info("startCodexSessionWatcher: Watcher events channel closed")
-					return
-				}
-
-				if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) && !event.Has(fsnotify.Remove) {
-					continue
-				}
-
-				// Determine what type of path this is
-				eventPath := event.Name
-				parentDir := filepath.Dir(eventPath)
-
-				// Check if this is a JSONL file (in a day directory)
-				if strings.HasSuffix(eventPath, ".jsonl") {
-					switch {
-					case event.Has(fsnotify.Create), event.Has(fsnotify.Write):
-						slog.Info("startCodexSessionWatcher: JSONL file event",
-							"operation", event.Op.String(),
-							"file", eventPath)
-						ScanCodexSessions(projectPath, parentDir, &eventPath)
-					case event.Has(fsnotify.Remove):
-						slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
-						ScanCodexSessions(projectPath, parentDir, nil)
-					}
-					continue
-				}
-
-				// Check if this is a directory creation
-				if event.Has(fsnotify.Create) {
-					switch dirType(eventPath, sessionsRoot) {
-					case "year":
-						slog.Info("startCodexSessionWatcher: New year directory created", "directory", eventPath)
-						watchYearDir(eventPath)
-					case "month":
-						slog.Info("startCodexSessionWatcher: New month directory created", "directory", eventPath)
-						watchMonthDir(eventPath)
-					case "day":
-						slog.Info("startCodexSessionWatcher: New day directory created", "directory", eventPath)
-						watchDayDir(eventPath)
-					}
-				}
-
-			case err, ok := <-watcher.Errors:
-				if !ok {
-					slog.Info("startCodexSessionWatcher: Watcher errors channel closed")
-					return
-				}
-				log.UserWarn("Watcher error: %v", err)
-				slog.Error("startCodexSessionWatcher: Watcher error", "error", err)
-			}
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			slog.Debug("startCodexSessionWatcher: Error closing watcher", "error", err)
 		}
 	}()
 
-	return nil
+	watchedDirs := make(map[string]bool)
+	var watchedDirsMutex sync.Mutex
+
+	addWatch := func(dir string) error {
+		watchedDirsMutex.Lock()
+		defer watchedDirsMutex.Unlock()
+
+		if watchedDirs[dir] {
+			return nil
+		}
+
+		if err := watcher.Add(dir); err != nil {
+			return err
+		}
+		watchedDirs[dir] = true
+		slog.Info("startCodexSessionWatcher: Added watch", "directory", dir)
+		return nil
+	}
+
+	scanDayDir := func(dayDir string) {
+		if _, err := os.Stat(dayDir); err == nil {
+			slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir)
+			ScanCodexSessions(projectPath, dayDir, nil, debugRaw, sessionCallback)
+		}
+	}
+
+	watchDayDir := func(dayDir string) {
+		if err := addWatch(dayDir); err != nil {
+			slog.Error("startCodexSessionWatcher: Failed to watch day directory",
+				"directory", dayDir,
+				"error", err)
+			return
+		}
+		scanDayDir(dayDir)
+	}
+
+	watchMonthDir := func(monthDir string) {
+		if err := addWatch(monthDir); err != nil {
+			slog.Error("startCodexSessionWatcher: Failed to watch month directory",
+				"directory", monthDir,
+				"error", err)
+			return
+		}
+
+		entries, err := os.ReadDir(monthDir)
+		if err != nil {
+			slog.Debug("startCodexSessionWatcher: Cannot read month directory",
+				"directory", monthDir,
+				"error", err)
+			return
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if len(entry.Name()) == 2 {
+				dayDir := filepath.Join(monthDir, entry.Name())
+				watchDayDir(dayDir)
+			}
+		}
+	}
+
+	watchYearDir := func(yearDir string) {
+		if err := addWatch(yearDir); err != nil {
+			slog.Error("startCodexSessionWatcher: Failed to watch year directory",
+				"directory", yearDir,
+				"error", err)
+			return
+		}
+
+		entries, err := os.ReadDir(yearDir)
+		if err != nil {
+			slog.Debug("startCodexSessionWatcher: Cannot read year directory",
+				"directory", yearDir,
+				"error", err)
+			return
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if len(entry.Name()) == 2 {
+				monthDir := filepath.Join(yearDir, entry.Name())
+				watchMonthDir(monthDir)
+			}
+		}
+	}
+
+	if err := addWatch(sessionsRoot); err != nil {
+		log.UserError("Error watching sessions root: %v", err)
+		slog.Error("startCodexSessionWatcher: Failed to watch sessions root", "error", err)
+		return err
+	}
+
+	entries, err := os.ReadDir(sessionsRoot)
+	if err != nil {
+		slog.Warn("startCodexSessionWatcher: Cannot read sessions root",
+			"directory", sessionsRoot,
+			"error", err)
+	} else {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			if len(entry.Name()) == 4 {
+				yearDir := filepath.Join(sessionsRoot, entry.Name())
+				watchYearDir(yearDir)
+			}
+		}
+	}
+
+	scanDayDir(initialDayDir)
+
+	slog.Info("startCodexSessionWatcher: Now watching for file and directory events")
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("startCodexSessionWatcher: Context cancelled, stopping watcher")
+			return ctx.Err()
+		case event, ok := <-watcher.Events:
+			if !ok {
+				slog.Info("startCodexSessionWatcher: Watcher events channel closed")
+				return nil
+			}
+
+			if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) && !event.Has(fsnotify.Remove) {
+				continue
+			}
+
+			eventPath := event.Name
+			parentDir := filepath.Dir(eventPath)
+
+			if strings.HasSuffix(eventPath, ".jsonl") {
+				switch {
+				case event.Has(fsnotify.Create), event.Has(fsnotify.Write):
+					slog.Info("startCodexSessionWatcher: JSONL file event",
+						"operation", event.Op.String(),
+						"file", eventPath)
+					ScanCodexSessions(projectPath, parentDir, &eventPath, debugRaw, sessionCallback)
+				case event.Has(fsnotify.Remove):
+					slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
+					ScanCodexSessions(projectPath, parentDir, nil, debugRaw, sessionCallback)
+				}
+				continue
+			}
+
+			if event.Has(fsnotify.Create) {
+				switch dirType(eventPath, sessionsRoot) {
+				case "year":
+					slog.Info("startCodexSessionWatcher: New year directory created", "directory", eventPath)
+					watchYearDir(eventPath)
+				case "month":
+					slog.Info("startCodexSessionWatcher: New month directory created", "directory", eventPath)
+					watchMonthDir(eventPath)
+				case "day":
+					slog.Info("startCodexSessionWatcher: New day directory created", "directory", eventPath)
+					watchDayDir(eventPath)
+				}
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				slog.Info("startCodexSessionWatcher: Watcher errors channel closed")
+				return nil
+			}
+			log.UserWarn("Watcher error: %v", err)
+			slog.Error("startCodexSessionWatcher: Watcher error", "error", err)
+			return fmt.Errorf("codex watcher error: %w", err)
+		}
+	}
 }
 
 // ScanCodexSessions scans JSONL files in the session directory and processes sessions
 // that match the project path. If changedFile is nil, scans all JSONL files in the directory.
 // If changedFile is non-nil, only processes that specific file.
-func ScanCodexSessions(projectPath string, sessionDir string, changedFile *string) {
+func ScanCodexSessions(projectPath string, sessionDir string, changedFile *string, debugRaw bool, callback func(*spi.AgentChatSession)) {
 	// Ensure logs are flushed even if we panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -402,8 +306,6 @@ func ScanCodexSessions(projectPath string, sessionDir string, changedFile *strin
 			"sessionDir", sessionDir)
 	}
 
-	// Get the session callback
-	callback := getWatcherCallback()
 	if callback == nil {
 		slog.Error("ScanCodexSessions: No callback provided - this should not happen")
 		return
@@ -417,7 +319,7 @@ func ScanCodexSessions(projectPath string, sessionDir string, changedFile *strin
 
 	// If we have a specific changed file, only process that file
 	if changedFile != nil {
-		if err := processCodexSessionFile(*changedFile, projectPath, normalizedProjectPath, callback); err != nil {
+		if err := processCodexSessionFile(*changedFile, projectPath, normalizedProjectPath, debugRaw, callback); err != nil {
 			slog.Debug("ScanCodexSessions: Failed to process changed file",
 				"file", *changedFile,
 				"error", err)
@@ -444,7 +346,7 @@ func ScanCodexSessions(projectPath string, sessionDir string, changedFile *strin
 		}
 
 		sessionPath := filepath.Join(sessionDir, entry.Name())
-		if err := processCodexSessionFile(sessionPath, projectPath, normalizedProjectPath, callback); err != nil {
+		if err := processCodexSessionFile(sessionPath, projectPath, normalizedProjectPath, debugRaw, callback); err != nil {
 			slog.Debug("ScanCodexSessions: Failed to process session file",
 				"file", sessionPath,
 				"error", err)
@@ -458,7 +360,7 @@ func ScanCodexSessions(projectPath string, sessionDir string, changedFile *strin
 
 // processCodexSessionFile processes a single Codex session file and calls the callback
 // if the session matches the project path.
-func processCodexSessionFile(sessionPath string, projectPath string, normalizedProjectPath string, callback func(*spi.AgentChatSession)) error {
+func processCodexSessionFile(sessionPath string, projectPath string, normalizedProjectPath string, debugRaw bool, callback func(*spi.AgentChatSession)) error {
 	// Load session metadata
 	meta, err := loadCodexSessionMeta(sessionPath)
 	if err != nil {
@@ -503,7 +405,7 @@ func processCodexSessionFile(sessionPath string, projectPath string, normalizedP
 	}
 
 	// Process the session
-	agentSession, err := processSessionToAgentChat(sessionInfo, projectPath, getWatcherDebugRaw())
+	agentSession, err := processSessionToAgentChat(sessionInfo, projectPath, debugRaw)
 	if err != nil {
 		return fmt.Errorf("failed to process session: %w", err)
 	}
