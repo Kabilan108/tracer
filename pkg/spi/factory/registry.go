@@ -62,7 +62,7 @@ func (r *Registry) registerAll() {
 	slog.Debug("Registered provider", "id", "codex", "name", codexProvider.Name())
 
 	r.initialized = true
-	slog.Info("Provider registry initialized", "count", len(r.providers), "providers", r.ListIDsUnsafe())
+	slog.Debug("Provider registry initialized", "count", len(r.providers), "providers", r.ListIDsUnsafe())
 }
 
 // ListIDsUnsafe returns provider IDs without locking (for internal use only)

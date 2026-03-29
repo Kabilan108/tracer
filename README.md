@@ -59,8 +59,8 @@ Detailed configuration and Linux integration docs:
 - [Configuration Guide](docs/configuration.md)
 
 ## Attribution
-This project is derived from the original Tracer CLI work:
-- https://github.com/tracer-ai/tracer-cli
+This project includes software derived from the SpecStory CLI:
+https://github.com/specstoryai/getspecstory
 
 The codebase has been rewritten and scoped for Linux local archiving workflows.
 
