@@ -49,14 +49,6 @@ Default output layout:
 ### `[local_sync]`
 - `local_time_zone`
 
-### `[telemetry]` (optional)
-- `endpoint`
-- `service_name`
-
-Environment overrides:
-- `OTEL_EXPORTER_OTLP_ENDPOINT`
-- `OTEL_SERVICE_NAME`
-
 ## CLI Flag Overrides
 Persistent flags override config values at runtime, for example:
 - `--archive-root`
@@ -66,8 +58,6 @@ Persistent flags override config values at runtime, for example:
 - `--debug`
 - `--silent`
 - `--local-time-zone`
-- `--telemetry-endpoint`
-- `--telemetry-service-name`
 
 ## Home Manager (Linux)
 This repo exposes a Home Manager module at `nix/hm-module.nix`.

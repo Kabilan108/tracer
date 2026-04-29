@@ -69,11 +69,6 @@ silent = false
 [local_sync]
 local_time_zone = false
 
-[telemetry]
-endpoint = "localhost:4317"
-service_name = "from-config"
-prompts = true
-
 [ingest]
 enabled_providers = [" Claude ", "CODEX", ""]
 exclude_projects = ["skip-me"]
@@ -81,15 +76,13 @@ exclude_path_globs = ["/tmp/*"]
 `)
 
 	cfg, err := LoadPath(path, &CLIOverrides{
-		OutputDir:            "/override/archive",
-		DebugDir:             "/override/debug",
-		LocalTimeZone:        true,
-		Console:              true,
-		Log:                  true,
-		Debug:                true,
-		Silent:               true,
-		TelemetryEndpoint:    "collector:4317",
-		TelemetryServiceName: "override-service",
+		OutputDir:     "/override/archive",
+		DebugDir:      "/override/debug",
+		LocalTimeZone: true,
+		Console:       true,
+		Log:           true,
+		Debug:         true,
+		Silent:        true,
 	})
 	if err != nil {
 		t.Fatalf("LoadPath() error = %v", err)
@@ -107,13 +100,6 @@ exclude_path_globs = ["/tmp/*"]
 	if !cfg.IsConsoleEnabled() || !cfg.IsLogEnabled() || !cfg.IsDebugEnabled() || !cfg.IsSilentEnabled() {
 		t.Fatal("expected logging flags from overrides to be enabled")
 	}
-	if got := cfg.GetTelemetryEndpoint(); got != "collector:4317" {
-		t.Fatalf("GetTelemetryEndpoint() = %q, want %q", got, "collector:4317")
-	}
-	if got := cfg.GetTelemetryServiceName(); got != "override-service" {
-		t.Fatalf("GetTelemetryServiceName() = %q, want %q", got, "override-service")
-	}
-
 	providers := cfg.GetEnabledProviders()
 	if len(providers) != 2 || providers[0] != "claude" || providers[1] != "codex" {
 		t.Fatalf("GetEnabledProviders() = %#v, want [claude codex]", providers)
@@ -163,9 +149,6 @@ func TestValidateConfigFile_IgnoresLegacyRemovedKeys(t *testing.T) {
 	path := writeConfigFile(t, dir, `
 [version_check]
 enabled = false
-
-[telemetry]
-prompts = false
 `)
 
 	result := ValidateConfigFile(path)

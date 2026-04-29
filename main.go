@@ -27,7 +27,6 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/log"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
-	"github.com/tracer-ai/tracer-cli/pkg/telemetry"
 	"github.com/tracer-ai/tracer-cli/pkg/ui"
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
@@ -35,18 +34,15 @@ import (
 var version = "dev"
 
 var (
-	outputDir            string
-	debugDir             string
-	localTimeZone        bool
-	console              bool
-	logFile              bool
-	debug                bool
-	silent               bool
-	telemetryEndpoint    string
-	telemetryServiceName string
+	outputDir     string
+	debugDir      string
+	localTimeZone bool
+	console       bool
+	logFile       bool
+	debug         bool
+	silent        bool
 
-	loadedConfig       *config.Config
-	telemetryInitError error
+	loadedConfig *config.Config
 )
 
 var (
@@ -1165,19 +1161,6 @@ func createRootCommand() *cobra.Command {
 			}
 			log.SetSilent(silent)
 
-			if telemetryInitError != nil {
-				return telemetryInitError
-			}
-			if endpoint := strings.TrimSpace(telemetryEndpoint); endpoint != "" {
-				telemetryInitError = telemetry.Init(context.Background(), telemetry.Options{
-					Enabled:     true,
-					Endpoint:    endpoint,
-					ServiceName: telemetryServiceName,
-				})
-				if telemetryInitError != nil {
-					return telemetryInitError
-				}
-			}
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
@@ -1201,8 +1184,6 @@ func applyConfigDefaults(cfg *config.Config) {
 	logFile = cfg.IsLogEnabled()
 	debug = cfg.IsDebugEnabled()
 	silent = cfg.IsSilentEnabled()
-	telemetryEndpoint = cfg.GetTelemetryEndpoint()
-	telemetryServiceName = cfg.GetTelemetryServiceName()
 }
 
 func main() {
@@ -1237,8 +1218,6 @@ func main() {
 	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ~/.local/state/tracer/debug.log")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
 	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
-	rootCmd.PersistentFlags().StringVar(&telemetryEndpoint, "telemetry-endpoint", telemetryEndpoint, "OTLP gRPC collector endpoint (default off)")
-	rootCmd.PersistentFlags().StringVar(&telemetryServiceName, "telemetry-service-name", telemetryServiceName, "override telemetry service name")
 
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		if !silent {
@@ -1246,9 +1225,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%s: %v\n", ui.Error("Error"), err)
 			fmt.Fprintln(os.Stderr)
 		}
-		_ = telemetry.Shutdown(context.Background())
 		os.Exit(1)
 	}
-
-	_ = telemetry.Shutdown(context.Background())
 }

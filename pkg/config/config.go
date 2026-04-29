@@ -2,9 +2,6 @@
 // Configuration is loaded with the following priority (highest to lowest):
 //  1. CLI flags
 //  2. User-level config: ~/.config/tracer/config.toml
-//
-// Note: For telemetry settings, environment variables (OTEL_*) take highest priority
-// per OpenTelemetry conventions.
 package config
 
 import (
@@ -18,7 +15,6 @@ import (
 )
 
 var ignoredLegacyKeys = map[string]struct{}{
-	"telemetry.prompts":     {},
 	"version_check":         {},
 	"version_check.enabled": {},
 }
@@ -60,13 +56,6 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 # Use local timezone for file names and timestamps (default: false)
 # local_time_zone = true
 
-[telemetry]
-# OTLP gRPC collector endpoint (default: off)
-# endpoint = "localhost:4317"
-
-# Override default telemetry service name (default: tracer-cli)
-# service_name = "my-service"
-
 [ingest]
 # Limit sync/watch processing to these providers.
 # Empty means all registered providers.
@@ -83,7 +72,6 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 type Config struct {
 	LocalSync LocalSyncConfig `toml:"local_sync"`
 	Logging   LoggingConfig   `toml:"logging"`
-	Telemetry TelemetryConfig `toml:"telemetry"`
 	Archive   ArchiveConfig   `toml:"archive"`
 	Ingest    IngestConfig    `toml:"ingest"`
 }
@@ -100,12 +88,6 @@ type LoggingConfig struct {
 	Log      *bool  `toml:"log"`
 	Debug    *bool  `toml:"debug"`
 	Silent   *bool  `toml:"silent"`
-}
-
-// TelemetryConfig holds OpenTelemetry configuration.
-type TelemetryConfig struct {
-	Endpoint    string `toml:"endpoint"`
-	ServiceName string `toml:"service_name"`
 }
 
 // ArchiveConfig configures the global markdown archive output root.
@@ -130,9 +112,6 @@ type CLIOverrides struct {
 	Log      bool
 	Debug    bool
 	Silent   bool
-
-	TelemetryEndpoint    string
-	TelemetryServiceName string
 }
 
 // ConfigValidationResult holds the result of validating a config file.
@@ -172,7 +151,6 @@ func LoadPath(configPath string, cliOverrides *CLIOverrides) (*Config, error) {
 		applyCLIOverrides(cfg, cliOverrides)
 	}
 
-	applyTelemetryEnvOverrides(cfg)
 	return cfg, nil
 }
 
@@ -202,16 +180,6 @@ func getUserConfigPath() string {
 func loadTOMLFile(path string, cfg *Config) error {
 	_, err := toml.DecodeFile(path, cfg)
 	return err
-}
-
-func applyTelemetryEnvOverrides(cfg *Config) {
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
-		cfg.Telemetry.Endpoint = endpoint
-	}
-
-	if serviceName := os.Getenv("OTEL_SERVICE_NAME"); serviceName != "" {
-		cfg.Telemetry.ServiceName = serviceName
-	}
 }
 
 // ValidateConfigFile checks a config file for TOML validity and unknown keys.
@@ -290,12 +258,6 @@ func applyCLIOverrides(cfg *Config, o *CLIOverrides) {
 		cfg.Logging.Silent = &enabled
 	}
 
-	if o.TelemetryEndpoint != "" {
-		cfg.Telemetry.Endpoint = o.TelemetryEndpoint
-	}
-	if o.TelemetryServiceName != "" {
-		cfg.Telemetry.ServiceName = o.TelemetryServiceName
-	}
 }
 
 func (c *Config) GetOutputDir() string {
@@ -332,21 +294,6 @@ func (c *Config) IsSilentEnabled() bool {
 		return *c.Logging.Silent
 	}
 	return false
-}
-
-func (c *Config) IsTelemetryEnabled() bool {
-	if disabled := os.Getenv("OTEL_SDK_DISABLED"); disabled == "true" || disabled == "1" {
-		return false
-	}
-	return c.Telemetry.Endpoint != ""
-}
-
-func (c *Config) GetTelemetryEndpoint() string {
-	return c.Telemetry.Endpoint
-}
-
-func (c *Config) GetTelemetryServiceName() string {
-	return c.Telemetry.ServiceName
 }
 
 func (c *Config) GetDebugDir() string {
