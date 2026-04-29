@@ -61,6 +61,11 @@ type listFlags struct {
 	noPager  bool
 }
 
+type getFlags struct {
+	provider string
+	path     bool
+}
+
 const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
 
 {{end}}{{if or .Runnable .HasSubCommands}}{{section "Usage"}}
@@ -825,6 +830,154 @@ func pageOutput(output string) error {
 	return cmd.Run()
 }
 
+type getMatch struct {
+	ProviderID string
+	Session    *spi.AgentChatSession
+	Path       string
+}
+
+func resolveGetProviders(registry *factory.Registry, providerID string) (map[string]spi.Provider, error) {
+	providerID = strings.ToLower(strings.TrimSpace(providerID))
+	if providerID == "" {
+		return resolveProviders(registry, nil)
+	}
+
+	provider, err := registry.Get(providerID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]spi.Provider{providerID: provider}, nil
+}
+
+func findGetMatches(providers map[string]spi.Provider, sessionID string, pathBuilder engine.PathBuilder) ([]getMatch, error) {
+	matches := make([]getMatch, 0)
+	for _, providerID := range sortedProviderIDs(providers) {
+		provider := providers[providerID]
+		session, err := provider.GetAgentChatSession("", sessionID, false)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: %w", providerID, err)
+		}
+		if session == nil {
+			continue
+		}
+
+		matches = append(matches, getMatch{
+			ProviderID: providerID,
+			Session:    session,
+			Path:       pathBuilder(providerID, session),
+		})
+	}
+	return matches, nil
+}
+
+func formatGetAmbiguityError(sessionID string, matches []getMatch) error {
+	lines := []string{fmt.Sprintf("session %q matched multiple providers; use --provider to choose one", sessionID)}
+	for _, match := range matches {
+		lines = append(lines, fmt.Sprintf("- %s: %s", match.ProviderID, match.Path))
+	}
+	return errors.New(strings.Join(lines, "\n"))
+}
+
+func sessionWorkspaceRoot(session *spi.AgentChatSession) string {
+	if session == nil || session.SessionData == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.SessionData.WorkspaceRoot)
+}
+
+func writeGetSessionMarkdown(providerID string, session *spi.AgentChatSession, opts engine.Options) error {
+	if opts.ShouldProcessSession != nil && !opts.ShouldProcessSession(providerID, session) {
+		return fmt.Errorf("session %s is excluded by configuration: %s", session.SessionID, sessionWorkspaceRoot(session))
+	}
+
+	writer, err := engine.New(opts)
+	if err != nil {
+		return err
+	}
+	_, processErr := writer.ProcessSession(providerID, session)
+	closeErr := writer.Close()
+	if processErr != nil {
+		return processErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return nil
+}
+
+func createGetCommand() *cobra.Command {
+	registry := factory.GetRegistry()
+	flags := getFlags{}
+
+	cmd := &cobra.Command{
+		Use:   "get <session-id>",
+		Short: "Fetch a session transcript by session ID",
+		Long:  "Fetches a specific provider session by ID, refreshes its archived markdown, and prints the markdown to stdout by default.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
+				return err
+			}
+			if strings.TrimSpace(args[0]) == "" {
+				return fmt.Errorf("session-id is required")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sessionID := strings.TrimSpace(args[0])
+			useUTC := !localTimeZone
+
+			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			if err != nil {
+				return err
+			}
+			if err := utils.EnsureStateDirectoryExists(outputConfig); err != nil {
+				return err
+			}
+			if err := utils.EnsureHistoryDirectoryExists(outputConfig); err != nil {
+				return err
+			}
+
+			providers, err := resolveGetProviders(registry, flags.provider)
+			if err != nil {
+				return err
+			}
+
+			opts := engineOptionsFromOutputConfig(outputConfig, useUTC, 0)
+			matches, err := findGetMatches(providers, sessionID, opts.PathBuilder)
+			if err != nil {
+				return err
+			}
+			if len(matches) == 0 {
+				return fmt.Errorf("session %q not found", sessionID)
+			}
+			if len(matches) > 1 {
+				return formatGetAmbiguityError(sessionID, matches)
+			}
+
+			match := matches[0]
+			if err := writeGetSessionMarkdown(match.ProviderID, match.Session, opts); err != nil {
+				return err
+			}
+
+			if flags.path {
+				fmt.Fprintln(os.Stdout, match.Path)
+				return nil
+			}
+
+			data, err := os.ReadFile(match.Path)
+			if err != nil {
+				return fmt.Errorf("read archived markdown: %w", err)
+			}
+			_, err = os.Stdout.Write(data)
+			return err
+		},
+	}
+
+	cmd.Flags().StringVarP(&flags.provider, "provider", "p", "", "provider to search")
+	cmd.Flags().BoolVarP(&flags.path, "path", "P", false, "print archive path instead of markdown content")
+	return cmd
+}
+
 func createListCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	flags := listFlags{}
@@ -1065,12 +1218,14 @@ func main() {
 	configureHelpFormatting(rootCmd)
 	syncCmd := createSyncCommand()
 	watchCmd := createWatchCommand()
+	getCmd := createGetCommand()
 	listCmd := createListCommand()
 	configCmd := cmdpkg.CreateConfigCommand()
 	versionCmd := cmdpkg.CreateVersionCommand(version)
 
 	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(watchCmd)
+	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)

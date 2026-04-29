@@ -274,6 +274,33 @@ func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progr
 	return result, nil
 }
 
+// GetAgentChatSession retrieves one Codex CLI chat session by ID.
+func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+
+	sessions, err := findCodexSessions(projectPath, sessionID, false)
+	if err != nil {
+		if strings.Contains(err.Error(), "sessions directory not accessible") ||
+			strings.Contains(err.Error(), "sessions root") ||
+			strings.Contains(err.Error(), "home directory") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to find codex session: %w", err)
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+
+	session, err := processSessionToAgentChat(&sessions[0], projectPath, debugRaw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process codex session %q: %w", sessionID, err)
+	}
+	return session, nil
+}
+
 // WatchAgent watches for Codex CLI agent activity and calls the callback with AgentChatSession
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation (blocks indefinitely)

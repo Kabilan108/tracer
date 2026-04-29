@@ -400,6 +400,15 @@ func (e *Engine) processSession(providerID string, session *spi.AgentChatSession
 	return OutcomeCreated, nil
 }
 
+// ProcessSession writes one session to the archive using the same path, state,
+// and statistics behavior as ingest and watch processing.
+func (e *Engine) ProcessSession(providerID string, session *spi.AgentChatSession) (ProcessOutcome, error) {
+	if !e.shouldProcessSession(providerID, session) {
+		return OutcomeSkipped, nil
+	}
+	return e.processSession(providerID, session)
+}
+
 func (e *Engine) saveStatistics(providerID string, session *spi.AgentChatSession, markdownContent string) error {
 	stats := sessionpkg.ComputeSessionStatistics(session.SessionData, markdownContent, providerID)
 	e.stats.AddSessionStats(session.SessionID, stats)

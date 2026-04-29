@@ -487,3 +487,43 @@ func TestConvertToAgentChatSession(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderGetAgentChatSession(t *testing.T) {
+	tempHome := t.TempDir()
+	projectsDir := filepath.Join(tempHome, ".claude", "projects")
+	projectDir := filepath.Join(projectsDir, "-tmp-test-project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("failed to create project dir: %v", err)
+	}
+
+	sessionID := "12345678-1234-5678-9abc-def012345678"
+	sessionFile := filepath.Join(projectDir, sessionID+".jsonl")
+	content := strings.Join([]string{
+		`{"uuid":"root-1","sessionId":"` + sessionID + `","type":"user","timestamp":"2025-01-01T00:00:00Z","parentUuid":null,"cwd":"/tmp/test-project","version":"1.0.0","message":{"role":"user","content":"hello"}}`,
+		`{"uuid":"agent-1","sessionId":"` + sessionID + `","type":"assistant","timestamp":"2025-01-01T00:00:01Z","parentUuid":"root-1","cwd":"/tmp/test-project","version":"1.0.0","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(sessionFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write session file: %v", err)
+	}
+	t.Setenv("HOME", tempHome)
+
+	provider := NewProvider()
+	session, err := provider.GetAgentChatSession("", sessionID, false)
+	if err != nil {
+		t.Fatalf("GetAgentChatSession() error = %v", err)
+	}
+	if session == nil {
+		t.Fatal("GetAgentChatSession() returned nil, want session")
+	}
+	if session.SessionID != sessionID {
+		t.Fatalf("GetAgentChatSession() session ID = %q, want %q", session.SessionID, sessionID)
+	}
+
+	missing, err := provider.GetAgentChatSession("", "fedcba98-7654-3210-fedc-ba9876543210", false)
+	if err != nil {
+		t.Fatalf("GetAgentChatSession() missing error = %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("GetAgentChatSession() missing = %+v, want nil", missing)
+	}
+}

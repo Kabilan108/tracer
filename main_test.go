@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/engine"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
+	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 type fileInfoStub struct {
@@ -21,6 +27,177 @@ func (f fileInfoStub) Mode() os.FileMode  { return f.mode }
 func (f fileInfoStub) ModTime() time.Time { return time.Time{} }
 func (f fileInfoStub) IsDir() bool        { return false }
 func (f fileInfoStub) Sys() any           { return nil }
+
+type getTestProvider struct {
+	name    string
+	session *spi.AgentChatSession
+	queries int
+}
+
+func (p *getTestProvider) Name() string {
+	return p.name
+}
+
+func (p *getTestProvider) Check(customCommand string) spi.CheckResult {
+	return spi.CheckResult{Success: true}
+}
+
+func (p *getTestProvider) DetectAgent(projectPath string, helpOutput bool) bool {
+	return true
+}
+
+func (p *getTestProvider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
+	if p.session == nil {
+		return nil, nil
+	}
+	return []spi.AgentChatSession{*p.session}, nil
+}
+
+func (p *getTestProvider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	p.queries++
+	if p.session == nil || p.session.SessionID != sessionID {
+		return nil, nil
+	}
+	sessionCopy := *p.session
+	return &sessionCopy, nil
+}
+
+func (p *getTestProvider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
+	return nil, nil
+}
+
+func (p *getTestProvider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return nil
+}
+
+func newGetTestSession(providerID string, sessionID string, workspaceRoot string) *spi.AgentChatSession {
+	now := "2026-03-04T00:00:00Z"
+	return &spi.AgentChatSession{
+		SessionID: sessionID,
+		CreatedAt: now,
+		Slug:      "test-session",
+		SessionData: &schema.SessionData{
+			SchemaVersion: "1.0",
+			Provider: schema.ProviderInfo{
+				ID:      providerID,
+				Name:    providerID,
+				Version: "test",
+			},
+			SessionID:     sessionID,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			Slug:          "test-session",
+			WorkspaceRoot: workspaceRoot,
+			Exchanges: []schema.Exchange{
+				{
+					ExchangeID: sessionID + ":0",
+					StartTime:  now,
+					EndTime:    now,
+					Messages: []schema.Message{
+						{
+							ID:        "msg-1",
+							Role:      "user",
+							Timestamp: now,
+							Content: []schema.ContentPart{
+								{Type: "text", Text: "hello from get"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func captureStdout(t *testing.T, run func() error) (string, error) {
+	t.Helper()
+
+	origStdout := os.Stdout
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = writeFile
+
+	runErr := run()
+	if closeErr := writeFile.Close(); closeErr != nil {
+		t.Fatalf("stdout pipe close error = %v", closeErr)
+	}
+	os.Stdout = origStdout
+
+	data, readErr := io.ReadAll(readFile)
+	if readErr != nil {
+		t.Fatalf("stdout pipe read error = %v", readErr)
+	}
+	if closeErr := readFile.Close(); closeErr != nil {
+		t.Fatalf("stdout pipe read close error = %v", closeErr)
+	}
+	return string(data), runErr
+}
+
+func writeCodexGetSessionFile(t *testing.T, homeDir string, sessionID string, workspaceRoot string) {
+	t.Helper()
+
+	sessionDir := filepath.Join(homeDir, ".codex", "sessions", "2026", "03", "04")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("failed to create codex session dir: %v", err)
+	}
+
+	records := []map[string]interface{}{
+		{
+			"type":      "session_meta",
+			"timestamp": "2026-03-04T00:00:00Z",
+			"payload": map[string]interface{}{
+				"id":        sessionID,
+				"timestamp": "2026-03-04T00:00:00Z",
+				"cwd":       workspaceRoot,
+			},
+		},
+		{
+			"type":      "message",
+			"timestamp": "2026-03-04T00:00:01Z",
+			"payload": map[string]interface{}{
+				"role":    "user",
+				"content": "hello from command get",
+			},
+		},
+	}
+
+	var content strings.Builder
+	for _, record := range records {
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("failed to marshal codex record: %v", err)
+		}
+		content.Write(data)
+		content.WriteString("\n")
+	}
+
+	sessionPath := filepath.Join(sessionDir, sessionID+".jsonl")
+	if err := os.WriteFile(sessionPath, []byte(content.String()), 0o644); err != nil {
+		t.Fatalf("failed to write codex session file: %v", err)
+	}
+}
+
+func withGetCommandGlobals(t *testing.T, archiveRoot string, debugRoot string, cfg *config.Config) {
+	t.Helper()
+
+	origOutputDir := outputDir
+	origDebugDir := debugDir
+	origLoadedConfig := loadedConfig
+	origLocalTimeZone := localTimeZone
+	t.Cleanup(func() {
+		outputDir = origOutputDir
+		debugDir = origDebugDir
+		loadedConfig = origLoadedConfig
+		localTimeZone = origLocalTimeZone
+	})
+
+	outputDir = archiveRoot
+	debugDir = debugRoot
+	loadedConfig = cfg
+	localTimeZone = false
+}
 
 func TestValidateFlags(t *testing.T) {
 	origConsole := console
@@ -316,4 +493,187 @@ func TestResolvePagerCommand(t *testing.T) {
 			t.Fatalf("resolvePagerCommand() = %q %q %v, want /bin/bat --paging=always true", pager, args, ok)
 		}
 	})
+}
+
+func TestGetCommandRequiresSessionID(t *testing.T) {
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected missing session-id to fail")
+	}
+}
+
+func TestGetCommandRejectsEmptySessionID(t *testing.T) {
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{"   "})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected empty session-id to fail")
+	}
+}
+
+func TestFindGetMatchesDuplicateMatches(t *testing.T) {
+	sessionID := "session-1"
+	workspaceRoot := filepath.Join(t.TempDir(), "project")
+	providers := map[string]spi.Provider{
+		"claude": &getTestProvider{name: "claude", session: newGetTestSession("claude", sessionID, workspaceRoot)},
+		"codex":  &getTestProvider{name: "codex", session: newGetTestSession("codex", sessionID, workspaceRoot)},
+	}
+	pathBuilder := func(providerID string, session *spi.AgentChatSession) string {
+		return filepath.Join("/archive", providerID, "project", session.SessionID+".md")
+	}
+
+	matches, err := findGetMatches(providers, sessionID, pathBuilder)
+	if err != nil {
+		t.Fatalf("findGetMatches() error = %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("findGetMatches() returned %d matches, want 2", len(matches))
+	}
+
+	err = formatGetAmbiguityError(sessionID, matches)
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if !strings.Contains(err.Error(), "claude") || !strings.Contains(err.Error(), "codex") {
+		t.Fatalf("ambiguity error missing providers: %v", err)
+	}
+}
+
+func TestFindGetMatchesProviderFilter(t *testing.T) {
+	sessionID := "session-1"
+	workspaceRoot := filepath.Join(t.TempDir(), "project")
+	claudeProvider := &getTestProvider{name: "claude", session: newGetTestSession("claude", sessionID, workspaceRoot)}
+	codexProvider := &getTestProvider{name: "codex", session: newGetTestSession("codex", sessionID, workspaceRoot)}
+	providers := map[string]spi.Provider{"codex": codexProvider}
+	pathBuilder := func(providerID string, session *spi.AgentChatSession) string {
+		return filepath.Join("/archive", providerID, "project", session.SessionID+".md")
+	}
+
+	matches, err := findGetMatches(providers, sessionID, pathBuilder)
+	if err != nil {
+		t.Fatalf("findGetMatches() error = %v", err)
+	}
+	if len(matches) != 1 || matches[0].ProviderID != "codex" {
+		t.Fatalf("unexpected matches: %+v", matches)
+	}
+	if claudeProvider.queries != 0 {
+		t.Fatalf("filtered provider should not be queried, got %d queries", claudeProvider.queries)
+	}
+	if codexProvider.queries != 1 {
+		t.Fatalf("codex provider queries = %d, want 1", codexProvider.queries)
+	}
+}
+
+func TestWriteGetSessionMarkdownPathAndContent(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionID := "session-1"
+	session := newGetTestSession("codex", sessionID, filepath.Join(tempDir, "project"))
+	opts := engine.Options{
+		HistoryDir:     filepath.Join(tempDir, "history"),
+		StatisticsPath: filepath.Join(tempDir, "stats.json"),
+		StateDBPath:    filepath.Join(tempDir, "state.db"),
+		UseUTC:         true,
+		PathBuilder: func(providerID string, session *spi.AgentChatSession) string {
+			return filepath.Join(tempDir, "history", providerID, filepath.Base(session.SessionData.WorkspaceRoot), session.SessionID+".md")
+		},
+		Debounce: 1,
+	}
+
+	if err := writeGetSessionMarkdown("codex", session, opts); err != nil {
+		t.Fatalf("writeGetSessionMarkdown() error = %v", err)
+	}
+
+	wantPath := filepath.Join(tempDir, "history", "codex", "project", sessionID+".md")
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("failed to read markdown path %s: %v", wantPath, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "hello from get") {
+		t.Fatalf("markdown missing session content: %s", content)
+	}
+}
+
+func TestWriteGetSessionMarkdownExcludedSession(t *testing.T) {
+	tempDir := t.TempDir()
+	sessionID := "session-1"
+	session := newGetTestSession("codex", sessionID, filepath.Join(tempDir, "excluded-project"))
+	opts := engine.Options{
+		HistoryDir:     filepath.Join(tempDir, "history"),
+		StatisticsPath: filepath.Join(tempDir, "stats.json"),
+		StateDBPath:    filepath.Join(tempDir, "state.db"),
+		UseUTC:         true,
+		PathBuilder: func(providerID string, session *spi.AgentChatSession) string {
+			return filepath.Join(tempDir, "history", providerID, filepath.Base(session.SessionData.WorkspaceRoot), session.SessionID+".md")
+		},
+		ShouldProcessSession: func(providerID string, session *spi.AgentChatSession) bool {
+			return false
+		},
+		Debounce: 1,
+	}
+
+	err := writeGetSessionMarkdown("codex", session, opts)
+	if err == nil {
+		t.Fatal("writeGetSessionMarkdown() expected exclusion error")
+	}
+	if !strings.Contains(err.Error(), "excluded by configuration") || !strings.Contains(err.Error(), "excluded-project") {
+		t.Fatalf("writeGetSessionMarkdown() error = %v, want exclusion with workspace root", err)
+	}
+}
+
+func TestGetCommandMarkdownOutput(t *testing.T) {
+	tempDir := t.TempDir()
+	homeDir := filepath.Join(tempDir, "home")
+	workspaceRoot := filepath.Join(tempDir, "workspace", "get-project")
+	sessionID := "get-markdown-session"
+	t.Setenv("HOME", homeDir)
+	writeCodexGetSessionFile(t, homeDir, sessionID, workspaceRoot)
+	withGetCommandGlobals(t, filepath.Join(tempDir, "archive"), filepath.Join(tempDir, "debug"), &config.Config{
+		Ingest: config.IngestConfig{EnabledProviders: []string{"codex"}},
+	})
+
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{sessionID})
+
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("get command error = %v", err)
+	}
+	if !strings.Contains(stdout, "<!-- Generated by Tracer") {
+		t.Fatalf("get command stdout missing markdown header: %s", stdout)
+	}
+	if !strings.Contains(stdout, "Session "+sessionID) {
+		t.Fatalf("get command stdout missing session ID: %s", stdout)
+	}
+}
+
+func TestGetCommandPathOutput(t *testing.T) {
+	tempDir := t.TempDir()
+	homeDir := filepath.Join(tempDir, "home")
+	workspaceRoot := filepath.Join(tempDir, "workspace", "get-project")
+	sessionID := "get-path-session"
+	t.Setenv("HOME", homeDir)
+	writeCodexGetSessionFile(t, homeDir, sessionID, workspaceRoot)
+	archiveRoot := filepath.Join(tempDir, "archive")
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), &config.Config{
+		Ingest: config.IngestConfig{EnabledProviders: []string{"codex"}},
+	})
+
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{sessionID, "-P"})
+
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("get command error = %v", err)
+	}
+
+	wantPath := filepath.Join(archiveRoot, "codex", "get-project", sessionID+".md")
+	if strings.TrimSpace(stdout) != wantPath {
+		t.Fatalf("get command path stdout = %q, want %q", strings.TrimSpace(stdout), wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("expected archived markdown at %s: %v", wantPath, err)
+	}
 }

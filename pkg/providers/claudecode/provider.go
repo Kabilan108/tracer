@@ -288,6 +288,52 @@ func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progr
 	return parseProjectSessions(claudeProjectDir, projectPath, debugRaw, progress)
 }
 
+// GetAgentChatSession retrieves one Claude Code chat session by ID.
+func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, nil
+	}
+
+	projectDirs := []string{}
+	if strings.TrimSpace(projectPath) == "" {
+		dirs, err := ListClaudeCodeProjectDirs()
+		if err != nil {
+			return nil, err
+		}
+		projectDirs = dirs
+	} else {
+		claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
+		if err != nil {
+			return nil, err
+		}
+		projectDirs = []string{claudeProjectDir}
+	}
+
+	for _, projectDir := range projectDirs {
+		if _, err := os.Stat(projectDir); os.IsNotExist(err) {
+			continue
+		}
+
+		parser := NewJSONLParser()
+		if err := parser.ParseSingleSession(projectDir, sessionID); err != nil {
+			if strings.Contains(err.Error(), "no session found") {
+				continue
+			}
+			return nil, err
+		}
+		if len(parser.Sessions) == 0 {
+			continue
+		}
+		session := processSession(parser.Sessions[0], projectPath, debugRaw)
+		if session != nil {
+			return session, nil
+		}
+	}
+
+	return nil, nil
+}
+
 func parseProjectSessions(claudeProjectDir string, workspaceRoot string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
 	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
 		return []spi.AgentChatSession{}, nil
