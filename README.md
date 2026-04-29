@@ -50,9 +50,12 @@ tracer watch
 - `tracer sync [provider-id]`
 - `tracer watch [provider-id]`
 - `tracer list [provider-id] [project] [--json] [--sessions] [--no-pager]`
+- `tracer get <session-id> [--provider <provider-id>] [--path]`
 - `tracer config init [--force]`
 - `tracer config check [provider-id] [-c <provider-command>]`
 - `tracer version`
+
+`tracer get` refreshes the archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude` / `-p codex` to limit lookup to one provider.
 
 ## Configuration Docs
 Detailed configuration and Linux integration docs:

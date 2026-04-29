@@ -53,6 +53,14 @@ func (p *testProvider) GetAgentChatSessions(projectPath string, debugRaw bool, p
 	return result, nil
 }
 
+func (p *testProvider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
+	session, ok := p.sessions[sessionID]
+	if !ok {
+		return nil, nil
+	}
+	return &session, nil
+}
+
 func (p *testProvider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
 	return nil, nil
 }
@@ -470,6 +478,10 @@ func (p *testProviderWithListError) DetectAgent(projectPath string, helpOutput b
 }
 
 func (p *testProviderWithListError) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
+	return nil, p.err
+}
+
+func (p *testProviderWithListError) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
 	return nil, p.err
 }
 

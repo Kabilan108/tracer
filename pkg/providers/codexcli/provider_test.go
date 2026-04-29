@@ -914,3 +914,59 @@ func TestFindCodexSessions_ShortCircuit(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderGetAgentChatSession(t *testing.T) {
+	tempHome := t.TempDir()
+	sessionsDir := codexSessionsRoot(tempHome)
+	projectPath := "/tmp/test-project"
+	targetSessionID := "target-session"
+
+	if err := createTestSessionsDir(t, sessionsDir, []struct {
+		year      string
+		month     string
+		day       string
+		filename  string
+		sessionID string
+		cwd       string
+	}{
+		{
+			year:      "2025",
+			month:     "10",
+			day:       "01",
+			filename:  "target.jsonl",
+			sessionID: targetSessionID,
+			cwd:       projectPath,
+		},
+		{
+			year:      "2025",
+			month:     "10",
+			day:       "01",
+			filename:  "other.jsonl",
+			sessionID: "other-session",
+			cwd:       projectPath,
+		},
+	}); err != nil {
+		t.Fatalf("Failed to setup test sessions: %v", err)
+	}
+	t.Setenv("HOME", tempHome)
+
+	provider := NewProvider()
+	session, err := provider.GetAgentChatSession("", targetSessionID, false)
+	if err != nil {
+		t.Fatalf("GetAgentChatSession() error = %v", err)
+	}
+	if session == nil {
+		t.Fatal("GetAgentChatSession() returned nil, want session")
+	}
+	if session.SessionID != targetSessionID {
+		t.Fatalf("GetAgentChatSession() session ID = %q, want %q", session.SessionID, targetSessionID)
+	}
+
+	missing, err := provider.GetAgentChatSession("", "missing-session", false)
+	if err != nil {
+		t.Fatalf("GetAgentChatSession() missing error = %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("GetAgentChatSession() missing = %+v, want nil", missing)
+	}
+}

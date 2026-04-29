@@ -61,6 +61,11 @@ type Provider interface {
 	// Returns a slice of AgentChatSession structs containing session data
 	GetAgentChatSessions(projectPath string, debugRaw bool, progress ProgressCallback) ([]AgentChatSession, error)
 
+	// GetAgentChatSession retrieves one fully parsed chat session by ID.
+	// projectPath: Agent's working directory; empty means search all known projects/sessions.
+	// Returns nil, nil when the provider can scan successfully but does not contain the session.
+	GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*AgentChatSession, error)
+
 	// ListAgentChatSessions retrieves lightweight metadata for all sessions without full parsing
 	// This should be faster than GetAgentChatSessions as it only needs to return SessionMetadata and not the full AgentChatSession
 	// projectPath: Agent's working directory
