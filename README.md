@@ -49,7 +49,7 @@ tracer watch
 ## Commands
 - `tracer sync [provider-id]`
 - `tracer watch [provider-id]`
-- `tracer list [provider-id] [project] [--json] [--sessions]`
+- `tracer list [provider-id] [project] [--json] [--sessions] [--no-pager]`
 - `tracer config init [--force]`
 - `tracer config check [provider-id] [-c <provider-command>]`
 - `tracer version`

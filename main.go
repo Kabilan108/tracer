@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -46,9 +49,16 @@ var (
 	telemetryInitError error
 )
 
+var (
+	stdinStat  = func() (os.FileInfo, error) { return os.Stdin.Stat() }
+	stdoutStat = func() (os.FileInfo, error) { return os.Stdout.Stat() }
+	lookupPath = exec.LookPath
+)
+
 type listFlags struct {
 	json     bool
 	sessions bool
+	noPager  bool
 }
 
 const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
@@ -719,6 +729,102 @@ type projectBucket struct {
 	sessions    map[string]sessionRow
 }
 
+func shouldPageListOutput(flags listFlags) bool {
+	if flags.json || flags.noPager {
+		return false
+	}
+
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	if term == "" || term == "dumb" {
+		return false
+	}
+
+	stdoutInfo, stdoutErr := stdoutStat()
+	if stdoutErr != nil || stdoutInfo.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+
+	stdinInfo, stdinErr := stdinStat()
+	return stdinErr == nil && stdinInfo.Mode()&os.ModeCharDevice != 0
+}
+
+func renderListOutput(out io.Writer, projects []projectSummary, sessions []sessionRow, includeSessions bool) error {
+	if _, err := fmt.Fprintln(out, ui.Section(fmt.Sprintf("%-10s  %-24s  %-8s  %s", "PROVIDER", "PROJECT", "SESSIONS", "PROJECT PATH"))); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, strings.Repeat("-", 96)); err != nil {
+		return err
+	}
+	for _, p := range projects {
+		if _, err := fmt.Fprintf(out, "%-10s  %-24s  %-8d  %s\n", p.ProviderID, p.Project, p.SessionCount, p.ProjectPath); err != nil {
+			return err
+		}
+	}
+
+	if includeSessions {
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out, ui.Section(fmt.Sprintf("%-10s  %-24s  %-36s  %-20s  %s", "PROVIDER", "PROJECT", "SESSION ID", "CREATED", "SLUG"))); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out, strings.Repeat("-", 128)); err != nil {
+			return err
+		}
+		for _, s := range sessions {
+			created := s.CreatedAt
+			if len(created) > 19 {
+				created = created[:19]
+			}
+			if _, err := fmt.Fprintf(out, "%-10s  %-24s  %-36s  %-20s  %s\n", s.ProviderID, s.Project, s.SessionID, created, s.Slug); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func resolvePagerCommand() (string, []string, bool) {
+	pager := strings.TrimSpace(os.Getenv("PAGER"))
+	if pager == "" {
+		path, err := lookupPath("less")
+		if err != nil {
+			return "", nil, false
+		}
+		return path, []string{"-FRSX"}, true
+	}
+
+	fields := strings.Fields(pager)
+	if len(fields) == 0 {
+		return "", nil, false
+	}
+
+	path, err := lookupPath(fields[0])
+	if err != nil {
+		return "", nil, false
+	}
+	return path, fields[1:], true
+}
+
+func pageOutput(output string) error {
+	pager, args, ok := resolvePagerCommand()
+	if !ok {
+		return os.ErrNotExist
+	}
+
+	cmd := exec.Command(pager, args...)
+	cmd.Stdin = bytes.NewBufferString(output)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	if os.Getenv("LESS") == "" {
+		cmd.Env = append(cmd.Env, "LESS=FRSX")
+	}
+
+	return cmd.Run()
+}
+
 func createListCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	flags := listFlags{}
@@ -838,31 +944,31 @@ func createListCommand() *cobra.Command {
 				return nil
 			}
 
-			fmt.Println(ui.Section(fmt.Sprintf("%-10s  %-24s  %-8s  %s", "PROVIDER", "PROJECT", "SESSIONS", "PROJECT PATH")))
-			fmt.Println(strings.Repeat("-", 96))
-			for _, p := range projects {
-				fmt.Printf("%-10s  %-24s  %-8d  %s\n", p.ProviderID, p.Project, p.SessionCount, p.ProjectPath)
-			}
-
-			if flags.sessions {
-				fmt.Println()
-				fmt.Println(ui.Section(fmt.Sprintf("%-10s  %-24s  %-36s  %-20s  %s", "PROVIDER", "PROJECT", "SESSION ID", "CREATED", "SLUG")))
-				fmt.Println(strings.Repeat("-", 128))
-				for _, s := range sessions {
-					created := s.CreatedAt
-					if len(created) > 19 {
-						created = created[:19]
+			if shouldPageListOutput(flags) {
+				var output bytes.Buffer
+				if err := renderListOutput(&output, projects, sessions, flags.sessions); err != nil {
+					return err
+				}
+				err := pageOutput(output.String())
+				if err == nil {
+					return nil
+				}
+				if !errors.Is(err, os.ErrNotExist) {
+					var execErr *exec.ExitError
+					if errors.As(err, &execErr) {
+						return nil
 					}
-					fmt.Printf("%-10s  %-24s  %-36s  %-20s  %s\n", s.ProviderID, s.Project, s.SessionID, created, s.Slug)
+					return err
 				}
 			}
 
-			return nil
+			return renderListOutput(os.Stdout, projects, sessions, flags.sessions)
 		},
 	}
 
 	cmd.Flags().BoolVar(&flags.json, "json", false, "output as JSON")
 	cmd.Flags().BoolVar(&flags.sessions, "sessions", false, "include per-session output")
+	cmd.Flags().BoolVar(&flags.noPager, "no-pager", false, "print directly without opening a pager")
 	return cmd
 }
 
@@ -870,12 +976,9 @@ func createRootCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	providerList := registry.GetProviderList()
 
-	longDesc := "Tracer archives terminal coding sessions to markdown for Claude and Codex.\n\n" +
-		"Config: ~/.config/tracer/config.toml\n" +
-		"Default archive root: ~/.local/share/tracer/archive\n" +
-		"Default state/log root: ~/.local/state/tracer"
+	longDesc := "Tracer archives terminal coding sessions to markdown for Claude and Codex.\n\n"
 	if providerList != "No providers registered" {
-		longDesc += "\n\nSupported providers: " + providerList + "."
+		longDesc += "Supported providers: " + providerList + "."
 	}
 
 	return &cobra.Command{
