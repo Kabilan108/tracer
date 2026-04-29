@@ -870,12 +870,9 @@ func createRootCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	providerList := registry.GetProviderList()
 
-	longDesc := "Tracer archives terminal coding sessions to markdown for Claude and Codex.\n\n" +
-		"Config: ~/.config/tracer/config.toml\n" +
-		"Default archive root: ~/.local/share/tracer/archive\n" +
-		"Default state/log root: ~/.local/state/tracer"
+	longDesc := "Tracer archives terminal coding sessions to markdown for Claude and Codex.\n\n"
 	if providerList != "No providers registered" {
-		longDesc += "\n\nSupported providers: " + providerList + "."
+		longDesc += "Supported providers: " + providerList + "."
 	}
 
 	return &cobra.Command{
