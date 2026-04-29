@@ -15,7 +15,7 @@
           pname = "tracer";
           version = "0.0.1";
           src = self;
-          vendorHash = "sha256-Bn5HlMrlsZwtT0AH9EQT5UJjNDkmINt/fOgaG1FzpRs=";
+          vendorHash = "sha256-Mkcq3IJftCLq6hjDrma9j3a66ramwqIK4S69jVWk9f8=";
 
           env.CGO_ENABLED = 0;
 
