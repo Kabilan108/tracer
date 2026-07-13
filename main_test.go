@@ -13,6 +13,7 @@ import (
 
 	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/engine"
+	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
@@ -445,6 +446,124 @@ func TestShouldPageListOutput(t *testing.T) {
 			t.Fatal("shouldPageListOutput() should not page non-tty stdout")
 		}
 	})
+}
+
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value string
+		want  time.Time
+		fail  bool
+	}{
+		{name: "duration", value: "24h", want: now.Add(-24 * time.Hour)},
+		{name: "timestamp", value: "2026-07-01T00:00:00Z", want: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)},
+		{name: "invalid", value: "last-week", fail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseSince(tt.value, now)
+			if (err != nil) != tt.fail {
+				t.Fatalf("parseSince() error = %v", err)
+			}
+			if !tt.fail && !got.Equal(tt.want) {
+				t.Fatalf("parseSince() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMetadataMatches(t *testing.T) {
+	metadata := sessionpkg.Metadata{
+		Provider: "codex",
+		CWD:      "/home/kabilan/dotfiles",
+		Ended:    "2026-07-13T10:00:00Z",
+		Outcome:  "done",
+		Tags:     []string{"gold"},
+	}
+	tests := []struct {
+		name  string
+		flags listFlags
+		want  bool
+	}{
+		{name: "all filters", flags: listFlags{provider: "codex", project: "dotfiles", outcome: "done", tag: "gold"}, want: true},
+		{name: "provider mismatch", flags: listFlags{provider: "claude"}, want: false},
+		{name: "project path match", flags: listFlags{project: "kabilan/dot"}, want: true},
+		{name: "missing tag", flags: listFlags{tag: "review"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := metadataMatches(metadata, tt.flags, time.Time{}); got != tt.want {
+				t.Fatalf("metadataMatches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMutationReadRoots(t *testing.T) {
+	previousOutputDir := outputDir
+	previousConfig := loadedConfig
+	t.Cleanup(func() {
+		outputDir = previousOutputDir
+		loadedConfig = previousConfig
+	})
+	outputDir = t.TempDir()
+	loadedConfig = &config.Config{Archive: config.ArchiveConfig{AdditionalRoots: []string{"/read-only-ingest"}}}
+
+	byID, err := mutationReadRoots("session-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byID) != 1 {
+		t.Fatalf("by-ID roots = %v, want only primary root", byID)
+	}
+	byPath, err := mutationReadRoots("/read-only-ingest/session.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byPath) != 2 {
+		t.Fatalf("explicit-path roots = %v, want all roots", byPath)
+	}
+}
+
+func TestListCommand_ArchiveJSON(t *testing.T) {
+	previousOutputDir := outputDir
+	previousConfig := loadedConfig
+	previousStdout := os.Stdout
+	t.Cleanup(func() {
+		outputDir = previousOutputDir
+		loadedConfig = previousConfig
+		os.Stdout = previousStdout
+	})
+	outputDir = filepath.Join("tests", "fixtures", "archive")
+	loadedConfig = nil
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	cmd := createListCommand()
+	cmd.SetArgs([]string{"--json"})
+	executeErr := cmd.Execute()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = previousStdout
+	output, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if executeErr != nil {
+		t.Fatalf("list command error = %v", executeErr)
+	}
+	var sessions []sessionpkg.Metadata
+	if err := json.Unmarshal(output, &sessions); err != nil {
+		t.Fatalf("decode list JSON: %v\n%s", err, output)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
 }
 
 func TestResolvePagerCommand(t *testing.T) {

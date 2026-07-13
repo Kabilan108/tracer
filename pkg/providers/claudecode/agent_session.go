@@ -291,6 +291,9 @@ func buildUserMessage(record JSONLRecord, isSidechain bool) Message {
 		Role:      "user",
 		Content:   contentParts,
 	}
+	if isMeta, _ := record.Data["isMeta"].(bool); isMeta {
+		msg.Metadata = map[string]interface{}{"isMeta": true}
+	}
 
 	// For sidechain messages, treat as agent (parent agent talking to subagent, not actual user input)
 	if isSidechain {

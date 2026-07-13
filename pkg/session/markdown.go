@@ -31,17 +31,31 @@ const (
 // If includeMessageIDs is true, message IDs will be included in the output
 // useUTC controls timestamp format (true=UTC, false=local)
 func GenerateMarkdownFromAgentSession(sessionData *SessionData, includeMessageIDs bool, useUTC bool) (string, error) {
+	return GenerateMarkdownWithMetadata(sessionData, Metadata{}, includeMessageIDs, useUTC)
+}
+
+func GenerateMarkdownWithMetadata(sessionData *SessionData, metadata Metadata, includeMessageIDs bool, useUTC bool) (string, error) {
 	if sessionData == nil {
 		return "", fmt.Errorf("sessionData is nil")
 	}
 
 	var markdown strings.Builder
+	if metadata.SessionID != "" {
+		frontmatter, err := RenderFrontmatter(metadata)
+		if err != nil {
+			return "", err
+		}
+		markdown.WriteString(frontmatter)
+	}
 
 	// Add header comment
 	markdown.WriteString(GeneratedByTracer + "\n\n")
 
 	// Create title from session info
-	title := generateTitle(sessionData, useUTC)
+	title := metadata.Title
+	if title == "" {
+		title = generateTitle(sessionData, useUTC)
+	}
 	fmt.Fprintf(&markdown, "# %s\n\n", title)
 
 	// Add session metadata comment using the same timestamp format as the title
@@ -72,6 +86,9 @@ func GenerateMarkdownFromAgentSession(sessionData *SessionData, includeMessageID
 
 // generateTitle creates a title for the session
 func generateTitle(sessionData *SessionData, useUTC bool) string {
+	if title := deriveTitle(sessionData); title != "" {
+		return title
+	}
 	// Use first exchange start time for the title (matching existing markdown format)
 	// This is the timestamp of the first user message
 	if len(sessionData.Exchanges) > 0 && sessionData.Exchanges[0].StartTime != "" {

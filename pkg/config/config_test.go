@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -109,6 +110,21 @@ exclude_path_globs = ["/tmp/*"]
 	}
 	if !cfg.IsProjectExcluded("/tmp/project") {
 		t.Fatal("IsProjectExcluded() should match excluded path glob")
+	}
+}
+
+func TestLoadPath_AdditionalArchiveRoots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[archive]\nadditional_roots = [\"/archive/one\", \"/archive/two\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/archive/one", "/archive/two"}
+	if got := cfg.GetAdditionalArchiveRoots(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetAdditionalArchiveRoots() = %v, want %v", got, want)
 	}
 }
 

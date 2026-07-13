@@ -13,9 +13,9 @@
         pkgs:
         (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) rec {
           pname = "tracer";
-          version = "0.0.1";
+          version = "0.1.0";
           src = self;
-          vendorHash = "sha256-Mkcq3IJftCLq6hjDrma9j3a66ramwqIK4S69jVWk9f8=";
+          vendorHash = "sha256-MMrLdQC5HUunc9qkcAGDXe5/JRReVdNI1jEV5p72gTk=";
 
           env.CGO_ENABLED = 0;
 

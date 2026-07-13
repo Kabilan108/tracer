@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
@@ -211,6 +212,52 @@ func TestIngestProviders_IdempotentWithStateDB(t *testing.T) {
 
 	if summary2.Skipped != 1 || summary2.Created != 0 || summary2.Updated != 0 || summary2.Errors != 0 {
 		t.Fatalf("second ingest summary = %+v", summary2)
+	}
+}
+
+func TestProcessSession_PreservesAnnotations(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := newEngineForTest(t, tempDir)
+	original := newSession("codex", "Codex CLI", "annotated", "annotations", "first request")
+	if _, err := engine.ProcessSession("codex", &original); err != nil {
+		t.Fatalf("ProcessSession() error = %v", err)
+	}
+	paths, err := filepath.Glob(filepath.Join(tempDir, "history", "codex", "*.md"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("archive paths = %v, error = %v", paths, err)
+	}
+	content, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _, err := sessionpkg.ParseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.Path = paths[0]
+	metadata.Outcome = "done"
+	metadata.Tags = []string{"gold"}
+	if err := sessionpkg.WriteMetadata(metadata); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := sessionWithAddedUserMessages(original, "follow-up")
+	if _, err := engine.ProcessSession("codex", &updated); err != nil {
+		t.Fatalf("ProcessSession() update error = %v", err)
+	}
+	content, err = os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _, err = sessionpkg.ParseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Outcome != "done" || len(metadata.Tags) != 1 || metadata.Tags[0] != "gold" {
+		t.Fatalf("annotations were not preserved: %+v", metadata)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

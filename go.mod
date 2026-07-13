@@ -19,7 +19,10 @@ require (
 	modernc.org/sqlite v1.46.1 // Pure Go SQLite database driver
 )
 
-require github.com/spf13/pflag v1.0.9
+require (
+	github.com/spf13/pflag v1.0.9
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

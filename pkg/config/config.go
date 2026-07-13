@@ -35,6 +35,9 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 # Default: ~/.local/share/tracer/archive
 # root_dir = "~/.local/share/tracer/archive"
 
+# Additional read-only archive roots used by commands such as tracer list.
+# additional_roots = ["/vault/userdata/tracer-ingest"]
+
 [logging]
 # Optional debug output directory.
 # Default: ~/.local/state/tracer/debug
@@ -92,7 +95,8 @@ type LoggingConfig struct {
 
 // ArchiveConfig configures the global markdown archive output root.
 type ArchiveConfig struct {
-	RootDir string `toml:"root_dir"`
+	RootDir         string   `toml:"root_dir"`
+	AdditionalRoots []string `toml:"additional_roots"`
 }
 
 // IngestConfig controls provider selection and exclusion behavior for sync/watch modes.
@@ -266,6 +270,10 @@ func (c *Config) GetOutputDir() string {
 
 func (c *Config) GetArchiveRoot() string {
 	return c.Archive.RootDir
+}
+
+func (c *Config) GetAdditionalArchiveRoots() []string {
+	return append([]string(nil), c.Archive.AdditionalRoots...)
 }
 
 func (c *Config) IsConsoleEnabled() bool {

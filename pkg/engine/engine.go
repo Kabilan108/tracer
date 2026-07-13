@@ -343,17 +343,31 @@ func (e *Engine) processSession(providerID string, session *spi.AgentChatSession
 	e.processMu.Lock()
 	defer e.processMu.Unlock()
 
-	markdownContent, err := sessionpkg.GenerateMarkdownFromAgentSession(session.SessionData, false, e.opts.UseUTC)
-	if err != nil {
-		return OutcomeError, fmt.Errorf("generate markdown: %w", err)
-	}
-
 	filePath := e.opts.PathBuilder(providerID, session)
 	if filePath == "" {
 		return OutcomeError, fmt.Errorf("empty output path")
 	}
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 		return OutcomeError, fmt.Errorf("create output directory: %w", err)
+	}
+	unlock, err := sessionpkg.LockTranscript(filePath)
+	if err != nil {
+		return OutcomeError, err
+	}
+	defer unlock()
+
+	host, err := os.Hostname()
+	if err != nil {
+		return OutcomeError, fmt.Errorf("get hostname: %w", err)
+	}
+	annotations := sessionpkg.Annotations{}
+	if existing, readErr := os.ReadFile(filePath); readErr == nil {
+		annotations = sessionpkg.ExtractAnnotations(existing)
+	}
+	metadata := sessionpkg.ApplyAnnotations(sessionpkg.DeriveMetadata(session.SessionData, host), annotations)
+	markdownContent, err := sessionpkg.GenerateMarkdownWithMetadata(session.SessionData, metadata, false, e.opts.UseUTC)
+	if err != nil {
+		return OutcomeError, fmt.Errorf("generate markdown: %w", err)
 	}
 
 	contentHash := hashMarkdown(markdownContent)
@@ -374,8 +388,13 @@ func (e *Engine) processSession(providerID string, session *spi.AgentChatSession
 		fileExists = true
 	}
 
-	if err := os.WriteFile(filePath, []byte(markdownContent), 0o644); err != nil {
+	temporaryPath := filePath + ".tmp"
+	if err := os.WriteFile(temporaryPath, []byte(markdownContent), 0o644); err != nil {
 		return OutcomeError, fmt.Errorf("write markdown: %w", err)
+	}
+	if err := os.Rename(temporaryPath, filePath); err != nil {
+		_ = os.Remove(temporaryPath)
+		return OutcomeError, fmt.Errorf("replace markdown: %w", err)
 	}
 
 	if err := e.state.Upsert(SessionState{

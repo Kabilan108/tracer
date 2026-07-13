@@ -1,6 +1,7 @@
 # Configuration Guide (Linux)
 
 ## Config File Location
+
 `tracer` reads user config from:
 - `$XDG_CONFIG_HOME/tracer/config.toml` when `XDG_CONFIG_HOME` is set
 - otherwise `~/.config/tracer/config.toml`
@@ -16,9 +17,11 @@ tracer config check
 ```
 
 ## Minimal Example
+
 ```toml
 [archive]
 root_dir = "~/.local/share/tracer/archive"
+additional_roots = ["/vault/userdata/tracer-ingest"]
 
 [ingest]
 enabled_providers = ["claude", "codex"]
@@ -28,18 +31,25 @@ exclude_path_globs = []
 
 ## Sections
 
+
 ### `[archive]`
+
 - `root_dir`: archive output root
+- `additional_roots`: read-only archive roots included by `tracer list`
+
+Only `root_dir` receives sync and watch output. Additional roots are recursively scanned for archived transcripts and may point at host-specific rsync destinations.
 
 Default output layout:
 - `provider/project/session.md`
 
 ### `[ingest]`
+
 - `enabled_providers`: limit active providers (`claude`, `codex`)
 - `exclude_projects`: skip specific project names
 - `exclude_path_globs`: skip matching workspace paths (filepath globs)
 
 ### `[logging]`
+
 - `debug_dir`
 - `log`
 - `debug`
@@ -47,9 +57,11 @@ Default output layout:
 - `silent`
 
 ### `[local_sync]`
+
 - `local_time_zone`
 
 ## CLI Flag Overrides
+
 Persistent flags override config values at runtime, for example:
 - `--archive-root`
 - `--debug-dir`
@@ -60,6 +72,7 @@ Persistent flags override config values at runtime, for example:
 - `--local-time-zone`
 
 ## Home Manager (Linux)
+
 This repo exposes a Home Manager module at `nix/hm-module.nix`.
 
 Example module usage:
@@ -75,6 +88,7 @@ Example module usage:
 
     settings = {
       archive.root_dir = "~/.local/share/tracer/archive";
+      archive.additional_roots = [ "/vault/userdata/tracer-ingest" ];
       ingest.enabled_providers = [ "claude" "codex" ];
       ingest.exclude_projects = [ ];
       ingest.exclude_path_globs = [ ];
@@ -90,6 +104,7 @@ Example module usage:
 ```
 
 ## NixOS
+
 Typical NixOS setup is to use Home Manager for user-scoped `tracer` config and service.
 
 If you are not using Home Manager, you can still:
@@ -98,6 +113,7 @@ If you are not using Home Manager, you can still:
 3. Run `tracer watch` from a user-level systemd service.
 
 ## Verification
+
 After setup:
 ```bash
 tracer config check

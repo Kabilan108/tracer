@@ -25,6 +25,7 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/engine"
 	"github.com/tracer-ai/tracer-cli/pkg/log"
+	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
 	"github.com/tracer-ai/tracer-cli/pkg/ui"
@@ -55,6 +56,12 @@ type listFlags struct {
 	json     bool
 	sessions bool
 	noPager  bool
+	since    string
+	limit    int
+	project  string
+	provider string
+	outcome  string
+	tag      string
 }
 
 type getFlags struct {
@@ -974,7 +981,7 @@ func createGetCommand() *cobra.Command {
 	return cmd
 }
 
-func createListCommand() *cobra.Command {
+func createLegacyListCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	flags := listFlags{}
 
@@ -1121,6 +1128,253 @@ func createListCommand() *cobra.Command {
 	return cmd
 }
 
+func archiveReadRoots() ([]string, error) {
+	outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+	if err != nil {
+		return nil, err
+	}
+	roots := []string{outputConfig.GetHistoryDir()}
+	if loadedConfig != nil {
+		for _, root := range loadedConfig.GetAdditionalArchiveRoots() {
+			roots = append(roots, utils.ExpandTilde(root))
+		}
+	}
+	return roots, nil
+}
+
+func mutationReadRoots(sessionIDOrPath string) ([]string, error) {
+	roots, err := archiveReadRoots()
+	if err != nil {
+		return nil, err
+	}
+	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
+	if !isPath && len(roots) > 1 {
+		roots = roots[:1]
+	}
+	return roots, nil
+}
+
+func parseSince(value string, now time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if duration, err := time.ParseDuration(value); err == nil {
+		if duration < 0 {
+			return time.Time{}, fmt.Errorf("since duration must be positive")
+		}
+		return now.Add(-duration), nil
+	}
+	timestamp, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --since value %q: use an RFC3339 timestamp or duration", value)
+	}
+	return timestamp, nil
+}
+
+func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.Time) bool {
+	if flags.provider != "" && !strings.EqualFold(metadata.Provider, flags.provider) {
+		return false
+	}
+	if flags.project != "" {
+		project := strings.ToLower(strings.TrimSpace(flags.project))
+		cwd := strings.ToLower(metadata.CWD)
+		if !strings.Contains(cwd, project) && !strings.Contains(strings.ToLower(filepath.Base(metadata.CWD)), project) {
+			return false
+		}
+	}
+	if flags.outcome != "" && !strings.EqualFold(metadata.Outcome, flags.outcome) {
+		return false
+	}
+	if flags.tag != "" {
+		found := false
+		for _, tag := range metadata.Tags {
+			if strings.EqualFold(tag, flags.tag) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if !since.IsZero() {
+		ended, err := time.Parse(time.RFC3339, metadata.Ended)
+		if err != nil || ended.Before(since) {
+			return false
+		}
+	}
+	return true
+}
+
+func renderArchiveList(out io.Writer, sessions []sessionpkg.Metadata) error {
+	if _, err := fmt.Fprintf(out, "%-20s  %-10s  %-18s  %-8s  %s\n", "ENDED", "PROVIDER", "PROJECT", "TURNS", "TITLE"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, strings.Repeat("-", 100)); err != nil {
+		return err
+	}
+	for _, metadata := range sessions {
+		ended := metadata.Ended
+		if len(ended) > 19 {
+			ended = ended[:19]
+		}
+		project := filepath.Base(metadata.CWD)
+		if project == "." || project == string(filepath.Separator) || project == "" {
+			project = "unknown"
+		}
+		turns := fmt.Sprintf("%d/%d", metadata.UserTurns, metadata.AgentTurns)
+		if _, err := fmt.Fprintf(out, "%-20s  %-10s  %-18s  %-8s  %s\n", ended, metadata.Provider, project, turns, metadata.Title); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func createListCommand() *cobra.Command {
+	flags := listFlags{}
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List archived sessions",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if flags.limit < 0 {
+				return fmt.Errorf("--limit must not be negative")
+			}
+			since, err := parseSince(flags.since, time.Now())
+			if err != nil {
+				return err
+			}
+			roots, err := archiveReadRoots()
+			if err != nil {
+				return err
+			}
+			sessions, err := sessionpkg.ScanArchives(roots)
+			if err != nil {
+				return err
+			}
+			filtered := make([]sessionpkg.Metadata, 0, len(sessions))
+			for _, metadata := range sessions {
+				if !since.IsZero() {
+					if _, err := time.Parse(time.RFC3339, metadata.Ended); err != nil {
+						if !silent {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping %s: invalid ended timestamp %q\n", metadata.Path, metadata.Ended)
+						}
+						continue
+					}
+				}
+				if metadataMatches(metadata, flags, since) {
+					filtered = append(filtered, metadata)
+				}
+			}
+			if flags.limit > 0 && len(filtered) > flags.limit {
+				filtered = filtered[:flags.limit]
+			}
+			if flags.json {
+				encoder := json.NewEncoder(os.Stdout)
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(filtered)
+			}
+			if len(filtered) == 0 {
+				if !silent {
+					fmt.Println(ui.Warning("No archived sessions found."))
+				}
+				return nil
+			}
+			if shouldPageListOutput(flags) {
+				var output bytes.Buffer
+				if err := renderArchiveList(&output, filtered); err != nil {
+					return err
+				}
+				if err := pageOutput(output.String()); err == nil {
+					return nil
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return err
+				}
+			}
+			return renderArchiveList(os.Stdout, filtered)
+		},
+	}
+	cmd.Flags().BoolVar(&flags.json, "json", false, "emit a JSON array")
+	cmd.Flags().BoolVar(&flags.noPager, "no-pager", false, "disable paging for human-readable output")
+	cmd.Flags().StringVar(&flags.since, "since", "", "include sessions since an RFC3339 timestamp or duration")
+	cmd.Flags().IntVar(&flags.limit, "limit", 0, "maximum number of sessions to return")
+	cmd.Flags().StringVar(&flags.project, "project", "", "filter by project name or working directory")
+	cmd.Flags().StringVar(&flags.provider, "provider", "", "filter by provider ID")
+	cmd.Flags().StringVar(&flags.outcome, "outcome", "", "filter by outcome")
+	cmd.Flags().StringVar(&flags.tag, "tag", "", "filter by tag")
+	return cmd
+}
+
+func createOutcomeCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "outcome <session-id-or-path> <done|abandoned|clear>",
+		Short: "Set an archived session outcome",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			outcome := strings.ToLower(strings.TrimSpace(args[1]))
+			if outcome != "done" && outcome != "abandoned" && outcome != "clear" {
+				return fmt.Errorf("outcome must be done, abandoned, or clear")
+			}
+			roots, err := mutationReadRoots(args[0])
+			if err != nil {
+				return err
+			}
+			metadata, err := sessionpkg.ResolveTranscript(roots, args[0])
+			if err != nil {
+				return err
+			}
+			if outcome == "clear" {
+				outcome = ""
+			}
+			metadata.Outcome = outcome
+			return sessionpkg.WriteMetadata(metadata)
+		},
+	}
+}
+
+func mutateGoldTag(sessionIDOrPath string, remove bool) error {
+	roots, err := mutationReadRoots(sessionIDOrPath)
+	if err != nil {
+		return err
+	}
+	metadata, err := sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
+	if err != nil {
+		return err
+	}
+	tags := make([]string, 0, len(metadata.Tags)+1)
+	for _, tag := range metadata.Tags {
+		if !strings.EqualFold(tag, "gold") {
+			tags = append(tags, tag)
+		}
+	}
+	if !remove {
+		tags = append(tags, "gold")
+	}
+	metadata.Tags = tags
+	return sessionpkg.WriteMetadata(metadata)
+}
+
+func createTagCommand(remove bool) *cobra.Command {
+	verb := "tag"
+	short := "Tag an archived session"
+	if remove {
+		verb = "untag"
+		short = "Remove a tag from an archived session"
+	}
+	return &cobra.Command{
+		Use:   verb + " <session-id-or-path> gold",
+		Short: short,
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !strings.EqualFold(strings.TrimSpace(args[1]), "gold") {
+				return fmt.Errorf("only the gold tag is currently supported")
+			}
+			return mutateGoldTag(args[0], remove)
+		},
+	}
+}
+
 func createRootCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	providerList := registry.GetProviderList()
@@ -1201,6 +1455,9 @@ func main() {
 	watchCmd := createWatchCommand()
 	getCmd := createGetCommand()
 	listCmd := createListCommand()
+	outcomeCmd := createOutcomeCommand()
+	tagCmd := createTagCommand(false)
+	untagCmd := createTagCommand(true)
 	configCmd := cmdpkg.CreateConfigCommand()
 	versionCmd := cmdpkg.CreateVersionCommand(version)
 
@@ -1208,6 +1465,9 @@ func main() {
 	rootCmd.AddCommand(watchCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(outcomeCmd)
+	rootCmd.AddCommand(tagCmd)
+	rootCmd.AddCommand(untagCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)
 

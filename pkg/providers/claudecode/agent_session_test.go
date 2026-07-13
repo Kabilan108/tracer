@@ -12,6 +12,19 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
+func TestBuildUserMessage_PreservesMetaMarker(t *testing.T) {
+	record := JSONLRecord{Data: map[string]interface{}{
+		"uuid":      "meta-message",
+		"timestamp": "2026-07-13T10:00:00Z",
+		"isMeta":    true,
+		"message":   map[string]interface{}{"content": "internal"},
+	}}
+	message := buildUserMessage(record, false)
+	if isMeta, _ := message.Metadata["isMeta"].(bool); !isMeta {
+		t.Fatalf("metadata = %v, want isMeta marker", message.Metadata)
+	}
+}
+
 // getSchemaPath returns the absolute path to the agent session schema
 func getSchemaPath() string {
 	// Get the directory of this test file
