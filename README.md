@@ -17,6 +17,7 @@ This fork focuses on local-first operation for:
 - Native one-shot cross-host archive pushes that preserve receiver annotations
 - Config-driven provider filters and project/path exclusions
 - Built-in config bootstrap and validation commands
+- Version-matched agent instructions from `tracer skill`
 - Optional Nix package and Home Manager module
 
 ## Quick Install (Linux)
@@ -62,12 +63,13 @@ tracer watch
 - `tracer list [--project <name>] [--provider <id>] [--outcome <value>] [--tag <tag> ...]`
 - `tracer get <session-id> [--provider <provider-id>] [--path] [--tool-output <mode>] [--turns user,agent]`
 - `tracer outcome <session-id-or-path> <done|abandoned|clear>`
-- `tracer tag <session-id-or-path> gold`
-- `tracer untag <session-id-or-path> gold`
+- `tracer tag <session-id-or-path> <tag>`
+- `tracer untag <session-id-or-path> <tag>`
 - `tracer push <remote-name> [--dry-run]`
 - `tracer receive --dest <path> --stdin`
 - `tracer config init [--force]`
 - `tracer config check [provider-id] [-c <provider-command>]`
+- `tracer skill`
 - `tracer version`
 
 `tracer get` reads the finished archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude` / `-p codex` to limit lookup to one provider.
@@ -117,7 +119,15 @@ tags:
 
 Derived fields are refreshed by sync and watch. User-set `outcome` and `tags` values are preserved.
 
-Outcome and tag commands resolve session IDs only in the writable primary archive. To annotate a synchronized transcript under an additional root, pass its explicit Markdown path; a later rsync may replace annotations made to that copy.
+Outcome and tag commands resolve bare session IDs in the writable primary archive and roots explicitly configured in `archive.annotatable_roots`. Duplicate IDs are rejected as ambiguous; explicit transcript paths continue to work for any archive path.
+
+Tags may be arbitrary non-empty names without whitespace or commas, except that a leading `!` is reserved for `tracer list --tag` negation. Tag names are normalized to lowercase when written, and `untag` matches case-insensitively.
+
+```bash
+tracer tag 019abc gold
+tracer tag 019abc wiki:compiled
+tracer untag 019abc wiki:compiled
+```
 
 ## Cross-host archive push
 

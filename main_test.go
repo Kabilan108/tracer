@@ -7,14 +7,89 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	cmdpkg "github.com/tracer-ai/tracer-cli/pkg/cmd"
 	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/engine"
 	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 )
+
+func TestSkillReferencesExistInCommandTree(t *testing.T) {
+	const testVersion = "0.2.0-test"
+	var output strings.Builder
+	skillCommand := cmdpkg.CreateSkillCommand(testVersion)
+	skillCommand.SetOut(&output)
+	if err := skillCommand.Execute(); err != nil {
+		t.Fatalf("skill command Execute() error = %v", err)
+	}
+
+	root := createCommandTree(testVersion)
+	globalFlagNames := make(map[string]bool)
+	commandsByPath := make(map[string]*cobra.Command)
+	var walk func(*cobra.Command)
+	walk = func(command *cobra.Command) {
+		commandsByPath[command.CommandPath()] = command
+		command.LocalNonPersistentFlags().VisitAll(func(flag *pflag.Flag) {
+			globalFlagNames["--"+flag.Name] = true
+		})
+		command.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
+			globalFlagNames["--"+flag.Name] = true
+		})
+		for _, child := range command.Commands() {
+			walk(child)
+		}
+	}
+	walk(root)
+
+	flagPattern := regexp.MustCompile(`--[A-Za-z0-9][A-Za-z0-9-]*`)
+	commandPattern := regexp.MustCompile(`\btracer[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?`)
+	for lineNumber, line := range strings.Split(output.String(), "\n") {
+		flags := flagPattern.FindAllString(line, -1)
+		mentions := commandPattern.FindAllStringSubmatch(line, -1)
+		if len(mentions) == 0 {
+			for _, flag := range flags {
+				if !globalFlagNames[flag] {
+					t.Errorf("skill line %d references unknown flag %s", lineNumber+1, flag)
+				}
+			}
+			continue
+		}
+
+		for _, mention := range mentions {
+			command := commandsByPath["tracer "+mention[1]]
+			if command == nil {
+				t.Errorf("skill line %d references unknown command %q", lineNumber+1, mention[0])
+				continue
+			}
+			if command.HasSubCommands() && mention[2] != "" {
+				command = commandsByPath[command.CommandPath()+" "+mention[2]]
+				if command == nil {
+					t.Errorf("skill line %d references unknown subcommand %q", lineNumber+1, mention[0])
+					continue
+				}
+			}
+
+			commandFlagNames := make(map[string]bool)
+			visitFlag := func(flag *pflag.Flag) {
+				commandFlagNames["--"+flag.Name] = true
+			}
+			command.LocalNonPersistentFlags().VisitAll(visitFlag)
+			command.PersistentFlags().VisitAll(visitFlag)
+			command.InheritedFlags().VisitAll(visitFlag)
+			for _, flag := range flags {
+				if !commandFlagNames[flag] {
+					t.Errorf("skill line %d references flag %s outside %s", lineNumber+1, flag, command.CommandPath())
+				}
+			}
+		}
+	}
+}
 
 type fileInfoStub struct {
 	mode os.FileMode
@@ -595,6 +670,104 @@ func TestMutationCommands_AnnotatableRoots(t *testing.T) {
 			t.Fatalf("outcome error = %v, want subset validation error", err)
 		}
 	})
+}
+
+func TestValidateTagName(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      string
+		wantError string
+	}{
+		{name: "gold", value: "gold", want: "gold"},
+		{name: "namespaced", value: "wiki:compiled", want: "wiki:compiled"},
+		{name: "trimmed", value: "  Wiki:Compiled  ", want: "Wiki:Compiled"},
+		{name: "empty", value: "   ", wantError: "must not be empty"},
+		{name: "leading negation", value: "!wiki:compiled", wantError: "must not start with !"},
+		{name: "embedded space", value: "wiki compiled", wantError: "must not contain whitespace"},
+		{name: "comma", value: "wiki,compiled", wantError: "must not contain a comma"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := validateTagName(tt.value)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("validateTagName(%q) error = %v, want %q", tt.value, err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateTagName(%q) error = %v", tt.value, err)
+			}
+			if got != tt.want {
+				t.Errorf("validateTagName(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTagCommandRejectsInvalidTagNames(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantError string
+	}{
+		{name: "empty", value: "", wantError: "must not be empty"},
+		{name: "leading negation", value: "!wiki:compiled", wantError: "must not start with !"},
+		{name: "embedded space", value: "wiki compiled", wantError: "must not contain whitespace"},
+		{name: "comma", value: "wiki,compiled", wantError: "must not contain a comma"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := createTagCommand(false)
+			command.SetArgs([]string{"session-id", tt.value})
+			err := command.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("tag command error = %v, want %q", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestTagCommands_NamespacedTag(t *testing.T) {
+	tempDir := t.TempDir()
+	archiveRoot := filepath.Join(tempDir, "primary")
+	path := writeArchivedGetSession(t, archiveRoot, "codex", "project", "namespaced-tag", "body\n")
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), nil)
+
+	tagCommand := createTagCommand(false)
+	tagCommand.SetArgs([]string{"namespaced-tag", "Wiki:Compiled"})
+	if err := tagCommand.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _, err := sessionpkg.ParseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(metadata.Tags, []string{"wiki:compiled"}) {
+		t.Fatalf("tags = %v, want [wiki:compiled]", metadata.Tags)
+	}
+
+	untagCommand := createTagCommand(true)
+	untagCommand.SetArgs([]string{"namespaced-tag", "WIKI:COMPILED"})
+	if err := untagCommand.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	content, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, _, err = sessionpkg.ParseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.Tags) != 0 {
+		t.Fatalf("tags = %v, want none", metadata.Tags)
+	}
 }
 
 func TestListCommand_SymlinkedAdditionalRoot(t *testing.T) {

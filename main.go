@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -1390,19 +1391,36 @@ func createOutcomeCommand() *cobra.Command {
 	}
 }
 
-func mutateGoldTag(sessionIDOrPath string, remove bool) error {
+func validateTagName(value string) (string, error) {
+	tag := strings.TrimSpace(value)
+	if tag == "" {
+		return "", fmt.Errorf("tag must not be empty")
+	}
+	if strings.HasPrefix(tag, "!") {
+		return "", fmt.Errorf("tag must not start with !")
+	}
+	if strings.IndexFunc(tag, unicode.IsSpace) >= 0 {
+		return "", fmt.Errorf("tag must not contain whitespace")
+	}
+	if strings.Contains(tag, ",") {
+		return "", fmt.Errorf("tag must not contain a comma")
+	}
+	return tag, nil
+}
+
+func mutateTag(sessionIDOrPath string, tag string, remove bool) error {
 	metadata, err := resolveMutationTranscript(sessionIDOrPath)
 	if err != nil {
 		return err
 	}
 	tags := make([]string, 0, len(metadata.Tags)+1)
-	for _, tag := range metadata.Tags {
-		if !strings.EqualFold(tag, "gold") {
-			tags = append(tags, tag)
+	for _, existingTag := range metadata.Tags {
+		if !strings.EqualFold(existingTag, tag) {
+			tags = append(tags, existingTag)
 		}
 	}
 	if !remove {
-		tags = append(tags, "gold")
+		tags = append(tags, tag)
 	}
 	metadata.Tags = tags
 	return sessionpkg.WriteMetadata(metadata)
@@ -1410,20 +1428,21 @@ func mutateGoldTag(sessionIDOrPath string, remove bool) error {
 
 func createTagCommand(remove bool) *cobra.Command {
 	verb := "tag"
-	short := "Tag an archived session"
+	short := "Add a tag to an archived session"
 	if remove {
 		verb = "untag"
 		short = "Remove a tag from an archived session"
 	}
 	return &cobra.Command{
-		Use:   verb + " <session-id-or-path> gold",
+		Use:   verb + " <session-id-or-path> <tag>",
 		Short: short,
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !strings.EqualFold(strings.TrimSpace(args[1]), "gold") {
-				return fmt.Errorf("only the gold tag is currently supported")
+			tag, err := validateTagName(args[1])
+			if err != nil {
+				return err
 			}
-			return mutateGoldTag(args[0], remove)
+			return mutateTag(args[0], tag, remove)
 		},
 	}
 }
@@ -1593,6 +1612,35 @@ func createRootCommand() *cobra.Command {
 	}
 }
 
+func createCommandTree(version string) *cobra.Command {
+	rootCmd := createRootCommand()
+	configureHelpFormatting(rootCmd)
+	rootCmd.AddCommand(
+		createSyncCommand(),
+		createWatchCommand(),
+		createGetCommand(),
+		createListCommand(),
+		createOutcomeCommand(),
+		createTagCommand(false),
+		createTagCommand(true),
+		createPushCommand(),
+		createReceiveCommand(),
+		cmdpkg.CreateConfigCommand(),
+		cmdpkg.CreateSkillCommand(version),
+		cmdpkg.CreateVersionCommand(version),
+	)
+
+	rootCmd.PersistentFlags().StringVar(&outputDir, "archive-root", outputDir, "archive root for markdown output (default: ~/.local/share/tracer/archive)")
+	rootCmd.PersistentFlags().StringVar(&debugDir, "debug-dir", debugDir, "debug output directory (default: ~/.local/state/tracer/debug)")
+	rootCmd.PersistentFlags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file names and timestamps")
+	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
+	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ~/.local/state/tracer/debug.log")
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
+	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
+
+	return rootCmd
+}
+
 func applyConfigDefaults(cfg *config.Config) {
 	if cfg == nil {
 		return
@@ -1619,39 +1667,7 @@ func main() {
 	loadedConfig = cfg
 	applyConfigDefaults(cfg)
 
-	rootCmd := createRootCommand()
-	configureHelpFormatting(rootCmd)
-	syncCmd := createSyncCommand()
-	watchCmd := createWatchCommand()
-	getCmd := createGetCommand()
-	listCmd := createListCommand()
-	outcomeCmd := createOutcomeCommand()
-	tagCmd := createTagCommand(false)
-	untagCmd := createTagCommand(true)
-	pushCmd := createPushCommand()
-	receiveCmd := createReceiveCommand()
-	configCmd := cmdpkg.CreateConfigCommand()
-	versionCmd := cmdpkg.CreateVersionCommand(version)
-
-	rootCmd.AddCommand(syncCmd)
-	rootCmd.AddCommand(watchCmd)
-	rootCmd.AddCommand(getCmd)
-	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(outcomeCmd)
-	rootCmd.AddCommand(tagCmd)
-	rootCmd.AddCommand(untagCmd)
-	rootCmd.AddCommand(pushCmd)
-	rootCmd.AddCommand(receiveCmd)
-	rootCmd.AddCommand(configCmd)
-	rootCmd.AddCommand(versionCmd)
-
-	rootCmd.PersistentFlags().StringVar(&outputDir, "archive-root", outputDir, "archive root for markdown output (default: ~/.local/share/tracer/archive)")
-	rootCmd.PersistentFlags().StringVar(&debugDir, "debug-dir", debugDir, "debug output directory (default: ~/.local/state/tracer/debug)")
-	rootCmd.PersistentFlags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file names and timestamps")
-	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
-	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ~/.local/state/tracer/debug.log")
-	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
-	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
+	rootCmd := createCommandTree(version)
 
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		if !silent {

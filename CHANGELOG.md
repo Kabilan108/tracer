@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 ### Added
 
@@ -13,15 +13,17 @@
 - Add unit, integration, race, and VHS coverage for metadata generation, archive discovery, annotation preservation, and CLI workflows.
 - Add native `tracer push <remote>` and one-shot `tracer receive` archive synchronization with byte-hash cursors and receiver-side annotation merging.
 - Add opt-in `archive.annotatable_roots` for annotation commands to resolve session IDs in merge-preserving received archives, with ambiguity protection.
+- Add `tracer skill` to print version-matched instructions for coding agents.
 
 ### Changed
 
 - Upgrade `tracer list --tag` to support repeatable AND filters and `!`-prefixed tag negation.
+- Allow `tracer tag` and `tracer untag` to manage arbitrary validated tag names, including namespaced tags such as `wiki:compiled`.
 - Derive session titles from the first substantive user message while ignoring sidechain and internal Claude messages.
 - Preserve manual outcomes and tags when sync or watch regenerates a transcript.
 - Write transcripts atomically and coordinate transcript generation with metadata mutation using cross-process locks.
 - Make archive discovery tolerate missing or inaccessible read-only roots while reporting malformed timestamps used with `--since`.
-- Change session-ID annotation lookup to target only the writable primary archive; synchronized copies require an explicit path.
+- Search the primary archive plus configured annotatable roots for bare-ID annotations, reject ambiguity with candidate paths, and retain explicit paths for non-annotatable roots.
 - Update `tracer-digest` discovery to consume `tracer list --json` metadata while retaining path-based deduplication for late rsync arrivals and active sessions.
 
 ### Migration

@@ -50,6 +50,8 @@ Every `annotatable_roots` entry must also be listed in `additional_roots`. For a
 
 Only enable annotation writes on a root fed by `tracer push`, whose receiver preserves annotations while merging incoming transcripts. Do not enable them on a root fed by raw `rsync`: a later sync can replace the transcript and clobber receiver-side annotations. Additional roots remain read-only for sync, watch, ingest, and transcript regeneration.
 
+The `tag` and `untag` commands accept arbitrary non-empty tag names without whitespace or commas; a leading `!` is reserved for list negation. Tags are lowercased on write, and removal is case-insensitive, so names such as `gold` and `wiki:compiled` round-trip through annotation and list filters.
+
 Default output layout:
 - `provider/project/session.md`
 
