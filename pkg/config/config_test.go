@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -126,6 +127,67 @@ func TestLoadPath_AdditionalArchiveRoots(t *testing.T) {
 	want := []string{"/archive/one", "/archive/two"}
 	if got := cfg.GetAdditionalArchiveRoots(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("GetAdditionalArchiveRoots() = %v, want %v", got, want)
+	}
+}
+
+func TestLoadPath_AnnotatableRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := writeConfigFile(t, t.TempDir(), fmt.Sprintf(`
+[archive]
+additional_roots = [%q]
+annotatable_roots = ["~/ingest"]
+`, filepath.Join(home, "ingest")))
+	cfg, err := LoadPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(home, "ingest")}
+	if got := cfg.GetAnnotatableRoots(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetAnnotatableRoots() = %v, want %v", got, want)
+	}
+	result := ValidateConfigFile(path)
+	if !result.ValidTOML || len(result.UnknownKeys) != 0 {
+		t.Fatalf("ValidateConfigFile() = %+v, want valid known annotatable_roots key", result)
+	}
+}
+
+func TestLoadPath_AnnotatableRootMustBeAdditional(t *testing.T) {
+	path := writeConfigFile(t, t.TempDir(), `
+[archive]
+additional_roots = ["/archive/read-only"]
+annotatable_roots = ["/archive/writable"]
+unknown_key = true
+`)
+	if _, err := LoadPath(path, nil); err != nil {
+		t.Fatalf("LoadPath() error = %v, subset validation must be deferred", err)
+	}
+	result := ValidateConfigFile(path)
+	if !result.ValidTOML || result.ParseError != "" || !strings.Contains(result.ValidationError, "must also be listed") {
+		t.Fatalf("ValidateConfigFile() = %+v, want annotatable root validation error", result)
+	}
+	if !reflect.DeepEqual(result.UnknownKeys, []string{"archive.unknown_key"}) {
+		t.Fatalf("ValidateConfigFile().UnknownKeys = %v, want scan to continue", result.UnknownKeys)
+	}
+}
+
+func TestLoadPath_RejectsEmptyArchiveRootEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "additional root", content: "[archive]\nadditional_roots = [\"\"]\n", want: "archive.additional_roots[0]"},
+		{name: "annotatable root", content: "[archive]\nannotatable_roots = [\"  \"]\n", want: "archive.annotatable_roots[0]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfigFile(t, t.TempDir(), tt.content)
+			_, err := LoadPath(path, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadPath() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

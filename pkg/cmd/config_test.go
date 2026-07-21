@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,5 +57,36 @@ func TestWriteDefaultConfigOverwritesWithForce(t *testing.T) {
 	}
 	if string(data) != config.DefaultTemplate() {
 		t.Fatal("forced overwrite did not write default template")
+	}
+}
+
+func TestPrintConfigResult_ReportsValidationErrorSeparately(t *testing.T) {
+	originalStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = writer
+	t.Cleanup(func() { os.Stdout = originalStdout })
+
+	printConfigResult("User config", config.ConfigValidationResult{
+		Path:            "/tmp/config.toml",
+		Exists:          true,
+		ValidTOML:       true,
+		ValidationError: "archive roots are inconsistent",
+	})
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	text := string(output)
+	if !strings.Contains(text, "invalid configuration") || strings.Contains(text, "invalid TOML") {
+		t.Fatalf("printConfigResult() output = %q", text)
 	}
 }

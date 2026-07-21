@@ -41,6 +41,43 @@ func TestScanArchives_MultipleRootsAndSort(t *testing.T) {
 	}
 }
 
+func TestScanArchives_ResolvesAndDeduplicatesSymlinkRoots(t *testing.T) {
+	root := t.TempDir()
+	symlink := filepath.Join(t.TempDir(), "archive-link")
+	if err := os.Symlink(root, symlink); err != nil {
+		t.Fatal(err)
+	}
+	wantPath := writeArchiveTestTranscript(t, root, "session", Metadata{SessionID: "session", Models: []string{}})
+
+	sessions, err := ScanArchives([]string{symlink, root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Path != wantPath {
+		t.Fatalf("ScanArchives() = %+v, want one resolved transcript at %s", sessions, wantPath)
+	}
+	metadata, err := ResolveTranscriptStrict([]string{symlink}, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Path != wantPath {
+		t.Fatalf("ResolveTranscriptStrict() path = %q, want %q", metadata.Path, wantPath)
+	}
+}
+
+func TestResolveTranscriptStrict_RejectsUnresolvableRoot(t *testing.T) {
+	loop := filepath.Join(t.TempDir(), "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveTranscriptStrict([]string{loop}, "session"); err == nil {
+		t.Fatal("ResolveTranscriptStrict() error = nil, want root resolution error")
+	}
+	if _, err := ResolveTranscript([]string{loop}, "session"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("ResolveTranscript() error = %v, want tolerant not-found result", err)
+	}
+}
+
 func TestResolveTranscript_Ambiguous(t *testing.T) {
 	root := t.TempDir()
 	writeArchiveTestTranscript(t, root, "one", Metadata{SessionID: "same", Models: []string{}})

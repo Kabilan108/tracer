@@ -48,6 +48,10 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 # Additional read-only archive roots used by commands such as tracer list.
 # additional_roots = ["/vault/userdata/tracer-ingest"]
 
+# Additional roots where outcome and tag annotations may be written by session ID.
+# Every entry must also appear in additional_roots.
+# annotatable_roots = ["/vault/userdata/tracer-ingest"]
+
 [logging]
 # Optional debug output directory.
 # Default: ~/.local/state/tracer/debug
@@ -113,8 +117,9 @@ type LoggingConfig struct {
 
 // ArchiveConfig configures the global markdown archive output root.
 type ArchiveConfig struct {
-	RootDir         string   `toml:"root_dir"`
-	AdditionalRoots []string `toml:"additional_roots"`
+	RootDir          string   `toml:"root_dir"`
+	AdditionalRoots  []string `toml:"additional_roots"`
+	AnnotatableRoots []string `toml:"annotatable_roots"`
 }
 
 // IngestConfig controls provider selection and exclusion behavior for sync/watch modes.
@@ -150,11 +155,12 @@ type CLIOverrides struct {
 
 // ConfigValidationResult holds the result of validating a config file.
 type ConfigValidationResult struct {
-	Path        string
-	Exists      bool
-	ValidTOML   bool
-	ParseError  string
-	UnknownKeys []string
+	Path            string
+	Exists          bool
+	ValidTOML       bool
+	ParseError      string
+	ValidationError string
+	UnknownKeys     []string
 }
 
 // Load reads the user config and applies CLI overrides.
@@ -183,6 +189,9 @@ func LoadPath(configPath string, cliOverrides *CLIOverrides) (*Config, error) {
 
 	if cliOverrides != nil {
 		applyCLIOverrides(cfg, cliOverrides)
+	}
+	if err := cfg.validateArchiveRootEntries(); err != nil {
+		return cfg, err
 	}
 	return cfg, nil
 }
@@ -252,6 +261,11 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 			continue
 		}
 		result.UnknownKeys = append(result.UnknownKeys, key.String())
+	}
+	if err := cfg.validateArchiveRootEntries(); err != nil {
+		result.ValidationError = err.Error()
+	} else if err := cfg.ValidateAnnotatableRoots(); err != nil {
+		result.ValidationError = err.Error()
 	}
 
 	return result
@@ -348,7 +362,66 @@ func (c *Config) GetArchiveRoot() string {
 }
 
 func (c *Config) GetAdditionalArchiveRoots() []string {
-	return append([]string(nil), c.Archive.AdditionalRoots...)
+	return normalizeRoots(c.Archive.AdditionalRoots)
+}
+
+// GetAnnotatableRoots returns normalized additional roots where annotations may be written.
+func (c *Config) GetAnnotatableRoots() []string {
+	return normalizeRoots(c.Archive.AnnotatableRoots)
+}
+
+// ValidateAnnotatableRoots ensures annotation writes are limited to configured additional roots.
+func (c *Config) ValidateAnnotatableRoots() error {
+	additionalRoots := c.GetAdditionalArchiveRoots()
+	additional := make(map[string]struct{}, len(additionalRoots))
+	for _, root := range additionalRoots {
+		additional[root] = struct{}{}
+	}
+	for _, root := range c.GetAnnotatableRoots() {
+		if _, ok := additional[root]; !ok {
+			return fmt.Errorf("archive.annotatable_roots entry %q must also be listed in archive.additional_roots", root)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateArchiveRootEntries() error {
+	rootLists := []struct {
+		name  string
+		roots []string
+	}{
+		{name: "archive.additional_roots", roots: c.Archive.AdditionalRoots},
+		{name: "archive.annotatable_roots", roots: c.Archive.AnnotatableRoots},
+	}
+	for _, rootList := range rootLists {
+		for i, root := range rootList.roots {
+			if strings.TrimSpace(root) == "" {
+				return fmt.Errorf("%s[%d] must not be empty or whitespace", rootList.name, i)
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeRoots(configured []string) []string {
+	roots := make([]string, 0, len(configured))
+	for _, root := range configured {
+		roots = append(roots, filepath.Clean(expandTilde(root)))
+	}
+	return roots
+}
+
+// This package keeps path expansion local because importing pkg/utils would
+// pull the provider and SPI trees into the low-level configuration package.
+func expandTilde(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
 }
 
 func (c *Config) IsConsoleEnabled() bool {

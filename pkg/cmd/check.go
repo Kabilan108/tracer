@@ -202,7 +202,7 @@ func checkConfigFiles() bool {
 		result := config.ValidateConfigFile(userPath)
 		checked = true
 		printConfigResult("User config", result)
-		if result.Exists && (!result.ValidTOML || len(result.UnknownKeys) > 0) {
+		if result.Exists && (!result.ValidTOML || result.ValidationError != "" || len(result.UnknownKeys) > 0) {
 			allOK = false
 		}
 	}
@@ -225,6 +225,13 @@ func printConfigResult(label string, result config.ConfigValidationResult) {
 		fmt.Printf("%s %s: invalid TOML\n", ui.Error("Error"), label)
 		fmt.Printf("Path:  %s\n", result.Path)
 		fmt.Printf("Error: %s\n\n", result.ParseError)
+		return
+	}
+
+	if result.ValidationError != "" {
+		fmt.Printf("%s %s: invalid configuration\n", ui.Error("Error"), label)
+		fmt.Printf("Path:  %s\n", result.Path)
+		fmt.Printf("Error: %s\n\n", result.ValidationError)
 		return
 	}
 

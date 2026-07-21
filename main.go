@@ -1104,23 +1104,72 @@ func archiveReadRoots() ([]string, error) {
 	}
 	roots := []string{outputConfig.GetHistoryDir()}
 	if loadedConfig != nil {
-		for _, root := range loadedConfig.GetAdditionalArchiveRoots() {
-			roots = append(roots, utils.ExpandTilde(root))
-		}
+		roots = append(roots, loadedConfig.GetAdditionalArchiveRoots()...)
 	}
-	return roots, nil
+	return dedupeRoots(roots), nil
 }
 
 func mutationReadRoots(sessionIDOrPath string) ([]string, error) {
-	roots, err := archiveReadRoots()
+	archiveRoots, err := archiveReadRoots()
 	if err != nil {
 		return nil, err
 	}
-	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
-	if !isPath && len(roots) > 1 {
-		roots = roots[:1]
+	if loadedConfig != nil {
+		if err := loadedConfig.ValidateAnnotatableRoots(); err != nil {
+			return nil, err
+		}
 	}
-	return roots, nil
+	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
+	if isPath {
+		return archiveRoots, nil
+	}
+	mutationRoots := archiveRoots[:1]
+	if loadedConfig != nil {
+		mutationRoots = append(mutationRoots, loadedConfig.GetAnnotatableRoots()...)
+	}
+	return dedupeRoots(mutationRoots), nil
+}
+
+func dedupeRoots(roots []string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	result := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		result = append(result, root)
+	}
+	return result
+}
+
+func resolveMutationTranscript(sessionIDOrPath string) (sessionpkg.Metadata, error) {
+	roots, err := mutationReadRoots(sessionIDOrPath)
+	if err != nil {
+		return sessionpkg.Metadata{}, err
+	}
+	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
+	if isPath {
+		return sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
+	}
+	metadata, err := sessionpkg.ResolveTranscriptStrict(roots, sessionIDOrPath)
+	if err == nil || !strings.Contains(err.Error(), " not found") {
+		return metadata, err
+	}
+	archiveRoots, rootsErr := archiveReadRoots()
+	if rootsErr != nil {
+		return sessionpkg.Metadata{}, rootsErr
+	}
+	nonAnnotatable, lookupErr := sessionpkg.ResolveTranscript(archiveRoots, sessionIDOrPath)
+	if lookupErr == nil {
+		return sessionpkg.Metadata{}, fmt.Errorf(
+			"session %q found in non-annotatable root %s; pass the explicit path or add the root to archive.annotatable_roots",
+			sessionIDOrPath,
+			nonAnnotatable.Path,
+		)
+	}
+	return sessionpkg.Metadata{}, err
 }
 
 func parseSince(value string, now time.Time) (time.Time, error) {
@@ -1328,11 +1377,7 @@ func createOutcomeCommand() *cobra.Command {
 			if outcome != "done" && outcome != "abandoned" && outcome != "clear" {
 				return fmt.Errorf("outcome must be done, abandoned, or clear")
 			}
-			roots, err := mutationReadRoots(args[0])
-			if err != nil {
-				return err
-			}
-			metadata, err := sessionpkg.ResolveTranscript(roots, args[0])
+			metadata, err := resolveMutationTranscript(args[0])
 			if err != nil {
 				return err
 			}
@@ -1346,11 +1391,7 @@ func createOutcomeCommand() *cobra.Command {
 }
 
 func mutateGoldTag(sessionIDOrPath string, remove bool) error {
-	roots, err := mutationReadRoots(sessionIDOrPath)
-	if err != nil {
-		return err
-	}
-	metadata, err := sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
+	metadata, err := resolveMutationTranscript(sessionIDOrPath)
 	if err != nil {
 		return err
 	}

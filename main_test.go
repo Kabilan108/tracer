@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -450,28 +451,173 @@ func TestParseTagFilters(t *testing.T) {
 }
 
 func TestMutationReadRoots(t *testing.T) {
-	previousOutputDir := outputDir
-	previousConfig := loadedConfig
-	t.Cleanup(func() {
-		outputDir = previousOutputDir
-		loadedConfig = previousConfig
-	})
-	outputDir = t.TempDir()
-	loadedConfig = &config.Config{Archive: config.ArchiveConfig{AdditionalRoots: []string{"/read-only-ingest"}}}
+	tempDir := t.TempDir()
+	primaryRoot := filepath.Join(tempDir, "primary")
+	annotatableRoot := filepath.Join(tempDir, "annotatable")
+	readOnlyRoot := filepath.Join(tempDir, "read-only")
+	primaryPath := writeArchivedGetSession(t, primaryRoot, "codex", "project", "primary-only", "primary\n")
+	annotatablePath := writeArchivedGetSession(t, annotatableRoot, "codex", "project", "annotatable-only", "annotatable\n")
+	writeArchivedGetSession(t, readOnlyRoot, "codex", "project", "read-only-only", "read only\n")
+	duplicatePrimaryPath := writeArchivedGetSession(t, primaryRoot, "codex", "project", "duplicate", "primary duplicate\n")
+	duplicateAnnotatablePath := writeArchivedGetSession(t, annotatableRoot, "codex", "project", "duplicate", "annotatable duplicate\n")
+	withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+		AdditionalRoots:  []string{annotatableRoot, readOnlyRoot},
+		AnnotatableRoots: []string{annotatableRoot},
+	}})
 
-	byID, err := mutationReadRoots("session-id")
+	tests := []struct {
+		name        string
+		argument    string
+		wantPath    string
+		wantError   string
+		wantDetails []string
+	}{
+		{name: "ID in primary only", argument: "primary-only", wantPath: primaryPath},
+		{name: "ID in annotatable root only", argument: "annotatable-only", wantPath: annotatablePath},
+		{name: "ID in both roots", argument: "duplicate", wantError: "ambiguous", wantDetails: []string{duplicatePrimaryPath, duplicateAnnotatablePath}},
+		{name: "ID in non-annotatable additional root", argument: "read-only-only", wantError: "found in non-annotatable root"},
+		{name: "explicit path anywhere", argument: filepath.Join(readOnlyRoot, "codex", "project", "read-only-only.md"), wantPath: filepath.Join(readOnlyRoot, "codex", "project", "read-only-only.md")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata, err := resolveMutationTranscript(tt.argument)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("resolveMutationTranscript() error = %v, want %q", err, tt.wantError)
+				}
+				for _, detail := range tt.wantDetails {
+					if !strings.Contains(err.Error(), detail) {
+						t.Errorf("resolveMutationTranscript() error = %v, want candidate path %q", err, detail)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.Path != tt.wantPath {
+				t.Fatalf("resolveMutationTranscript() path = %q, want %q", metadata.Path, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestMutationCommands_AnnotatableRoots(t *testing.T) {
+	t.Run("tag by ID through symlinked annotatable root", func(t *testing.T) {
+		tempDir := t.TempDir()
+		primaryRoot := filepath.Join(tempDir, "primary")
+		archiveRoot := filepath.Join(tempDir, "received")
+		symlinkRoot := filepath.Join(tempDir, "received-link")
+		path := writeArchivedGetSession(t, archiveRoot, "codex", "project", "taggable", "body\n")
+		if err := os.Symlink(archiveRoot, symlinkRoot); err != nil {
+			t.Fatal(err)
+		}
+		withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+			AdditionalRoots:  []string{symlinkRoot},
+			AnnotatableRoots: []string{symlinkRoot},
+		}})
+
+		cmd := createTagCommand(false)
+		cmd.SetArgs([]string{"taggable", "gold"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, _, err := sessionpkg.ParseFrontmatter(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(metadata.Tags, []string{"gold"}) {
+			t.Fatalf("tags = %v, want [gold]", metadata.Tags)
+		}
+	})
+
+	t.Run("outcome by ID into annotatable root", func(t *testing.T) {
+		tempDir := t.TempDir()
+		primaryRoot := filepath.Join(tempDir, "primary")
+		archiveRoot := filepath.Join(tempDir, "received")
+		path := writeArchivedGetSession(t, archiveRoot, "codex", "project", "finishable", "body\n")
+		withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+			AdditionalRoots:  []string{archiveRoot},
+			AnnotatableRoots: []string{archiveRoot},
+		}})
+
+		cmd := createOutcomeCommand()
+		cmd.SetArgs([]string{"finishable", "done"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, _, err := sessionpkg.ParseFrontmatter(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if metadata.Outcome != "done" {
+			t.Fatalf("outcome = %q, want done", metadata.Outcome)
+		}
+	})
+
+	t.Run("non-annotatable root has helpful error", func(t *testing.T) {
+		tempDir := t.TempDir()
+		primaryRoot := filepath.Join(tempDir, "primary")
+		archiveRoot := filepath.Join(tempDir, "read-only")
+		path := writeArchivedGetSession(t, archiveRoot, "codex", "project", "read-only-session", "body\n")
+		withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+			AdditionalRoots: []string{archiveRoot},
+		}})
+
+		cmd := createTagCommand(false)
+		cmd.SetArgs([]string{"read-only-session", "gold"})
+		err := cmd.Execute()
+		want := "found in non-annotatable root " + path + "; pass the explicit path or add the root to archive.annotatable_roots"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("tag error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("subset violation fails at mutation time", func(t *testing.T) {
+		tempDir := t.TempDir()
+		withGetCommandGlobals(t, filepath.Join(tempDir, "primary"), filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+			AdditionalRoots:  []string{filepath.Join(tempDir, "additional")},
+			AnnotatableRoots: []string{filepath.Join(tempDir, "other")},
+		}})
+
+		cmd := createOutcomeCommand()
+		cmd.SetArgs([]string{"session", "done"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "must also be listed in archive.additional_roots") {
+			t.Fatalf("outcome error = %v, want subset validation error", err)
+		}
+	})
+}
+
+func TestListCommand_SymlinkedAdditionalRoot(t *testing.T) {
+	tempDir := t.TempDir()
+	primaryRoot := filepath.Join(tempDir, "primary")
+	archiveRoot := filepath.Join(tempDir, "received")
+	symlinkRoot := filepath.Join(tempDir, "received-link")
+	writeArchivedGetSession(t, archiveRoot, "codex", "project", "linked-session", "body\n")
+	if err := os.Symlink(archiveRoot, symlinkRoot); err != nil {
+		t.Fatal(err)
+	}
+	withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{Archive: config.ArchiveConfig{
+		AdditionalRoots: []string{symlinkRoot},
+	}})
+
+	cmd := createListCommand()
+	cmd.SetArgs([]string{"--json", "--no-pager"})
+	stdout, err := captureStdout(t, cmd.Execute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(byID) != 1 {
-		t.Fatalf("by-ID roots = %v, want only primary root", byID)
-	}
-	byPath, err := mutationReadRoots("/read-only-ingest/session.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(byPath) != 2 {
-		t.Fatalf("explicit-path roots = %v, want all roots", byPath)
+	if !strings.Contains(stdout, `"session_id": "linked-session"`) {
+		t.Fatalf("list output did not include symlinked additional root: %s", stdout)
 	}
 }
 

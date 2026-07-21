@@ -22,6 +22,7 @@ tracer config check
 [archive]
 root_dir = "~/.local/share/tracer/archive"
 additional_roots = ["/vault/userdata/tracer-ingest"]
+annotatable_roots = ["/vault/userdata/tracer-ingest"]
 
 [ingest]
 enabled_providers = ["claude", "codex"]
@@ -41,8 +42,13 @@ dest = "/vault/userdata/tracer-ingest/jacurutu"
 
 - `root_dir`: archive output root
 - `additional_roots`: read-only archive roots included by `tracer list`
+- `annotatable_roots`: additional roots searched by session ID for `outcome`, `tag`, and `untag`
 
 Only `root_dir` receives sync and watch output. Additional roots are recursively scanned for archived transcripts and may point at host-specific rsync destinations.
+
+Every `annotatable_roots` entry must also be listed in `additional_roots`. For annotation commands, bare session IDs collect matches across the primary root and all annotatable roots. If the same ID exists in more than one searched root, Tracer reports every candidate path and requires an explicit transcript path. Explicit-path annotation works for any path.
+
+Only enable annotation writes on a root fed by `tracer push`, whose receiver preserves annotations while merging incoming transcripts. Do not enable them on a root fed by raw `rsync`: a later sync can replace the transcript and clobber receiver-side annotations. Additional roots remain read-only for sync, watch, ingest, and transcript regeneration.
 
 Default output layout:
 - `provider/project/session.md`
@@ -132,6 +138,7 @@ Example module usage:
     settings = {
       archive.root_dir = "~/.local/share/tracer/archive";
       archive.additional_roots = [ "/vault/userdata/tracer-ingest" ];
+      archive.annotatable_roots = [ "/vault/userdata/tracer-ingest" ];
       push.remotes = [
         {
           name = "sietch";

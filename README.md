@@ -82,6 +82,8 @@ tracer get 019abc --turns=user,agent
 
 `tracer list` reads archived Markdown rather than provider session stores. JSON output is a recency-sorted array containing the frontmatter fields and absolute transcript path. Configure `archive.additional_roots` to include synchronized, read-only archives in the same query.
 
+To opt an additional root into annotation writes by bare session ID, also list it in `archive.annotatable_roots`. Annotation lookup collects matches across the primary archive and every annotatable root, then rejects duplicate IDs with the candidate paths; explicit transcript paths continue to work for any path. Only enable this for roots fed by `tracer push`, which preserves receiver annotations. Raw `rsync` feeds can clobber receiver-side annotations. This opt-in affects only `outcome`, `tag`, and `untag`; sync, watch, ingest, and regeneration never write additional roots.
+
 Repeat `--tag` to require every specified tag. Prefix a tag with `!` to require that the tag is absent. Quote negated tags with single quotes so shells that interpret `!` pass it through unchanged. The `!` prefix is reserved for negation: a tag whose name itself starts with `!` cannot be positively matched, so avoid `!` when naming tags.
 
 ```bash
