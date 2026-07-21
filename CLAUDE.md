@@ -81,6 +81,12 @@ Don't just make your own decision, explain the options, the pros and cons, and w
 
 Every PR is gated on resolving valid Greptile review comments: triage each comment, fix true positives, and reply to false positives with reasoning before merging.
 
+Bumping `version` in flake.nix on main IS the release: the Release workflow triggers on the flake.nix path filter, builds, tags, and publishes automatically. Run `just release-check` before bumping.
+
+Bare `tracer` on PATH is the installed home-manager binary, not your build — verify changes with `./bin/tracer` or `result/bin/tracer`.
+
+Provider IDs in frontmatter and `--provider` filters are `claude-code` and `codex-cli` (the archive directory names `claude/` and `codex/` are not the IDs).
+
 Always ask before introducing any new dependencies.
 
 Always ask before introducing any new code files.

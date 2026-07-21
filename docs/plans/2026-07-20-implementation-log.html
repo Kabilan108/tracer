@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tracer v0.2.0 — implementation log</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f2eb;--card:#fffdf8;--line:#d8d2c6;--text:#222925;--muted:#68716c;--ok:#39735a;--warn:#9b632d;--accent:#9b5f32}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,sans-serif}
+main{max-width:980px;margin:auto;padding:40px 22px 80px}
+h1{font:700 clamp(2rem,6vw,3.4rem)/1 Georgia,serif;margin:8px 0 20px}
+h2{font:700 1.35rem/1.2 Georgia,serif;margin-top:0}
+a{color:var(--accent)}
+.status{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.card,section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin:16px 0}
+.label{color:var(--muted);font:12px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.05em}
+.value{font-size:1.12rem;font-weight:700}
+.timeline{list-style:none;padding:0;margin:12px 0 0}
+.timeline li{border-left:3px solid var(--line);padding:0 0 20px 18px}
+.timeline li:last-child{padding-bottom:4px}
+.done{border-left-color:var(--ok)!important}
+.active{border-left-color:var(--warn)!important}
+.timeline p{margin:4px 0 0;color:var(--text)}
+.timeline .sub{color:var(--muted);font-size:.9rem;margin-top:2px}
+code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.92em;background:color-mix(in srgb,var(--card) 55%,var(--bg));border:1px solid var(--line);border-radius:4px;padding:0 4px}
+table{border-collapse:collapse;width:100%;font-size:.93rem}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+.tag{display:inline-block;font:600 .7rem/1 ui-monospace,monospace;text-transform:uppercase;border-radius:99px;padding:3px 9px;border:1px solid var(--line);margin-right:6px}
+.tag.user{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.tag.agent{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+@media(prefers-color-scheme:dark){:root{--bg:#171b19;--card:#202522;--line:#3a423e;--text:#edf0ed;--muted:#a8b0ab;--ok:#72b893;--warn:#d3a067;--accent:#d79a61}}
+</style>
+</head>
+<body><main>
+
+<p class="label">Live implementation log · updated 2026-07-21T09:00Z · COMPLETE</p>
+<h1>Tracer v0.2.0 — issues #4 + #5 + release pipeline</h1>
+<p><a href="https://page-bin.com/p/EL_DdmkRPWOBpwkHSDgIOg/_xlAmw5nh0rRG1pFmN1IWcPRBp9cOXXQq3eKXB0xMZU">Approved plan artifact</a> · repo <code>Kabilan108/tracer</code> · branch <code>main</code> @ <code>95cb18e</code></p>
+
+<div class="status">
+<div class="card"><div class="label">State</div><div class="value">Released: v0.2.0 · dotfiles staged</div></div>
+<div class="card"><div class="label">Active milestone</div><div class="value">— (shipped)</div></div>
+<div class="card"><div class="label">Next action</div><div class="value">User: review uncommitted ~/dotfiles changes → rebuild both hosts</div></div>
+</div>
+
+<section>
+<h2>Milestones</h2>
+<ol class="timeline">
+<li class="done"><strong>Planning &amp; decisions</strong>
+<p>Pulled issues #4/#5, mapped the codebase (rendering, annotations, config, versioning, CI — none exists), authored and published the plan; all six open questions resolved by Kabilan; plan revised to revision 3 with decisions locked.</p>
+<p class="sub">Verification: pagebin verify green at every revision; plan cross-checked against code with exact file:line refs.</p></li>
+<li class="done"><strong>M1 — Version plumbing + CI + release workflow</strong>
+<p>Committed <code>40c856a</code> on <code>feat/v0.2.0</code>. ci.yml (gofmt/vet/test + nix build, read-only perms, per-ref concurrency), release.yml (test-gated, version regex-validated, idempotency keyed on <b>release</b> existence, atomic tag via <code>gh release create --target</code>, serialized by concurrency group, main-only guard), justfile <code>dev-&lt;sha&gt;</code> with git-absent fallback, go.mod version-bump comment fixed.</p>
+<p class="sub">Checkpoint: codex(gpt-5.6-sol, medium) 5 findings + fable 15 findings; 11 accepted &amp; fixed, 2 declined (logged), rest were duplicates/nits folded in. gofmt/vet/tests green (CGO_ENABLED=0 — no gcc in env, matches nix derivation); YAML validated; <code>tracer version</code> → <code>dev-95cb18e</code>.</p></li>
+<li class="done"><strong>M2 — <code>get --tool-output</code> + <code>--turns</code> filtering</strong>
+<p>Committed <code>44daba8</code>. pkg/session/filter.go: <b>line-anchored</b> scanner (ToolUseOpenTag prefix / exact ToolUseCloseTag line + depth counting), truncate = N lines + rune-safe 8 KiB cap + fence re-closing + marker only on real elision, <code>&lt;/summary&gt;</code>-aware stubs; get is now a pure archive read over all roots with earliest-root duplicate resolution; dead provider-refresh path deleted (net −169 lines in main).</p>
+<p class="sub">Checkpoint: codex(medium) 6 findings + fable 12 findings incl. an <b>empirically confirmed panic</b> and three fail-open leak modes from fable's probe harness. Fix round in the same codex session at medium effort. Crash regression re-verified against the built binary; fixture sha unchanged (30ff46c1…); full suite green.</p></li>
+<li class="done"><strong>M3 — <code>list</code> repeatable <code>--tag</code> + negation</strong>
+<p>Committed <code>91b345b</code>. Repeatable <code>--tag</code> (AND) with <code>!</code> negation; filters parsed once up front (trim both sides of the prefix, lowercase, contradiction check). The implementation run was orphaned by a Claude session restart mid-write — leftover tree verified complete and adopted rather than rerun.</p>
+<p class="sub">Checkpoint: codex(medium) 2 findings + fable 6 — headline (both, fable binary-verified): <code>--tag '! gold'</code> passed validation but negated the impossible tag <code>" gold"</code>, matching every session. Fixed via shared parse path; CLI-layer Execute tests added (repeated flags, comma-literal pinning, untagged-session negation, error surfacing); <code>!</code> documented as reserved. Fix applied directly by the lead agent (small surface). Suite green; repro re-verified against built binary.</p></li>
+<li class="done"><strong>M4 — <code>tracer push</code> / <code>receive</code></strong>
+<p>Committed <code>f6362b3</code> (+1792 lines: pkg/transfer, config remotes, command wiring, docs). Incremental tar-over-ssh push with per-remote SQLite cursor; receiver merge preserves annotations (tags union, receiver outcome wins); no daemon.</p>
+<p class="sub">Checkpoint: codex(medium, BLOCKING, 7 findings) + fable(9 findings, empirical traversal probe). Ten-fix round applied in-session: both injection vectors closed by charset validation, tar Typeflag filtering, symlink handling both ends, WriteMetadata lost-update fix, poison-pill isolation, cursor pruning, per-remote flock, streaming without content retention, side-effect-free dry-run, push-time-only config validation. Two reviewer conflicts resolved by direct source/stdlib reading (see decisions). Suite green; fixes spot-verified in source before commit.</p></li>
+<li class="done"><strong>M5 — Annotatable additional roots</strong>
+<p>Committed <code>3e1851a</code>. <code>archive.annotatable_roots</code> opts additional roots into bare-ID annotation writes; collect-all resolution with ambiguity errors listing candidate paths.</p>
+<p class="sub">Checkpoint: codex(medium, BLOCKING, 4) + fable(8, heavy empirical probing incl. an M4-interaction test: receive → tag-by-ID → re-receive preserves the tag). Fable <b>refuted</b> codex's spurious-ambiguity symlink attack and found the truth was worse: symlinked roots silently scanned as empty everywhere (pre-existing, also hit list). Seven-fix round: config-check unbricking (distinct ValidationError, subset check moved to mutation time), symlink resolution + dedupe in ScanArchives, strict traversal for mutations, actionable non-annotatable error, normalization centralization, doc corrections, cobra-layer tests. Declined: <code>~user</code> expansion change, bind-mount SameFile dedupe.</p></li>
+<li class="done"><strong>M6 — <code>tracer skill</code> + 0.2.0 bump</strong>
+<p>Committed <code>2b1252d</code>. <code>tracer skill</code> (SKILL.md format, version-interpolated, createCommandTree refactor shared with main), drift-guard test, CHANGELOG 0.2.0 section, flake at <code>0.2.0</code>. <b>Includes lifting the gold-only tag restriction</b> — tag/untag accept arbitrary validated tags (no leading <code>!</code>, whitespace, or commas).</p>
+<p class="sub">Checkpoint: codex(medium, BLOCKING, 6) + fable(7 + extensive empirical confirmations incl. createCommandTree byte-identical composition and release.yml consistency). Headline (both): skill text promised arbitrary tags while the binary was gold-only — fable exposed the deeper contradiction (the release's own <code>wiki:compiled</code> pipeline was impossible via the tag command). Fable also demonstrated four drift-guard false-pass constructions; guard now scopes flags per command line, widened regex, no prefix fallback. End-to-end verified: <code>tag &lt;id&gt; wiki:compiled</code> writes frontmatter; invalid tags rejected.</p></li>
+<li class="done"><strong>Wrap-up — VHS goldens + report</strong>
+<p>Committed <code>9adb483</code>. get-filter.tape + push-pipeline.tape recorded (dry-run pending list, <code>wiki:compiled</code> tag, negation query all verified in goldens); existing tapes re-recorded against the 0.2.0 binary; tests/report.md refreshed.</p>
+<p class="sub">Final sweep: gofmt clean, vet clean, 12/12 packages pass, working tree clean, <code>nix eval .#tracer.version</code> → <code>0.2.0</code>. Merging <code>feat/v0.2.0</code> to main triggers the release workflow (flake.nix path filter) → tag <code>v0.2.0</code> + GitHub release with <code>tracer-linux-amd64</code>.</p></li>
+<li class="done"><strong>Deployment, hotfixes, live verification (v0.2.1, v0.2.2)</strong>
+<p>First production push exposed a real bug: 92 legacy pre-frontmatter transcripts → per-file receiver rejection → nonzero exit → cursor frozen → infinite re-send loop. <b>v0.2.1</b> (PR #7): push scan skips invalid-frontmatter files exactly as list/get already do, validated from head bytes in the existing hash pass. <code>tracer sync</code> confirmed all 92 are unregenerable (provider data gone). <b>v0.2.2</b> (PR #8): root <code>-v/--version</code> flag, both PR #7 greptile follow-ups (allocation-free WriteTar hashing restored; pruning side-effect documented), greptile gate codified in AGENTS.md.</p>
+<p class="sub"><b>Live end-to-end proof on the fleet</b>: push of 1566 transcripts jacurutu→sietch succeeded (exit 0, 29.8M peak vs 327M pre-streaming-fix); session tagged <code>wiki:compiled</code> on sietch + <code>gold</code> on jacurutu → re-push → sietch copy carries <b>both</b> (union merge verified); negation query works on sietch; second push transferred only the dirtied file (cursor verified). Greptile gate honored on both PRs: PR #7's two P2s fixed; PR #8's one P1 dismissed as a false positive with cited cobra source + passing test. Drift guard caught the agent's own mis-scoped skill-text edit. Dotfiles flake.lock pinned to v0.2.2, left uncommitted for review; machines need one rebuild.</p></li>
+<li class="done"><strong>Legacy migration (one-off, no release)</strong>
+<p>All 92 pre-frontmatter transcripts migrated in place on jacurutu: frontmatter synthesized from each file's session comment (provider, ID, start time), timestamped turn markers (started/ended, turn counts), and <code>&lt;tool-use&gt;</code> counts; cwd approximated by project dir, models empty. Python one-off with atomic writes, mtime preservation, idempotence, and a tarball backup (<code>~/.local/state/tracer/legacy-backup-20260721-164542.tar.gz</code>).</p>
+<p class="sub">Post-migration push: scanned=1658, transferred=96, invalid=0, failed=0. Sietch's rsync-era invalid copies were overwritten via the v0.2.1 poison-pill replace path — zero frontmatter-less files remain on either host, and the <code>wiki:compiled</code> tag survived yet another push. Correction logged: the earlier "unit logs nothing" diagnosis was wrong (summaries reach the journal by default); the real quirk is that <b>no-op pushes skip the summary event</b> — trivial upstream nit, dotfiles <code>--console</code> edit reverted.</p></li>
+<li class="done"><strong>PR #6 + review cycle</strong>
+<p><a href="https://github.com/Kabilan108/tracer/pull/6">PR #6</a> opened onto main; commit <code>51480e0</code>. First CI run exposed a <b>pre-existing engine shutdown race</b> (Close() could snapshot stats and close the SQLite store while a debounce-fired flush was mid-write — invisible locally, caught on slower CI hardware; fixed with a WaitGroup registered under the pending mutex). Greptile posted 3 comments, all triaged true-positive and fixed: sentinel <code>ErrSessionNotFound</code> + <code>errors.Is</code> instead of error-text matching, 64 MiB per-entry tar cap in receive (lying header OOM), <code>errors.Is(…, os.ErrNotExist)</code>. Replies posted on each thread.</p>
+<p class="sub">Loop terminated after 1 round (cap was 2): CI green on the fix commit, no new greptile comments. CodeRabbit shows "fail" due to its own rate limiting — not a code finding.</p></li>
+<li class="done"><strong>Release + dotfiles rollout (staged)</strong>
+<p>PR #6 merged (<code>0514306</code>); release workflow succeeded first try: tag <code>v0.2.0</code>, assets <code>tracer-linux-amd64</code> + <code>SHA256SUMS</code>. Verified end-to-end: checksum OK, downloaded binary prints <code>tracer 0.2.0</code>, <code>skill</code> output live.</p>
+<p class="sub">Dotfiles changes left <b>uncommitted</b> for review: flake input → v0.2.0; <code>tracer-sync.nix</code> rsync → <code>tracer push</code> via the existing <code>sietch-agent</code> ssh alias (BatchMode + agent key — the plain <code>sietch</code> host wants yubikeys/TTY) with the push remote defined in-module; sietch gains <code>annotatable_roots</code>; <code>bin/tracer-digest</code> drops <code>seen.txt</code> for <code>--tag '!wiki:compiled'</code> state + slim transcripts via <code>get --tool-output=none</code>, tagging after digest write so failures retry; thin <code>agents/skills/tracer</code> deferring to <code>tracer skill</code>. Validated: both hosts' HM configs eval, rendered TOML passes the v0.2.0 binary's <code>config check</code>, digest passes <code>bash -n</code>.</p></li>
+</ol>
+</section>
+
+<section>
+<h2>Decisions and deviations</h2>
+<p><span class="tag user">User</span> decided by Kabilan · <span class="tag agent">Agent</span> made autonomously by the agent (flag if wrong)</p>
+<table>
+<thead><tr><th>Who</th><th>Decision</th><th>Rationale</th></tr></thead>
+<tbody>
+<tr><td><span class="tag agent">Agent</span></td><td>Interpreted "issues five and six" as <b>#4 + #5</b></td><td>Issue #6 does not exist; #5 explicitly cross-references #4 as the pair targeting the next version. Surfaced to user, not contested.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Filtering operates on <b>archived markdown at read time</b> (depth-aware <code>&lt;tool-use&gt;</code> scanner), not a re-render from provider JSONL</td><td>Rendering happens once at ingest (<code>markdown.go:211</code>); source JSONL may be gone and doesn't exist for sessions synced from other hosts. Depth-aware (not regex) because transcripts-of-transcripts embed literal tool-use tags.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>New package named <code>pkg/transfer</code></td><td>Avoids collision with the existing <code>sync</code> command/concept.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Push cursor hashes <b>file bytes</b>, not the engine's markdown <code>content_hash</code></td><td>Sender-side annotation edits (tag/outcome) change file bytes but not the engine hash; byte-hashing makes them propagate.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Cursor updated only per-file <b>after receiver ack</b>; paths constrained under <code>dest</code> (reject <code>..</code>/absolute)</td><td>Interrupted pushes retry naturally; tar-extraction path traversal is a classic footgun.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Recommended <b>rejecting the sidecar annotation store</b> (issue #5's alternative)</td><td>Splits annotation truth across frontmatter + DB; loses "state lives with the session, inspectable" payoff. User concurred (Q4).</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Added ~8 KB/block secondary hard cap to <code>truncate:N</code> lines mode</td><td>A single pathological long line defeats a lines-only bound.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Release workflow: version extracted via <code>nix eval --raw .#tracer.version</code>; trigger on <code>paths: [flake.nix]</code>; idempotent via tag-exists check; binary's <code>tracer version</code> asserted against flake version before publishing</td><td>Grep-free extraction survives reformatting; non-version flake edits (e.g. vendorHash) no-op cleanly; closes the "version properly stored" requirement end-to-end.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td><code>just build</code> embeds <code>dev-&lt;git-sha&gt;</code> locally</td><td>Local binaries self-identify vs release builds; today they all say "dev".</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M6 <code>tracer skill</code> lands <b>last</b>, with a drift-guard test (every flag mentioned in skill text must exist in <code>--help</code>)</td><td>Skill text should document the final CLI surface; the guard keeps it from silently rotting.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Plan/log artifacts live in-repo at <code>docs/plans/</code> (untracked)</td><td>pagebin infers repo/branch/commit metadata from location; durable for receipt-based updates. Not committed unless asked.</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q1: <code>truncate:N</code> = <b>lines</b></td><td rowspan="6">Resolved 2026-07-20; recorded with full option tables in the plan's Decisions section.</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q2: include <code>--turns=user,agent</code> in M2</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q3: ssh + remote <code>tracer receive</code>; confirmed <b>no persistent daemon</b> on sietch — per-push invocation over ssh (rsync-remote-side model)</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q4: tags union · outcome receiver-wins · sidecar rejected</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q5: nix-built <code>linux-amd64</code> only</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Q6: version <b>0.2.0</b></td></tr>
+<tr><td><span class="tag user">User</span></td><td>Added M6: <code>tracer skill</code> command mirroring <code>pagebin skill</code></td><td>Requested 2026-07-20; design modeled on <code>skillText()</code> in <code>~/repos/cli/pagebin/src/cli.ts</code>.</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Implementation delegated to codex <code>gpt-5.6-sol</code> (low); checkpoints = codex medium adversarial + fable reviewer; agent adjudicates and fixes; commit per phase</td><td>Directed 2026-07-20.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>Work happens on branch <code>feat/v0.2.0</code>, not main</td><td>Standing rule: branch first on default branch. Merging to main at the end (with flake at 0.2.0) triggers the first release intentionally.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M1 review adjudication: accepted 11 fixes — release idempotency re-keyed on <b>release</b> existence with atomic tag creation via <code>gh release create --target</code> (heals orphaned-tag runs), main-only dispatch guard, release concurrency group, Go checks gate the release job, dropped sunset <code>magic-nix-cache-action</code>, version regex validation + env-var (not inline <code>${{}}</code>) interpolation, <code>NO_COLOR=1</code> on version assert, justfile git fallback, ci.yml read-only perms + PR concurrency, go.mod comment fix</td><td>Every accepted finding traced to a concrete failure scenario; both reviewers agreed on the top 4.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M1 review: declined SHA-pinning third-party actions and swapping <code>nix-installer-action@v14</code> for its successor</td><td>Personal repo: tag-pinning maintenance outweighs supply-chain risk; v14 still functions and guessing a successor's version risks breaking CI.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>VHS golden tapes recorded in one consolidated pass at the end, not per-phase</td><td>Goldens against the final CLI surface avoid re-recording GIF/txt outputs every phase.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td><b>M2: accepted codex's scope deviation</b> — <code>get</code> no longer refreshes from provider JSONL; it is a pure archive read over primary + additional roots, dead refresh path deleted</td><td>Both reviewers independently endorsed: matches list/tag/outcome read model, makes cross-host synced sessions gettable (what the digest pipeline needs), honors "get never writes". Cost: provider-store-only sessions need <code>tracer sync</code> first (error message now says so).</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M2: scanner anchored to generated format lines (fable's proposal) rather than raw substring depth counting; unclosed-at-EOF stays fail-open</td><td>Fable's probe empirically demonstrated a panic + three leak/deletion modes with stray literal tags (routine in this archive — transcripts about tracer). Fail-closed would risk deleting document remainders on quoted fragments.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M2: fix round escalated codex low→medium</td><td>The defects were exactly the subtle class low-effort missed; standing model-selection permission covers the escalation.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M2 review: declined CRLF marker normalization, no-frontmatter legacy archive support in get, case-insensitive mode names</td><td>Archives are LF-generated; v2.1 requires frontmatter (sync regenerates); error text documents exact forms.</td></tr>
+<tr><td><span class="tag user">User</span></td><td>Shelled-out agent runs launch in dedicated tmux sessions, decoupled from the Claude process</td><td>Directed after the M3 orphaning; codified into the codex-implementation / codex-review / codex-computer-use skills (wait on the report file, not the session; interrupted-run recovery steps documented).</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M3: adopted the orphaned codex working tree instead of rerunning</td><td>Diff inspection showed a complete implementation; full verification + normal checkpoint ran against it.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M3: <code>!</code> is reserved for negation (no positive-match escape for literal <code>!</code>-leading tags), documented rather than escaped; contradiction (<code>--tag x --tag '!x'</code>) errors instead of silently matching nothing</td><td>Escape syntax for a tag style nobody should use isn't worth the surface; the contradiction is always user error.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M4 implementation runs at medium effort (M5/M6 stay low)</td><td>Hardest phase (protocol + merge + cursor); M2 showed the failure mode of low on subtle correctness work.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M4 checkpoint: resolved two direct reviewer conflicts — (a) hardlink tar entries DO pass <code>IsRegular()</code> (Go sets no mode bit for <code>TypeLink</code>): codex right, explicit <code>Typeflag</code> check ordered; (b) tag/outcome lost-update race is real for metadata but not body (<code>WriteMetadata</code> re-reads body under lock but writes the pre-lock metadata struct): both partially right, fix = merge only annotation fields onto freshly-parsed metadata under the lock</td><td>Conflicts settled by reading Go stdlib semantics and archive.go:127 directly, not by majority vote.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M4 accepted fixes: host/dest/name charset validation (ssh option + remote-shell injection), explicit tar Typeflag filtering, sender symlink skip, receiver EvalSymlinks dest pinning, WriteMetadata annotation-only merge, per-file poison-pill isolation (unparseable existing → overwrite with incoming; unparseable incoming → skip+fail count, batch continues), cursor pruning for deleted files, per-remote flock serialization, no content retention in scan + dry-run without DB creation or content reads, push-remote validation moved to push-time (bad push config no longer breaks sync/watch/receive)</td><td>Every fix traced to a concrete failure scenario from codex (7 findings, BLOCKING) or fable (9 findings + empirical traversal probe).</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td><b>M6: lifted the gold-only restriction on <code>tag</code>/<code>untag</code></b> (arbitrary validated tag names) instead of documenting the restriction</td><td>The plan's definition of done requires <code>tracer tag &lt;id&gt; wiki:compiled</code> on the receiver; gold-only made the release's headline pipeline impossible via the CLI. Slipped past earlier phases because M5's e2e verified the flow through <code>receive</code>, not <code>tag</code>. Validation excludes leading <code>!</code>/whitespace/commas to protect list-filter round-trips. <b>Ratified by Kabilan 2026-07-21</b>: the CLI supports arbitrary tags; specific tag names like <code>wiki:compiled</code> are usage convention, not tool prescription.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M6: skill command's PersistentPreRunE no-op kept (skips logging setup and global logging-flag validation), with why-comment</td><td>Pure-print command; validating logging flags it ignores would add coupling for no behavior.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>VHS: plan's <code>push-receive.tape</code> became <code>push-pipeline.tape</code> (push --dry-run + wiki:compiled tag + negation list); true push→receive e2e stays in Go tests</td><td>A tape cannot ssh; dry-run shows the sender UX honestly, and the pipe-based e2e in pkg/transfer covers the real transfer path.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>VHS recordings run with <code>./bin</code> prefixed to PATH</td><td>Bare <code>tracer</code> on PATH is the home-manager 0.1.0 binary — tapes would have recorded the old CLI.</td></tr>
+<tr><td><span class="tag agent">Agent</span></td><td>M4 declined: <code>.lock</code>-file litter (pre-existing LockTranscript pattern, cosmetic — candidate follow-up issue), receiver partial-apply transactionality (idempotent re-push covers recovery), watch-vs-push SQLite contention hardening (WAL + busy_timeout serialize; load-test note only), Windows-style tar names (Linux-only target, verified harmless)</td><td>Cost/benefit against a single-user fleet threat model; each logged with rationale.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section>
+<h2>Verification</h2>
+<ul>
+<li>Plan artifact <code>EL_DdmkRPWOBpwkHSDgIOg</code>: published rev 1 (verified, sha match), rev 2 (+M6, verified), rev 3 (decisions locked, verified).</li>
+<li>All code claims in the plan carry file:line references validated against <code>main</code> @ <code>95cb18e</code> (e.g. <code>flake.nix:16</code>, <code>main.go:35</code>, <code>metadata.go:120</code>, <code>main.go:1145</code>, <code>main.go:1189</code>).</li>
+<li><b>M1</b> (<code>40c856a</code>): gofmt clean, <code>go vet</code> + <code>go test ./...</code> green (CGO_ENABLED=0), workflow YAML parse-validated (Ruby Psych), <code>just build</code> → <code>tracer dev-95cb18e</code>. Reviewer claims spot-verified before accepting: <code>NO_COLOR</code> honored at <code>pkg/ui/style.go:32</code>; go.mod comment paths confirmed stale. Environment note: no gcc → all Go commands run with CGO_ENABLED=0, matching the nix derivation.</li>
+</ul>
+</section>
+
+<section>
+<h2>Blockers</h2>
+<p>None. Go-ahead received 2026-07-20 (implicitly approving the plan's new-files list); all six phases proceeding on <code>feat/v0.2.0</code>.</p>
+</section>
+
+</main></body>
+</html>
