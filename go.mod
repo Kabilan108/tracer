@@ -3,8 +3,9 @@ module github.com/tracer-ai/tracer-cli
 // When updating the Go version, also update:
 //   - README.md
 //   - .golangci.yml (run.go)
-//   - ../.github/workflows/ci.yml (setup-go)
-//   - ../.github/workflows/release.yml (setup-go)
+//   - flake.nix (go_1_XX in buildGoModule override and devShell)
+// The GitHub workflows read the Go version from this file via
+// setup-go's go-version-file and need no separate update.
 go 1.26.0
 
 // To check for outdated direct dependencies:

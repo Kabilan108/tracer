@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add CI and release workflows; local builds embed a `dev-<sha>` version.
 - Add YAML frontmatter to archived transcripts with session identity, title, host, workspace, provider, models, timestamps, turn counts, and tool-call counts.
 - Add archive-backed `tracer list` JSON output with recency sorting and filters for time, project, provider, outcome, and tags.
 - Add read-only `archive.additional_roots` support for querying synchronized archives alongside the primary archive.

@@ -3,7 +3,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 default: test
 
 build:
-    go build -o ./bin/tracer .
+    go build -ldflags "-X main.version=dev-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" -o ./bin/tracer .
 
 clean:
     rm -rf ./bin/*
