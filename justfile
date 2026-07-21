@@ -28,7 +28,7 @@ nix-build:
 
 # Pre-flight for cutting a release: run before bumping the flake version.
 release-check:
-    test -z "$(gofmt -l . | grep -v '^.tracer' || true)" || { gofmt -l . | grep -v '^.tracer'; exit 1; }
+    test -z "$(gofmt -l . | grep -v '^[.]tracer' || true)" || { gofmt -l . | grep -v '^[.]tracer'; exit 1; }
     go vet ./...
     go test ./...
     @echo "flake version: $(nix eval --raw .#tracer.version)"
