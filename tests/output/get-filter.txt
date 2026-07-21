@@ -349,8 +349,8 @@
 
 
 ────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
 
 
 
@@ -374,7 +374,20 @@
 
 
 ────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
+models:
+  - gpt-5.6
+started: 2026-07-13T10:00:00Z
+ended: 2026-07-13T10:30:00Z
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
+
+# Add archive metadata
+
+Fixture transcript.
 >
 
 
@@ -385,47 +398,21 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 ────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-> tracer --archive-root /tmp/tracer-vhs-archive tag session-one gold
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
+models:
+  - gpt-5.6
+started: 2026-07-13T10:00:00Z
+ended: 2026-07-13T10:30:00Z
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
 
+# Add archive metadata
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-> tracer --archive-root /tmp/tracer-vhs-archive tag session-one gold
+Fixture transcript.
 >
 
 
@@ -436,10 +423,23 @@
 
 
 
+────────────────────────────────────────────────────────────────────────────────
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
+models:
+  - gpt-5.6
+started: 2026-07-13T10:00:00Z
+ended: 2026-07-13T10:30:00Z
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
 
+# Add archive metadata
 
-
-
+Fixture transcript.
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --turns=user,agent | tail -8
 
 
 
@@ -449,78 +449,53 @@
 
 
 ────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-> tracer --archive-root /tmp/tracer-vhs-archive tag session-one gold
-> tracer --archive-root /tmp/tracer-vhs-archive list --outcome done --tag gold --
-json
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
+models:
+  - gpt-5.6
+started: 2026-07-13T10:00:00Z
+ended: 2026-07-13T10:30:00Z
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
 
+# Add archive metadata
 
+Fixture transcript.
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --turns=user,agent | tail -8
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
 
+# Add archive metadata
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Fixture transcript.
 ────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-> tracer --archive-root /tmp/tracer-vhs-archive tag session-one gold
-> tracer --archive-root /tmp/tracer-vhs-archive list --outcome done --tag gold --
-json
-[
-  {
-    "session_id": "session-one",
-    "title": "Add archive metadata",
-    "host": "jacurutu",
-    "cwd": "/vault/experiments/tracer",
-    "provider": "codex",
-    "models": [
-      "gpt-5.6"
-    ],
-    "started": "2026-07-13T10:00:00Z",
-    "ended": "2026-07-13T10:30:00Z",
-    "user_turns": 3,
-    "agent_turns": 4,
-    "tool_calls": 8,
-    "outcome": "done",
-    "tags": [
-      "gold"
-    ],
-    "path": "/tmp/tracer-vhs-archive/codex/tracer/session-one.md"
-────────────────────────────────────────────────────────────────────────────────
-> tracer --archive-root /tmp/tracer-vhs-archive outcome session-one done
-> tracer --archive-root /tmp/tracer-vhs-archive tag session-one gold
-> tracer --archive-root /tmp/tracer-vhs-archive list --outcome done --tag gold --
-json
-[
-  {
-    "session_id": "session-one",
-    "title": "Add archive metadata",
-    "host": "jacurutu",
-    "cwd": "/vault/experiments/tracer",
-    "provider": "codex",
-    "models": [
-      "gpt-5.6"
-    ],
-    "started": "2026-07-13T10:00:00Z",
-    "ended": "2026-07-13T10:30:00Z",
-    "user_turns": 3,
-    "agent_turns": 4,
-    "tool_calls": 8,
-    "outcome": "done",
-    "tags": [
-      "gold"
-    ],
-    "path": "/tmp/tracer-vhs-archive/codex/tracer/session-one.md"
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --tool-output=none | tail -12
+models:
+  - gpt-5.6
+started: 2026-07-13T10:00:00Z
+ended: 2026-07-13T10:30:00Z
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
+
+# Add archive metadata
+
+Fixture transcript.
+> tracer --archive-root /vault/experiments/2026-03-03-tracer-cli/tests/fixtures/a
+rchive get session-one --turns=user,agent | tail -8
+user_turns: 3
+agent_turns: 4
+tool_calls: 8
+---
+
+# Add archive metadata
+
+Fixture transcript.
 ────────────────────────────────────────────────────────────────────────────────
