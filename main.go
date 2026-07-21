@@ -1614,6 +1614,11 @@ func createRootCommand() *cobra.Command {
 
 func createCommandTree(version string) *cobra.Command {
 	rootCmd := createRootCommand()
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate("{{.DisplayName}} {{.Version}}\n")
+	// Registered eagerly (cobra normally defers this to Execute) so the
+	// -v shorthand is claimed deterministically and tests can see the flag.
+	rootCmd.InitDefaultVersionFlag()
 	configureHelpFormatting(rootCmd)
 	rootCmd.AddCommand(
 		createSyncCommand(),

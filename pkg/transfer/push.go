@@ -211,6 +211,11 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 		if err != nil {
 			return err
 		}
+		// Excluding invalid files from AllPaths means a previously-pushed
+		// transcript whose frontmatter is later corrupted on disk has its
+		// cursor row pruned; once repaired it is re-sent in full. That is
+		// intentional: the receiver merge is idempotent, and a repaired file
+		// should reach the remote rather than be skipped by a stale hash.
 		if _, _, parseErr := session.ParseFrontmatter(head); parseErr != nil {
 			result.Invalid++
 			slog.Warn("Skipping transcript without valid frontmatter", "path", relPath, "error", parseErr)
@@ -233,9 +238,20 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 	return result, nil
 }
 
+// hashFile is the head-free path used by WriteTar, where the probe buffer of
+// hashFileWithHead would be allocated twice per file only to be discarded.
 func hashFile(path string) (string, int64, error) {
-	hash, size, _, err := hashFileWithHead(path)
-	return hash, size, err
+	file, err := os.Open(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("open archive file %s: %w", path, err)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	size, err := io.Copy(hasher, file)
+	if err != nil {
+		return "", 0, fmt.Errorf("hash archive file %s: %w", path, err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), size, nil
 }
 
 // hashFileWithHead hashes the whole file in one pass while retaining its

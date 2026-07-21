@@ -918,6 +918,24 @@ func TestListCommand_TagFlags(t *testing.T) {
 	})
 }
 
+func TestRootVersionFlag(t *testing.T) {
+	for _, flag := range []string{"--version", "-v"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := createCommandTree("9.9.9-test")
+			var out strings.Builder
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs([]string{flag})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute(%s) error = %v", flag, err)
+			}
+			if got := strings.TrimSpace(out.String()); got != "tracer 9.9.9-test" {
+				t.Fatalf("version output = %q, want %q", got, "tracer 9.9.9-test")
+			}
+		})
+	}
+}
+
 func TestResolvePagerCommand(t *testing.T) {
 	origLookupPath := lookupPath
 	t.Cleanup(func() {
