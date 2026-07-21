@@ -75,3 +75,45 @@ func TestWriteMetadata_PreservesBody(t *testing.T) {
 		t.Fatalf("metadata = %+v, body = %q", parsed, body)
 	}
 }
+
+func TestWriteMetadata_PreservesConcurrentDerivedMetadataChange(t *testing.T) {
+	root := t.TempDir()
+	path := writeArchiveTestTranscript(t, root, "session", Metadata{
+		SessionID: "session",
+		Title:     "original",
+		Models:    []string{},
+	})
+	stale, err := ResolveTranscript([]string{root}, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := stale
+	current.Title = "refreshed while annotation was pending"
+	frontmatter, err := RenderFrontmatter(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(frontmatter+"# refreshed body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stale.Outcome = "done"
+	if err := WriteMetadata(stale); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, body, err := ParseFrontmatter(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Title != current.Title || string(body) != "# refreshed body\n" {
+		t.Fatalf("derived metadata/body regressed: metadata=%+v body=%q", metadata, body)
+	}
+	if metadata.Outcome != "done" {
+		t.Fatalf("outcome = %q, want done", metadata.Outcome)
+	}
+}

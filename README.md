@@ -14,6 +14,7 @@ This fork focuses on local-first operation for:
 - YAML frontmatter with host, project, model, timing, and turn metadata
 - Archive-backed session listing with JSON and metadata filters
 - Explicit outcomes and quality tags that survive transcript regeneration
+- Native one-shot cross-host archive pushes that preserve receiver annotations
 - Config-driven provider filters and project/path exclusions
 - Built-in config bootstrap and validation commands
 - Optional Nix package and Home Manager module
@@ -63,6 +64,8 @@ tracer watch
 - `tracer outcome <session-id-or-path> <done|abandoned|clear>`
 - `tracer tag <session-id-or-path> gold`
 - `tracer untag <session-id-or-path> gold`
+- `tracer push <remote-name> [--dry-run]`
+- `tracer receive --dest <path> --stdin`
 - `tracer config init [--force]`
 - `tracer config check [provider-id] [-c <provider-command>]`
 - `tracer version`
@@ -113,6 +116,34 @@ tags:
 Derived fields are refreshed by sync and watch. User-set `outcome` and `tags` values are preserved.
 
 Outcome and tag commands resolve session IDs only in the writable primary archive. To annotate a synchronized transcript under an additional root, pass its explicit Markdown path; a later rsync may replace annotations made to that copy.
+
+## Cross-host archive push
+
+Configure one or more named SSH destinations:
+
+```toml
+[[push.remotes]]
+name = "sietch"
+host = "sietch"
+dest = "/vault/userdata/tracer-ingest/jacurutu"
+```
+
+Remote names must start with an ASCII letter or digit and contain only letters, digits, `_`, and `-`. Hosts must start with a letter or digit and contain only letters, digits, `.`, `_`, and `-`. Destinations must be absolute and contain only letters, digits, `.`, `_`, `/`, `@`, and `-`. These restrictions keep both the local SSH invocation and its remote shell command unambiguous.
+
+Preview or send changed files from the primary archive:
+
+```bash
+tracer push sietch --dry-run
+tracer push sietch
+```
+
+Each push invokes `ssh <host> tracer receive --dest <dest> --stdin`, streams a tar archive, and exits. There is no receiving daemon. The receiver must run the Tracer release that introduced `receive` or newer.
+
+Only one push to a given remote can run at a time. A concurrent attempt exits immediately with an “already in progress” error. Deleted or renamed sender paths are pruned from that remote's cursor after a successful push. Files that change during a push are skipped or left uncheckpointed so the next push retries them.
+
+When a transcript already exists at the destination, Tracer applies the incoming transcript body and derived metadata while merging annotations. Tags are the normalized union of both copies, and a non-empty receiver outcome wins over the sender outcome. Because tags are a union, removing a tag only on the receiver is not permanent: it reappears on a later push while the sender still has that tag.
+
+The receiver rejects unsafe paths, symlinks, links, devices, directories, and other non-regular tar entries. An existing transcript with invalid frontmatter is replaced by the valid incoming transcript. Invalid incoming transcripts and per-file write failures are skipped while the rest of the stream is processed; `receive` then exits nonzero so the sender does not advance its cursor.
 
 ## Configuration Docs
 

@@ -11,6 +11,7 @@
 - Add explicit `outcome`, `tag`, and `untag` commands for annotating archived sessions.
 - Add read-time tool-output truncation and conversation-only filtering to `tracer get` without modifying archived Markdown.
 - Add unit, integration, race, and VHS coverage for metadata generation, archive discovery, annotation preservation, and CLI workflows.
+- Add native `tracer push <remote>` and one-shot `tracer receive` archive synchronization with byte-hash cursors and receiver-side annotation merging.
 
 ### Changed
 

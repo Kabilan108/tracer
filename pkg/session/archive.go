@@ -135,11 +135,12 @@ func WriteMetadata(metadata Metadata) error {
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	_, body, err := ParseFrontmatter(content)
+	current, body, err := ParseFrontmatter(content)
 	if err != nil {
 		return err
 	}
-	frontmatter, err := RenderFrontmatter(metadata)
+	current = ApplyAnnotations(current, Annotations{Outcome: metadata.Outcome, Tags: metadata.Tags})
+	frontmatter, err := RenderFrontmatter(current)
 	if err != nil {
 		return err
 	}

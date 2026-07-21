@@ -28,6 +28,7 @@ import (
 	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/transfer"
 	"github.com/tracer-ai/tracer-cli/pkg/ui"
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
@@ -1386,6 +1387,123 @@ func createTagCommand(remove bool) *cobra.Command {
 	}
 }
 
+func resolvePushRemote(name string) (config.PushRemote, error) {
+	remotes := []config.PushRemote{}
+	if loadedConfig != nil {
+		remotes = loadedConfig.GetPushRemotes()
+	}
+	known := make([]string, 0, len(remotes))
+	for _, remote := range remotes {
+		known = append(known, remote.Name)
+	}
+	if loadedConfig != nil {
+		remote, err := loadedConfig.ValidatePushRemote(name)
+		if err == nil {
+			return remote, nil
+		}
+		if !errors.Is(err, config.ErrPushRemoteNotFound) {
+			return config.PushRemote{}, err
+		}
+	}
+	sort.Strings(known)
+	if len(known) == 0 {
+		return config.PushRemote{}, fmt.Errorf("push remote %q is not configured; known remotes: none", name)
+	}
+	return config.PushRemote{}, fmt.Errorf("push remote %q is not configured; known remotes: %s", name, strings.Join(known, ", "))
+}
+
+func sendPushTar(ctx context.Context, remote config.PushRemote, writeTar func(io.Writer) (transfer.TarResult, error)) (transfer.TarResult, error) {
+	sshCommand := exec.CommandContext(ctx, "ssh", remote.Host, "tracer", "receive", "--dest", remote.Dest, "--stdin")
+	sshCommand.Stdout = os.Stdout
+	sshCommand.Stderr = os.Stderr
+	stdin, err := sshCommand.StdinPipe()
+	if err != nil {
+		return transfer.TarResult{}, fmt.Errorf("open ssh stdin: %w", err)
+	}
+	if err := sshCommand.Start(); err != nil {
+		return transfer.TarResult{}, fmt.Errorf("start ssh push to %s: %w", remote.Host, err)
+	}
+
+	result, writeErr := writeTar(stdin)
+	closeErr := stdin.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = sshCommand.Process.Kill()
+		_ = sshCommand.Wait()
+		if writeErr != nil {
+			return result, writeErr
+		}
+		return result, fmt.Errorf("close ssh stdin: %w", closeErr)
+	}
+	if err := sshCommand.Wait(); err != nil {
+		return result, fmt.Errorf("ssh push to %s failed: %w", remote.Host, err)
+	}
+	return result, nil
+}
+
+func createPushCommand() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "push <remote-name>",
+		Short: "Push changed archived transcripts to another Tracer host",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			remoteName := strings.TrimSpace(args[0])
+			remote, err := resolvePushRemote(remoteName)
+			if err != nil {
+				return err
+			}
+			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			if err != nil {
+				return err
+			}
+			senderHost := ""
+			if !dryRun {
+				senderHost, err = os.Hostname()
+				if err != nil {
+					return fmt.Errorf("determine sender hostname: %w", err)
+				}
+			}
+			_, err = transfer.Push(transfer.PushOptions{
+				Remote:      remote.Name,
+				ArchiveRoot: outputConfig.GetHistoryDir(),
+				StateDBPath: outputConfig.GetRuntimeStateDBPath(),
+				SenderHost:  senderHost,
+				DryRun:      dryRun,
+				Output:      cmd.OutOrStdout(),
+				Send: func(writeTar func(io.Writer) (transfer.TarResult, error)) (transfer.TarResult, error) {
+					return sendPushTar(cmd.Context(), remote, writeTar)
+				},
+			})
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print files that would be pushed without connecting")
+	return cmd
+}
+
+func createReceiveCommand() *cobra.Command {
+	var dest string
+	var fromStdin bool
+	cmd := &cobra.Command{
+		Use:   "receive --dest <path> --stdin",
+		Short: "Receive a Tracer archive tar stream from standard input",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("dest") || strings.TrimSpace(dest) == "" {
+				return fmt.Errorf("--dest is required")
+			}
+			if !cmd.Flags().Changed("stdin") || !fromStdin {
+				return fmt.Errorf("--stdin is required")
+			}
+			_, err := transfer.Receive(cmd.InOrStdin(), utils.ExpandTilde(dest))
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&dest, "dest", "", "destination archive root")
+	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "read a tar stream from standard input")
+	return cmd
+}
+
 func createRootCommand() *cobra.Command {
 	registry := factory.GetRegistry()
 	providerList := registry.GetProviderList()
@@ -1469,6 +1587,8 @@ func main() {
 	outcomeCmd := createOutcomeCommand()
 	tagCmd := createTagCommand(false)
 	untagCmd := createTagCommand(true)
+	pushCmd := createPushCommand()
+	receiveCmd := createReceiveCommand()
 	configCmd := cmdpkg.CreateConfigCommand()
 	versionCmd := cmdpkg.CreateVersionCommand(version)
 
@@ -1479,6 +1599,8 @@ func main() {
 	rootCmd.AddCommand(outcomeCmd)
 	rootCmd.AddCommand(tagCmd)
 	rootCmd.AddCommand(untagCmd)
+	rootCmd.AddCommand(pushCmd)
+	rootCmd.AddCommand(receiveCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(versionCmd)
 

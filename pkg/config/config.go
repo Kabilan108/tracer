@@ -5,10 +5,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -18,6 +20,14 @@ var ignoredLegacyKeys = map[string]struct{}{
 	"version_check":         {},
 	"version_check.enabled": {},
 }
+
+var (
+	// ErrPushRemoteNotFound identifies a requested name missing from push.remotes.
+	ErrPushRemoteNotFound = errors.New("push remote is not configured")
+	pushRemoteNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	pushRemoteHostPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	pushRemoteDestPattern = regexp.MustCompile(`^/[A-Za-z0-9._/@-]+$`)
+)
 
 const (
 	// ConfigFileName is the name of the configuration file.
@@ -69,6 +79,13 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 
 # Skip project paths matching filepath globs.
 # exclude_path_globs = ["/tmp/*", "/home/user/archive/*"]
+
+# Push the primary archive to another host without overwriting annotations there.
+# Names, hosts, and destinations use restricted shell-safe character sets; see docs/configuration.md.
+# [[push.remotes]]
+# name = "sietch"
+# host = "sietch"
+# dest = "/vault/userdata/tracer-ingest/jacurutu"
 `
 
 // Config represents the complete CLI configuration.
@@ -77,6 +94,7 @@ type Config struct {
 	Logging   LoggingConfig   `toml:"logging"`
 	Archive   ArchiveConfig   `toml:"archive"`
 	Ingest    IngestConfig    `toml:"ingest"`
+	Push      PushConfig      `toml:"push"`
 }
 
 // LocalSyncConfig holds local file sync settings.
@@ -104,6 +122,18 @@ type IngestConfig struct {
 	EnabledProviders []string `toml:"enabled_providers"`
 	ExcludeProjects  []string `toml:"exclude_projects"`
 	ExcludePathGlobs []string `toml:"exclude_path_globs"`
+}
+
+// PushConfig contains named cross-host archive destinations.
+type PushConfig struct {
+	Remotes []PushRemote `toml:"remotes"`
+}
+
+// PushRemote configures one SSH destination for archive pushes.
+type PushRemote struct {
+	Name string `toml:"name"`
+	Host string `toml:"host"`
+	Dest string `toml:"dest"`
 }
 
 // CLIOverrides holds CLI flag values that override config file settings.
@@ -154,7 +184,6 @@ func LoadPath(configPath string, cliOverrides *CLIOverrides) (*Config, error) {
 	if cliOverrides != nil {
 		applyCLIOverrides(cfg, cliOverrides)
 	}
-
 	return cfg, nil
 }
 
@@ -205,7 +234,6 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 		return result
 	}
 	result.ValidTOML = true
-
 	undecoded := md.Undecoded()
 	unknownSections := make(map[string]bool)
 	for _, key := range undecoded {
@@ -227,6 +255,53 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 	}
 
 	return result
+}
+
+// ValidatePushRemote validates the selected remote and all names needed to resolve it.
+func (c *Config) ValidatePushRemote(selectedName string) (PushRemote, error) {
+	seen := make(map[string]struct{}, len(c.Push.Remotes))
+	for i, remote := range c.Push.Remotes {
+		if !pushRemoteNamePattern.MatchString(remote.Name) {
+			return PushRemote{}, fmt.Errorf(
+				"push.remotes[%d].name %q must match %s",
+				i,
+				remote.Name,
+				pushRemoteNamePattern,
+			)
+		}
+		if _, ok := seen[remote.Name]; ok {
+			return PushRemote{}, fmt.Errorf("push remote name %q is duplicated", remote.Name)
+		}
+		seen[remote.Name] = struct{}{}
+	}
+	for _, remote := range c.Push.Remotes {
+		if remote.Name != selectedName {
+			continue
+		}
+		if !pushRemoteHostPattern.MatchString(remote.Host) {
+			return PushRemote{}, fmt.Errorf(
+				"push remote %q: host %q must match %s",
+				remote.Name,
+				remote.Host,
+				pushRemoteHostPattern,
+			)
+		}
+		if !pushRemoteDestPattern.MatchString(remote.Dest) {
+			return PushRemote{}, fmt.Errorf(
+				"push remote %q: dest %q must be an absolute path matching %s",
+				remote.Name,
+				remote.Dest,
+				pushRemoteDestPattern,
+			)
+		}
+		return remote, nil
+	}
+	return PushRemote{}, fmt.Errorf("%w: %q", ErrPushRemoteNotFound, selectedName)
+}
+
+// GetPushRemotes returns a copy of the configured push remotes.
+func (c *Config) GetPushRemotes() []PushRemote {
+	return append([]PushRemote(nil), c.Push.Remotes...)
 }
 
 func isIgnoredLegacyKey(key toml.Key) bool {
