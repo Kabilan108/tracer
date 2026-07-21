@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+### Added
+
+- Add `-v`/`--version` root flag as an alias for `tracer version`.
+
+### Fixed
+
+- Restore the allocation-free hashing path for tar writing; the frontmatter probe buffer is only built during archive scans where it is used.
+
 ## 0.2.1
 
 ### Fixed

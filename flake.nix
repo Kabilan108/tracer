@@ -13,7 +13,7 @@
         pkgs:
         (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) rec {
           pname = "tracer";
-          version = "0.2.1";
+          version = "0.2.2";
           src = self;
           vendorHash = "sha256-MMrLdQC5HUunc9qkcAGDXe5/JRReVdNI1jEV5p72gTk=";
 

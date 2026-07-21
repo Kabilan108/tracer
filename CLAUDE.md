@@ -79,6 +79,8 @@ When searching for code, ALWAYS exclude the `.tracer` directory.
 
 Don't just make your own decision, explain the options, the pros and cons, and what you recommend. Have the user make the decision.
 
+Every PR is gated on resolving valid Greptile review comments: triage each comment, fix true positives, and reply to false positives with reasoning before merging.
+
 Always ask before introducing any new dependencies.
 
 Always ask before introducing any new code files.

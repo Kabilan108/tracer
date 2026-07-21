@@ -43,6 +43,7 @@ The tracer receive --dest <path> --stdin command is the one-shot stream receiver
 ## Setup and diagnostics
 
 - tracer version prints the installed version.
+- The root --version / -v flag prints the same version string.
 - tracer config init creates the default user configuration.
 - tracer config check validates configuration and provider availability.
 `
