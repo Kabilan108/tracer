@@ -61,7 +61,10 @@ type listFlags struct {
 	project  string
 	provider string
 	outcome  string
-	tag      string
+	tags     []string
+
+	// tagFilters is populated from tags by parseTagFilters before matching runs.
+	tagFilters []tagFilter
 }
 
 type getFlags struct {
@@ -1137,6 +1140,44 @@ func parseSince(value string, now time.Time) (time.Time, error) {
 	return timestamp, nil
 }
 
+// tagFilter is one parsed --tag value; a leading ! reserves the tag for
+// absence matching, so a literal !-prefixed tag has no positive-match escape.
+type tagFilter struct {
+	tag     string
+	negated bool
+}
+
+// parseTagFilters normalizes flag values once, up front, because matching runs
+// per archived session and validation must see the same post-prefix form the
+// matcher uses (a "! gold" that validates but strips to " gold" would negate a
+// tag that cannot exist and silently match everything).
+func parseTagFilters(values []string) ([]tagFilter, error) {
+	filters := make([]tagFilter, 0, len(values))
+	positive := make(map[string]bool)
+	negative := make(map[string]bool)
+	for _, value := range values {
+		tag := strings.TrimSpace(value)
+		negated := strings.HasPrefix(tag, "!")
+		if negated {
+			tag = strings.TrimSpace(tag[1:])
+		}
+		if tag == "" {
+			return nil, fmt.Errorf("invalid --tag value %q: tag must not be empty or bare !", value)
+		}
+		tag = strings.ToLower(tag)
+		if negated {
+			negative[tag] = true
+		} else {
+			positive[tag] = true
+		}
+		if positive[tag] && negative[tag] {
+			return nil, fmt.Errorf("contradictory --tag filters: %q is required both present and absent", tag)
+		}
+		filters = append(filters, tagFilter{tag: tag, negated: negated})
+	}
+	return filters, nil
+}
+
 func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.Time) bool {
 	if flags.provider != "" && !strings.EqualFold(metadata.Provider, flags.provider) {
 		return false
@@ -1151,15 +1192,15 @@ func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.T
 	if flags.outcome != "" && !strings.EqualFold(metadata.Outcome, flags.outcome) {
 		return false
 	}
-	if flags.tag != "" {
+	for _, filter := range flags.tagFilters {
 		found := false
-		for _, tag := range metadata.Tags {
-			if strings.EqualFold(tag, flags.tag) {
+		for _, metadataTag := range metadata.Tags {
+			if strings.EqualFold(metadataTag, filter.tag) {
 				found = true
 				break
 			}
 		}
-		if !found {
+		if found == filter.negated {
 			return false
 		}
 	}
@@ -1206,6 +1247,11 @@ func createListCommand() *cobra.Command {
 			if flags.limit < 0 {
 				return fmt.Errorf("--limit must not be negative")
 			}
+			tagFilters, err := parseTagFilters(flags.tags)
+			if err != nil {
+				return err
+			}
+			flags.tagFilters = tagFilters
 			since, err := parseSince(flags.since, time.Now())
 			if err != nil {
 				return err
@@ -1267,7 +1313,7 @@ func createListCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.project, "project", "", "filter by project name or working directory")
 	cmd.Flags().StringVar(&flags.provider, "provider", "", "filter by provider ID")
 	cmd.Flags().StringVar(&flags.outcome, "outcome", "", "filter by outcome")
-	cmd.Flags().StringVar(&flags.tag, "tag", "", "filter by tag")
+	cmd.Flags().StringArrayVar(&flags.tags, "tag", nil, "require a tag; repeat for AND filtering, prefix with ! to require absence")
 	return cmd
 }
 

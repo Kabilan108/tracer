@@ -365,22 +365,85 @@ func TestMetadataMatches(t *testing.T) {
 		CWD:      "/home/kabilan/dotfiles",
 		Ended:    "2026-07-13T10:00:00Z",
 		Outcome:  "done",
-		Tags:     []string{"gold"},
+		Tags:     []string{"gold", "Ready"},
+	}
+	untagged := sessionpkg.Metadata{
+		Provider: "codex",
+		CWD:      "/home/kabilan/dotfiles",
+		Ended:    "2026-07-13T10:00:00Z",
 	}
 	tests := []struct {
-		name  string
-		flags listFlags
-		want  bool
+		name     string
+		metadata sessionpkg.Metadata
+		flags    listFlags
+		tags     []string
+		want     bool
 	}{
-		{name: "all filters", flags: listFlags{provider: "codex", project: "dotfiles", outcome: "done", tag: "gold"}, want: true},
-		{name: "provider mismatch", flags: listFlags{provider: "claude"}, want: false},
-		{name: "project path match", flags: listFlags{project: "kabilan/dot"}, want: true},
-		{name: "missing tag", flags: listFlags{tag: "review"}, want: false},
+		{name: "all filters", metadata: metadata, flags: listFlags{provider: "codex", project: "dotfiles", outcome: "done"}, tags: []string{"gold"}, want: true},
+		{name: "provider mismatch", metadata: metadata, flags: listFlags{provider: "claude"}, want: false},
+		{name: "project path match", metadata: metadata, flags: listFlags{project: "kabilan/dot"}, want: true},
+		{name: "single positive", metadata: metadata, tags: []string{"gold"}, want: true},
+		{name: "single negative", metadata: metadata, tags: []string{"!gold"}, want: false},
+		{name: "mixed positive and negative", metadata: metadata, tags: []string{"gold", "!review"}, want: true},
+		{name: "repeated positives", metadata: metadata, tags: []string{"gold", "ready"}, want: true},
+		{name: "absent tag with negation", metadata: metadata, tags: []string{"!review"}, want: true},
+		{name: "present tag with negation", metadata: metadata, tags: []string{"!ready"}, want: false},
+		{name: "case insensitive", metadata: metadata, tags: []string{"GOLD", "!REVIEW"}, want: true},
+		{name: "missing tag", metadata: metadata, tags: []string{"review"}, want: false},
+		{name: "whitespace inside negation", metadata: metadata, tags: []string{"! gold"}, want: false},
+		{name: "nil tags rejects positive", metadata: untagged, tags: []string{"gold"}, want: false},
+		{name: "nil tags satisfies negation", metadata: untagged, tags: []string{"!wiki:compiled"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := metadataMatches(metadata, tt.flags, time.Time{}); got != tt.want {
+			filters, err := parseTagFilters(tt.tags)
+			if err != nil {
+				t.Fatalf("parseTagFilters() error = %v", err)
+			}
+			tt.flags.tagFilters = filters
+			if got := metadataMatches(tt.metadata, tt.flags, time.Time{}); got != tt.want {
 				t.Fatalf("metadataMatches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTagFilters(t *testing.T) {
+	tests := []struct {
+		name string
+		tags []string
+		want []tagFilter
+		fail bool
+	}{
+		{name: "no tags", want: []tagFilter{}},
+		{name: "valid positive", tags: []string{"gold"}, want: []tagFilter{{tag: "gold"}}},
+		{name: "valid negative", tags: []string{"!wiki:compiled"}, want: []tagFilter{{tag: "wiki:compiled", negated: true}}},
+		{name: "whitespace inside negation", tags: []string{"! gold"}, want: []tagFilter{{tag: "gold", negated: true}}},
+		{name: "lowercased", tags: []string{"GOLD"}, want: []tagFilter{{tag: "gold"}}},
+		{name: "empty", tags: []string{""}, fail: true},
+		{name: "whitespace", tags: []string{"  "}, fail: true},
+		{name: "bare negation", tags: []string{"!"}, fail: true},
+		{name: "spaced bare negation", tags: []string{" ! "}, fail: true},
+		{name: "negation of only whitespace", tags: []string{"!  "}, fail: true},
+		{name: "contradiction", tags: []string{"gold", "!gold"}, fail: true},
+		{name: "contradiction case insensitive", tags: []string{"GOLD", "!gold"}, fail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filters, err := parseTagFilters(tt.tags)
+			if (err != nil) != tt.fail {
+				t.Fatalf("parseTagFilters() error = %v, want failure %v", err, tt.fail)
+			}
+			if tt.fail {
+				return
+			}
+			if len(filters) != len(tt.want) {
+				t.Fatalf("parseTagFilters() = %v, want %v", filters, tt.want)
+			}
+			for i, filter := range filters {
+				if filter != tt.want[i] {
+					t.Fatalf("parseTagFilters()[%d] = %v, want %v", i, filter, tt.want[i])
+				}
 			}
 		})
 	}
@@ -450,6 +513,90 @@ func TestListCommand_ArchiveJSON(t *testing.T) {
 	if len(sessions) != 2 {
 		t.Fatalf("sessions = %d, want 2", len(sessions))
 	}
+}
+
+// TestListCommand_TagFlags exercises the cobra flag layer end to end: the
+// StringArrayVar choice (commas stay literal), repeated flags, negation on an
+// untagged fixture session, and validation errors surfacing through Execute.
+func TestListCommand_TagFlags(t *testing.T) {
+	previousOutputDir := outputDir
+	previousConfig := loadedConfig
+	previousStdout := os.Stdout
+	t.Cleanup(func() {
+		outputDir = previousOutputDir
+		loadedConfig = previousConfig
+		os.Stdout = previousStdout
+	})
+	outputDir = filepath.Join("tests", "fixtures", "archive")
+	loadedConfig = nil
+
+	runList := func(t *testing.T, args ...string) ([]sessionpkg.Metadata, error) {
+		t.Helper()
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = writer
+		cmd := createListCommand()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		cmd.SetArgs(append([]string{"--json"}, args...))
+		executeErr := cmd.Execute()
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = previousStdout
+		output, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if executeErr != nil {
+			return nil, executeErr
+		}
+		var sessions []sessionpkg.Metadata
+		if err := json.Unmarshal(output, &sessions); err != nil {
+			t.Fatalf("decode list JSON: %v\n%s", err, output)
+		}
+		return sessions, nil
+	}
+
+	t.Run("negation includes untagged sessions", func(t *testing.T) {
+		sessions, err := runList(t, "--tag", "!wiki:compiled")
+		if err != nil {
+			t.Fatalf("list error = %v", err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("sessions = %d, want 2 (untagged sessions must satisfy negation)", len(sessions))
+		}
+	})
+	t.Run("repeated flags AND together", func(t *testing.T) {
+		sessions, err := runList(t, "--tag", "gold", "--tag", "!wiki:compiled")
+		if err != nil {
+			t.Fatalf("list error = %v", err)
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("sessions = %d, want 1", len(sessions))
+		}
+	})
+	t.Run("commas stay literal", func(t *testing.T) {
+		sessions, err := runList(t, "--tag", "gold,ready")
+		if err != nil {
+			t.Fatalf("list error = %v", err)
+		}
+		if len(sessions) != 0 {
+			t.Fatalf("sessions = %d, want 0 (comma value must be one literal tag, not split)", len(sessions))
+		}
+	})
+	t.Run("invalid value errors through Execute", func(t *testing.T) {
+		if _, err := runList(t, "--tag", "!"); err == nil {
+			t.Fatal("expected error for bare ! tag")
+		}
+	})
+	t.Run("contradiction errors through Execute", func(t *testing.T) {
+		if _, err := runList(t, "--tag", "gold", "--tag", "!gold"); err == nil {
+			t.Fatal("expected error for contradictory tag filters")
+		}
+	})
 }
 
 func TestResolvePagerCommand(t *testing.T) {

@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Upgrade `tracer list --tag` to support repeatable AND filters and `!`-prefixed tag negation.
 - Derive session titles from the first substantive user message while ignoring sidechain and internal Claude messages.
 - Preserve manual outcomes and tags when sync or watch regenerates a transcript.
 - Write transcripts atomically and coordinate transcript generation with metadata mutation using cross-process locks.

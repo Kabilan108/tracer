@@ -58,7 +58,7 @@ tracer watch
 - `tracer sync [provider-id]`
 - `tracer watch [provider-id]`
 - `tracer list [--json] [--since <timestamp|duration>] [--limit N]`
-- `tracer list [--project <name>] [--provider <id>] [--outcome <value>] [--tag <tag>]`
+- `tracer list [--project <name>] [--provider <id>] [--outcome <value>] [--tag <tag> ...]`
 - `tracer get <session-id> [--provider <provider-id>] [--path] [--tool-output <mode>] [--turns user,agent]`
 - `tracer outcome <session-id-or-path> <done|abandoned|clear>`
 - `tracer tag <session-id-or-path> gold`
@@ -78,6 +78,13 @@ tracer get 019abc --turns=user,agent
 ```
 
 `tracer list` reads archived Markdown rather than provider session stores. JSON output is a recency-sorted array containing the frontmatter fields and absolute transcript path. Configure `archive.additional_roots` to include synchronized, read-only archives in the same query.
+
+Repeat `--tag` to require every specified tag. Prefix a tag with `!` to require that the tag is absent. Quote negated tags with single quotes so shells that interpret `!` pass it through unchanged. The `!` prefix is reserved for negation: a tag whose name itself starts with `!` cannot be positively matched, so avoid `!` when naming tags.
+
+```bash
+tracer list --tag gold --tag ready
+tracer list --json --since 168h --tag '!wiki:compiled'
+```
 
 Run `tracer sync` after upgrading so sessions still present in provider storage are regenerated with frontmatter. Older Markdown files whose source sessions are no longer available remain unchanged and are not returned by `tracer list`.
 
