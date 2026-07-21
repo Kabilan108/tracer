@@ -2,6 +2,7 @@ package transfer
 
 import (
 	"archive/tar"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,7 +16,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tracer-ai/tracer-cli/pkg/session"
 )
+
+// frontmatterProbeBytes bounds how much of each file is retained during
+// hashing to validate frontmatter. Real frontmatter is well under 1 KiB;
+// 32 KiB leaves ample headroom without buffering whole transcripts.
+const frontmatterProbeBytes = 32 << 10
 
 const manifestPath = ".tracer-push-manifest.json"
 
@@ -39,6 +47,13 @@ type ScanResult struct {
 	AllPaths []string
 	Scanned  int
 	Skipped  int
+
+	// Invalid counts Markdown files without parseable frontmatter. They are
+	// excluded from the push entirely: list and get already ignore them, and
+	// sending them would make the receiver fail every batch forever (legacy
+	// pre-frontmatter archives cannot be regenerated once provider data is
+	// gone).
+	Invalid int
 }
 
 // PushSummary describes one completed or failed push attempt.
@@ -48,6 +63,7 @@ type PushSummary struct {
 	Transferred int
 	Bytes       int64
 	Skipped     int
+	Invalid     int
 	Failed      int
 	Duration    time.Duration
 }
@@ -108,6 +124,7 @@ func Push(options PushOptions) (summary PushSummary, err error) {
 	scan, err := ScanPending(options.ArchiveRoot, hashes)
 	summary.Scanned = scan.Scanned
 	summary.Skipped = scan.Skipped
+	summary.Invalid = scan.Invalid
 	if err != nil {
 		summary.Failed++
 		return summary, err
@@ -190,9 +207,14 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 			return fmt.Errorf("resolve archive path %s: %w", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
-		hash, size, err := hashFile(path)
+		hash, size, head, err := hashFileWithHead(path)
 		if err != nil {
 			return err
+		}
+		if _, _, parseErr := session.ParseFrontmatter(head); parseErr != nil {
+			result.Invalid++
+			slog.Warn("Skipping transcript without valid frontmatter", "path", relPath, "error", parseErr)
+			return nil
 		}
 		result.Scanned++
 		result.AllPaths = append(result.AllPaths, relPath)
@@ -212,17 +234,29 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 }
 
 func hashFile(path string) (string, int64, error) {
+	hash, size, _, err := hashFileWithHead(path)
+	return hash, size, err
+}
+
+// hashFileWithHead hashes the whole file in one pass while retaining its
+// first frontmatterProbeBytes for validation, avoiding a second read.
+func hashFileWithHead(path string) (string, int64, []byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", 0, fmt.Errorf("open archive file %s: %w", path, err)
+		return "", 0, nil, fmt.Errorf("open archive file %s: %w", path, err)
 	}
 	defer file.Close()
 	hasher := sha256.New()
-	size, err := io.Copy(hasher, file)
-	if err != nil {
-		return "", 0, fmt.Errorf("hash archive file %s: %w", path, err)
+	head := &bytes.Buffer{}
+	reader := io.TeeReader(io.LimitReader(file, frontmatterProbeBytes), head)
+	if _, err := io.Copy(hasher, reader); err != nil {
+		return "", 0, nil, fmt.Errorf("hash archive file %s: %w", path, err)
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), size, nil
+	rest, err := io.Copy(hasher, file)
+	if err != nil {
+		return "", 0, nil, fmt.Errorf("hash archive file %s: %w", path, err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), int64(head.Len()) + rest, head.Bytes(), nil
 }
 
 // WriteTar writes a protocol manifest followed by files unchanged since the scan.
@@ -313,6 +347,7 @@ func LogPushSummary(summary PushSummary) {
 		"transferred", summary.Transferred,
 		"bytes", summary.Bytes,
 		"skipped", summary.Skipped,
+		"invalid", summary.Invalid,
 		"failed", summary.Failed,
 		"duration", summary.Duration,
 	)
