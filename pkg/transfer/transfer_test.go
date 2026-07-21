@@ -145,13 +145,7 @@ func TestScanPending_CursorDiff(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			path := filepath.Join(root, "codex", "project", "one.md")
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeSenderTranscript(t, root, "codex/project/one.md", "content")
 			initial, err := ScanPending(root, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -165,6 +159,34 @@ func TestScanPending_CursorDiff(t *testing.T) {
 				t.Fatalf("ScanPending() = %+v, want files=%d skipped=%d", got, tt.wantFiles, tt.wantSkip)
 			}
 		})
+	}
+}
+
+func TestScanPending_SkipsInvalidFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	writeSenderTranscript(t, root, "codex/project/valid.md", "content")
+	legacy := filepath.Join(root, "claude", "old", "legacy.md")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("# pre-frontmatter transcript\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ScanPending(root, nil)
+	if err != nil {
+		t.Fatalf("ScanPending() error = %v", err)
+	}
+	if got.Invalid != 1 {
+		t.Fatalf("Invalid = %d, want 1", got.Invalid)
+	}
+	if got.Scanned != 1 || len(got.Files) != 1 || got.Files[0].RelPath != "codex/project/valid.md" {
+		t.Fatalf("scan should contain only the valid transcript, got %+v", got)
+	}
+	for _, path := range got.AllPaths {
+		if path == "claude/old/legacy.md" {
+			t.Fatal("invalid transcript must not appear in AllPaths (cursor pruning scope)")
+		}
 	}
 }
 

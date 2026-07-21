@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+### Fixed
+
+- Skip transcripts without parseable frontmatter when scanning for `tracer push`, matching how `list` and `get` already ignore them. Legacy pre-frontmatter files previously made every push fail permanently: the receiver rejected them per-file, the run exited nonzero, and the cursor never advanced. Skipped files are counted as `invalid` in the push summary.
+
 ## 0.2.0
 
 ### Added
