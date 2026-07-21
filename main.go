@@ -1155,7 +1155,7 @@ func resolveMutationTranscript(sessionIDOrPath string) (sessionpkg.Metadata, err
 		return sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
 	}
 	metadata, err := sessionpkg.ResolveTranscriptStrict(roots, sessionIDOrPath)
-	if err == nil || !strings.Contains(err.Error(), " not found") {
+	if err == nil || !errors.Is(err, sessionpkg.ErrSessionNotFound) {
 		return metadata, err
 	}
 	archiveRoots, rootsErr := archiveReadRoots()

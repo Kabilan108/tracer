@@ -15,6 +15,11 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/session"
 )
 
+// maxTranscriptBytes bounds one incoming transcript. Real transcripts are
+// text and rarely exceed a few hundred KiB; 64 MiB leaves generous headroom
+// while keeping a hostile tar header from ballooning receiver memory.
+const maxTranscriptBytes = 64 << 20
+
 // ReceiveSummary describes the files applied from one tar stream.
 type ReceiveSummary struct {
 	Received int
@@ -100,10 +105,19 @@ func Receive(reader io.Reader, dest string) (summary ReceiveSummary, err error) 
 			slog.Warn("Skipping unsupported tar entry", "path", header.Name, "type", header.Typeflag)
 			continue
 		}
-		incoming, readErr := io.ReadAll(tarReader)
+		// LimitReader caps memory per entry: tar headers state their own
+		// size, so a lying or hostile sender could otherwise OOM the
+		// receiver before frontmatter validation ever runs.
+		incoming, readErr := io.ReadAll(io.LimitReader(tarReader, maxTranscriptBytes+1))
 		if readErr != nil {
 			summary.Failed++
 			return summary, fmt.Errorf("read incoming file %s: %w", header.Name, readErr)
+		}
+		if len(incoming) > maxTranscriptBytes {
+			summary.Failed++
+			fileErrors = append(fileErrors, fmt.Errorf("incoming file %s exceeds %d byte transcript limit", header.Name, maxTranscriptBytes))
+			slog.Warn("Skipping oversized incoming transcript", "path", header.Name, "limit_bytes", maxTranscriptBytes)
+			continue
 		}
 		if _, _, parseErr := session.ParseFrontmatter(incoming); parseErr != nil {
 			summary.Failed++
@@ -186,7 +200,7 @@ func writeReceivedFile(resolvedDest, target string, incoming []byte) (bool, erro
 			content = incoming
 		}
 		merged = true
-	} else if !os.IsNotExist(readErr) {
+	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return false, fmt.Errorf("read existing transcript: %w", readErr)
 	}
 

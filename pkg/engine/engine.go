@@ -72,6 +72,12 @@ type Engine struct {
 	pending   map[string]*pendingUpdate
 	closed    bool
 
+	// inFlight tracks debounce-fired flushes that have claimed their pending
+	// entry but are still processing; Close must wait for them, because
+	// FlushPending can no longer see those updates and closing the state
+	// store underneath an in-flight processSession would lose the result.
+	inFlight sync.WaitGroup
+
 	processMu sync.Mutex
 
 	summaryMu sync.Mutex
@@ -123,13 +129,18 @@ func (e *Engine) Close() error {
 	if err := e.FlushPending(); err != nil {
 		return err
 	}
-	if err := e.stats.Flush(); err != nil {
-		return fmt.Errorf("flush statistics: %w", err)
-	}
 
 	e.pendingMu.Lock()
 	e.closed = true
 	e.pendingMu.Unlock()
+
+	// Wait for debounce timers that fired before closed was set: they hold
+	// updates FlushPending could not see and may still be writing.
+	e.inFlight.Wait()
+
+	if err := e.stats.Flush(); err != nil {
+		return fmt.Errorf("flush statistics: %w", err)
+	}
 
 	if err := e.state.Close(); err != nil {
 		return fmt.Errorf("close state store: %w", err)
@@ -320,11 +331,16 @@ func (e *Engine) flushPendingKey(key string) {
 	update, ok := e.pending[key]
 	if ok {
 		delete(e.pending, key)
+		// Registered under pendingMu so Close observes either the pending
+		// entry (drained by FlushPending) or a nonzero in-flight count —
+		// never neither.
+		e.inFlight.Add(1)
 	}
 	e.pendingMu.Unlock()
 	if !ok {
 		return
 	}
+	defer e.inFlight.Done()
 
 	if _, err := e.processSession(update.providerID, update.session); err != nil {
 		e.recordOutcome(OutcomeError)

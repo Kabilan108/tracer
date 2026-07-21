@@ -12,6 +12,11 @@ import (
 	"syscall"
 )
 
+// ErrSessionNotFound identifies a session ID that matched no archived
+// transcript, so callers can branch with errors.Is instead of matching
+// error-message text.
+var ErrSessionNotFound = errors.New("session not found")
+
 func LockTranscript(path string) (func(), error) {
 	lockPath := path + ".lock"
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -162,7 +167,7 @@ func resolveTranscript(roots []string, sessionIDOrPath string, strict bool) (Met
 		}
 	}
 	if len(matches) == 0 {
-		return Metadata{}, fmt.Errorf("session %q not found", sessionIDOrPath)
+		return Metadata{}, fmt.Errorf("session %q: %w", sessionIDOrPath, ErrSessionNotFound)
 	}
 	if len(matches) > 1 {
 		paths := make([]string, 0, len(matches))
