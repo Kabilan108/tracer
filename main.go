@@ -17,6 +17,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -28,6 +29,7 @@ import (
 	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/factory"
+	"github.com/tracer-ai/tracer-cli/pkg/transfer"
 	"github.com/tracer-ai/tracer-cli/pkg/ui"
 	"github.com/tracer-ai/tracer-cli/pkg/utils"
 )
@@ -61,12 +63,17 @@ type listFlags struct {
 	project  string
 	provider string
 	outcome  string
-	tag      string
+	tags     []string
+
+	// tagFilters is populated from tags by parseTagFilters before matching runs.
+	tagFilters []tagFilter
 }
 
 type getFlags struct {
-	provider string
-	path     bool
+	provider   string
+	path       bool
+	toolOutput string
+	turns      string
 }
 
 const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
@@ -833,89 +840,13 @@ func pageOutput(output string) error {
 	return cmd.Run()
 }
 
-type getMatch struct {
-	ProviderID string
-	Session    *spi.AgentChatSession
-	Path       string
-}
-
-func resolveGetProviders(registry *factory.Registry, providerID string) (map[string]spi.Provider, error) {
-	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	if providerID == "" {
-		return resolveProviders(registry, nil)
-	}
-
-	provider, err := registry.Get(providerID)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]spi.Provider{providerID: provider}, nil
-}
-
-func findGetMatches(providers map[string]spi.Provider, sessionID string, pathBuilder engine.PathBuilder) ([]getMatch, error) {
-	matches := make([]getMatch, 0)
-	for _, providerID := range sortedProviderIDs(providers) {
-		provider := providers[providerID]
-		session, err := provider.GetAgentChatSession("", sessionID, false)
-		if err != nil {
-			return nil, fmt.Errorf("provider %s: %w", providerID, err)
-		}
-		if session == nil {
-			continue
-		}
-
-		matches = append(matches, getMatch{
-			ProviderID: providerID,
-			Session:    session,
-			Path:       pathBuilder(providerID, session),
-		})
-	}
-	return matches, nil
-}
-
-func formatGetAmbiguityError(sessionID string, matches []getMatch) error {
-	lines := []string{fmt.Sprintf("session %q matched multiple providers; use --provider to choose one", sessionID)}
-	for _, match := range matches {
-		lines = append(lines, fmt.Sprintf("- %s: %s", match.ProviderID, match.Path))
-	}
-	return errors.New(strings.Join(lines, "\n"))
-}
-
-func sessionWorkspaceRoot(session *spi.AgentChatSession) string {
-	if session == nil || session.SessionData == nil {
-		return ""
-	}
-	return strings.TrimSpace(session.SessionData.WorkspaceRoot)
-}
-
-func writeGetSessionMarkdown(providerID string, session *spi.AgentChatSession, opts engine.Options) error {
-	if opts.ShouldProcessSession != nil && !opts.ShouldProcessSession(providerID, session) {
-		return fmt.Errorf("session %s is excluded by configuration: %s", session.SessionID, sessionWorkspaceRoot(session))
-	}
-
-	writer, err := engine.New(opts)
-	if err != nil {
-		return err
-	}
-	_, processErr := writer.ProcessSession(providerID, session)
-	closeErr := writer.Close()
-	if processErr != nil {
-		return processErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return nil
-}
-
 func createGetCommand() *cobra.Command {
-	registry := factory.GetRegistry()
 	flags := getFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "get <session-id>",
 		Short: "Fetch a session transcript by session ID",
-		Long:  "Fetches a specific provider session by ID, refreshes its archived markdown, and prints the markdown to stdout by default.",
+		Long:  "Reads a specific archived session by ID and prints its Markdown to stdout by default.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return err
@@ -926,41 +857,43 @@ func createGetCommand() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			toolOutputMode, truncateLines, err := sessionpkg.ParseToolOutputFlag(flags.toolOutput)
+			if err != nil {
+				return err
+			}
+			turnsOnly, err := parseGetTurnsFlag(flags.turns)
+			if err != nil {
+				return err
+			}
+			filterOptions := sessionpkg.FilterOptions{
+				ToolOutput:    toolOutputMode,
+				TruncateLines: truncateLines,
+				TurnsOnly:     turnsOnly,
+			}
+
 			sessionID := strings.TrimSpace(args[0])
-			useUTC := !localTimeZone
+			providerID := strings.ToLower(strings.TrimSpace(flags.provider))
 
-			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			roots, err := archiveReadRoots()
 			if err != nil {
 				return err
 			}
-			if err := utils.EnsureStateDirectoryExists(outputConfig); err != nil {
-				return err
-			}
-			if err := utils.EnsureHistoryDirectoryExists(outputConfig); err != nil {
-				return err
-			}
-
-			providers, err := resolveGetProviders(registry, flags.provider)
-			if err != nil {
-				return err
-			}
-
-			opts := engineOptionsFromOutputConfig(outputConfig, useUTC, 0)
-			matches, err := findGetMatches(providers, sessionID, opts.PathBuilder)
+			matches, err := findArchivedGetMatches(roots, sessionID, providerID)
 			if err != nil {
 				return err
 			}
 			if len(matches) == 0 {
-				return fmt.Errorf("session %q not found", sessionID)
+				return fmt.Errorf("session %q not found; run 'tracer sync' to refresh the archive from provider data", sessionID)
 			}
 			if len(matches) > 1 {
-				return formatGetAmbiguityError(sessionID, matches)
+				paths := make([]string, 0, len(matches))
+				for _, match := range matches {
+					paths = append(paths, fmt.Sprintf("- %s: %s", match.Provider, match.Path))
+				}
+				return fmt.Errorf("session %q matched multiple archived transcripts; use --provider or a unique session ID:\n%s", sessionID, strings.Join(paths, "\n"))
 			}
 
 			match := matches[0]
-			if err := writeGetSessionMarkdown(match.ProviderID, match.Session, opts); err != nil {
-				return err
-			}
 
 			if flags.path {
 				fmt.Fprintln(os.Stdout, match.Path)
@@ -971,14 +904,51 @@ func createGetCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read archived markdown: %w", err)
 			}
-			_, err = os.Stdout.Write(data)
+			filtered := sessionpkg.FilterTranscript(string(data), filterOptions)
+			_, err = os.Stdout.Write([]byte(filtered))
 			return err
 		},
 	}
 
 	cmd.Flags().StringVarP(&flags.provider, "provider", "p", "", "provider to search")
 	cmd.Flags().BoolVarP(&flags.path, "path", "P", false, "print archive path instead of markdown content")
+	cmd.Flags().StringVar(&flags.toolOutput, "tool-output", "full", "tool output mode: full, none, or truncate:N")
+	cmd.Flags().StringVar(&flags.turns, "turns", "", "turns to include (accepted values: user,agent or agent,user)")
 	return cmd
+}
+
+func parseGetTurnsFlag(value string) (bool, error) {
+	switch value {
+	case "":
+		return false, nil
+	case "user,agent", "agent,user":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid --turns %q: accepted values are user,agent or agent,user", value)
+	}
+}
+
+func findArchivedGetMatches(roots []string, sessionID string, providerID string) ([]sessionpkg.Metadata, error) {
+	matches := make([]sessionpkg.Metadata, 0)
+	seenProviders := make(map[string]struct{})
+	for _, root := range roots {
+		archives, err := sessionpkg.ScanArchives([]string{root})
+		if err != nil {
+			return nil, err
+		}
+		for _, archived := range archives {
+			providerKey := strings.ToLower(strings.TrimSpace(archived.Provider))
+			if archived.SessionID != sessionID || (providerID != "" && providerKey != providerID) {
+				continue
+			}
+			if _, seen := seenProviders[providerKey]; seen {
+				continue
+			}
+			seenProviders[providerKey] = struct{}{}
+			matches = append(matches, archived)
+		}
+	}
+	return matches, nil
 }
 
 func createLegacyListCommand() *cobra.Command {
@@ -1135,23 +1105,72 @@ func archiveReadRoots() ([]string, error) {
 	}
 	roots := []string{outputConfig.GetHistoryDir()}
 	if loadedConfig != nil {
-		for _, root := range loadedConfig.GetAdditionalArchiveRoots() {
-			roots = append(roots, utils.ExpandTilde(root))
-		}
+		roots = append(roots, loadedConfig.GetAdditionalArchiveRoots()...)
 	}
-	return roots, nil
+	return dedupeRoots(roots), nil
 }
 
 func mutationReadRoots(sessionIDOrPath string) ([]string, error) {
-	roots, err := archiveReadRoots()
+	archiveRoots, err := archiveReadRoots()
 	if err != nil {
 		return nil, err
 	}
-	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
-	if !isPath && len(roots) > 1 {
-		roots = roots[:1]
+	if loadedConfig != nil {
+		if err := loadedConfig.ValidateAnnotatableRoots(); err != nil {
+			return nil, err
+		}
 	}
-	return roots, nil
+	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
+	if isPath {
+		return archiveRoots, nil
+	}
+	mutationRoots := archiveRoots[:1]
+	if loadedConfig != nil {
+		mutationRoots = append(mutationRoots, loadedConfig.GetAnnotatableRoots()...)
+	}
+	return dedupeRoots(mutationRoots), nil
+}
+
+func dedupeRoots(roots []string) []string {
+	seen := make(map[string]struct{}, len(roots))
+	result := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		result = append(result, root)
+	}
+	return result
+}
+
+func resolveMutationTranscript(sessionIDOrPath string) (sessionpkg.Metadata, error) {
+	roots, err := mutationReadRoots(sessionIDOrPath)
+	if err != nil {
+		return sessionpkg.Metadata{}, err
+	}
+	isPath := strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator)
+	if isPath {
+		return sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
+	}
+	metadata, err := sessionpkg.ResolveTranscriptStrict(roots, sessionIDOrPath)
+	if err == nil || !errors.Is(err, sessionpkg.ErrSessionNotFound) {
+		return metadata, err
+	}
+	archiveRoots, rootsErr := archiveReadRoots()
+	if rootsErr != nil {
+		return sessionpkg.Metadata{}, rootsErr
+	}
+	nonAnnotatable, lookupErr := sessionpkg.ResolveTranscript(archiveRoots, sessionIDOrPath)
+	if lookupErr == nil {
+		return sessionpkg.Metadata{}, fmt.Errorf(
+			"session %q found in non-annotatable root %s; pass the explicit path or add the root to archive.annotatable_roots",
+			sessionIDOrPath,
+			nonAnnotatable.Path,
+		)
+	}
+	return sessionpkg.Metadata{}, err
 }
 
 func parseSince(value string, now time.Time) (time.Time, error) {
@@ -1172,6 +1191,44 @@ func parseSince(value string, now time.Time) (time.Time, error) {
 	return timestamp, nil
 }
 
+// tagFilter is one parsed --tag value; a leading ! reserves the tag for
+// absence matching, so a literal !-prefixed tag has no positive-match escape.
+type tagFilter struct {
+	tag     string
+	negated bool
+}
+
+// parseTagFilters normalizes flag values once, up front, because matching runs
+// per archived session and validation must see the same post-prefix form the
+// matcher uses (a "! gold" that validates but strips to " gold" would negate a
+// tag that cannot exist and silently match everything).
+func parseTagFilters(values []string) ([]tagFilter, error) {
+	filters := make([]tagFilter, 0, len(values))
+	positive := make(map[string]bool)
+	negative := make(map[string]bool)
+	for _, value := range values {
+		tag := strings.TrimSpace(value)
+		negated := strings.HasPrefix(tag, "!")
+		if negated {
+			tag = strings.TrimSpace(tag[1:])
+		}
+		if tag == "" {
+			return nil, fmt.Errorf("invalid --tag value %q: tag must not be empty or bare !", value)
+		}
+		tag = strings.ToLower(tag)
+		if negated {
+			negative[tag] = true
+		} else {
+			positive[tag] = true
+		}
+		if positive[tag] && negative[tag] {
+			return nil, fmt.Errorf("contradictory --tag filters: %q is required both present and absent", tag)
+		}
+		filters = append(filters, tagFilter{tag: tag, negated: negated})
+	}
+	return filters, nil
+}
+
 func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.Time) bool {
 	if flags.provider != "" && !strings.EqualFold(metadata.Provider, flags.provider) {
 		return false
@@ -1186,15 +1243,15 @@ func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.T
 	if flags.outcome != "" && !strings.EqualFold(metadata.Outcome, flags.outcome) {
 		return false
 	}
-	if flags.tag != "" {
+	for _, filter := range flags.tagFilters {
 		found := false
-		for _, tag := range metadata.Tags {
-			if strings.EqualFold(tag, flags.tag) {
+		for _, metadataTag := range metadata.Tags {
+			if strings.EqualFold(metadataTag, filter.tag) {
 				found = true
 				break
 			}
 		}
-		if !found {
+		if found == filter.negated {
 			return false
 		}
 	}
@@ -1241,6 +1298,11 @@ func createListCommand() *cobra.Command {
 			if flags.limit < 0 {
 				return fmt.Errorf("--limit must not be negative")
 			}
+			tagFilters, err := parseTagFilters(flags.tags)
+			if err != nil {
+				return err
+			}
+			flags.tagFilters = tagFilters
 			since, err := parseSince(flags.since, time.Now())
 			if err != nil {
 				return err
@@ -1302,7 +1364,7 @@ func createListCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.project, "project", "", "filter by project name or working directory")
 	cmd.Flags().StringVar(&flags.provider, "provider", "", "filter by provider ID")
 	cmd.Flags().StringVar(&flags.outcome, "outcome", "", "filter by outcome")
-	cmd.Flags().StringVar(&flags.tag, "tag", "", "filter by tag")
+	cmd.Flags().StringArrayVar(&flags.tags, "tag", nil, "require a tag; repeat for AND filtering, prefix with ! to require absence")
 	return cmd
 }
 
@@ -1316,11 +1378,7 @@ func createOutcomeCommand() *cobra.Command {
 			if outcome != "done" && outcome != "abandoned" && outcome != "clear" {
 				return fmt.Errorf("outcome must be done, abandoned, or clear")
 			}
-			roots, err := mutationReadRoots(args[0])
-			if err != nil {
-				return err
-			}
-			metadata, err := sessionpkg.ResolveTranscript(roots, args[0])
+			metadata, err := resolveMutationTranscript(args[0])
 			if err != nil {
 				return err
 			}
@@ -1333,23 +1391,36 @@ func createOutcomeCommand() *cobra.Command {
 	}
 }
 
-func mutateGoldTag(sessionIDOrPath string, remove bool) error {
-	roots, err := mutationReadRoots(sessionIDOrPath)
-	if err != nil {
-		return err
+func validateTagName(value string) (string, error) {
+	tag := strings.TrimSpace(value)
+	if tag == "" {
+		return "", fmt.Errorf("tag must not be empty")
 	}
-	metadata, err := sessionpkg.ResolveTranscript(roots, sessionIDOrPath)
+	if strings.HasPrefix(tag, "!") {
+		return "", fmt.Errorf("tag must not start with !")
+	}
+	if strings.IndexFunc(tag, unicode.IsSpace) >= 0 {
+		return "", fmt.Errorf("tag must not contain whitespace")
+	}
+	if strings.Contains(tag, ",") {
+		return "", fmt.Errorf("tag must not contain a comma")
+	}
+	return tag, nil
+}
+
+func mutateTag(sessionIDOrPath string, tag string, remove bool) error {
+	metadata, err := resolveMutationTranscript(sessionIDOrPath)
 	if err != nil {
 		return err
 	}
 	tags := make([]string, 0, len(metadata.Tags)+1)
-	for _, tag := range metadata.Tags {
-		if !strings.EqualFold(tag, "gold") {
-			tags = append(tags, tag)
+	for _, existingTag := range metadata.Tags {
+		if !strings.EqualFold(existingTag, tag) {
+			tags = append(tags, existingTag)
 		}
 	}
 	if !remove {
-		tags = append(tags, "gold")
+		tags = append(tags, tag)
 	}
 	metadata.Tags = tags
 	return sessionpkg.WriteMetadata(metadata)
@@ -1357,22 +1428,140 @@ func mutateGoldTag(sessionIDOrPath string, remove bool) error {
 
 func createTagCommand(remove bool) *cobra.Command {
 	verb := "tag"
-	short := "Tag an archived session"
+	short := "Add a tag to an archived session"
 	if remove {
 		verb = "untag"
 		short = "Remove a tag from an archived session"
 	}
 	return &cobra.Command{
-		Use:   verb + " <session-id-or-path> gold",
+		Use:   verb + " <session-id-or-path> <tag>",
 		Short: short,
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !strings.EqualFold(strings.TrimSpace(args[1]), "gold") {
-				return fmt.Errorf("only the gold tag is currently supported")
+			tag, err := validateTagName(args[1])
+			if err != nil {
+				return err
 			}
-			return mutateGoldTag(args[0], remove)
+			return mutateTag(args[0], tag, remove)
 		},
 	}
+}
+
+func resolvePushRemote(name string) (config.PushRemote, error) {
+	remotes := []config.PushRemote{}
+	if loadedConfig != nil {
+		remotes = loadedConfig.GetPushRemotes()
+	}
+	known := make([]string, 0, len(remotes))
+	for _, remote := range remotes {
+		known = append(known, remote.Name)
+	}
+	if loadedConfig != nil {
+		remote, err := loadedConfig.ValidatePushRemote(name)
+		if err == nil {
+			return remote, nil
+		}
+		if !errors.Is(err, config.ErrPushRemoteNotFound) {
+			return config.PushRemote{}, err
+		}
+	}
+	sort.Strings(known)
+	if len(known) == 0 {
+		return config.PushRemote{}, fmt.Errorf("push remote %q is not configured; known remotes: none", name)
+	}
+	return config.PushRemote{}, fmt.Errorf("push remote %q is not configured; known remotes: %s", name, strings.Join(known, ", "))
+}
+
+func sendPushTar(ctx context.Context, remote config.PushRemote, writeTar func(io.Writer) (transfer.TarResult, error)) (transfer.TarResult, error) {
+	sshCommand := exec.CommandContext(ctx, "ssh", remote.Host, "tracer", "receive", "--dest", remote.Dest, "--stdin")
+	sshCommand.Stdout = os.Stdout
+	sshCommand.Stderr = os.Stderr
+	stdin, err := sshCommand.StdinPipe()
+	if err != nil {
+		return transfer.TarResult{}, fmt.Errorf("open ssh stdin: %w", err)
+	}
+	if err := sshCommand.Start(); err != nil {
+		return transfer.TarResult{}, fmt.Errorf("start ssh push to %s: %w", remote.Host, err)
+	}
+
+	result, writeErr := writeTar(stdin)
+	closeErr := stdin.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = sshCommand.Process.Kill()
+		_ = sshCommand.Wait()
+		if writeErr != nil {
+			return result, writeErr
+		}
+		return result, fmt.Errorf("close ssh stdin: %w", closeErr)
+	}
+	if err := sshCommand.Wait(); err != nil {
+		return result, fmt.Errorf("ssh push to %s failed: %w", remote.Host, err)
+	}
+	return result, nil
+}
+
+func createPushCommand() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "push <remote-name>",
+		Short: "Push changed archived transcripts to another Tracer host",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			remoteName := strings.TrimSpace(args[0])
+			remote, err := resolvePushRemote(remoteName)
+			if err != nil {
+				return err
+			}
+			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			if err != nil {
+				return err
+			}
+			senderHost := ""
+			if !dryRun {
+				senderHost, err = os.Hostname()
+				if err != nil {
+					return fmt.Errorf("determine sender hostname: %w", err)
+				}
+			}
+			_, err = transfer.Push(transfer.PushOptions{
+				Remote:      remote.Name,
+				ArchiveRoot: outputConfig.GetHistoryDir(),
+				StateDBPath: outputConfig.GetRuntimeStateDBPath(),
+				SenderHost:  senderHost,
+				DryRun:      dryRun,
+				Output:      cmd.OutOrStdout(),
+				Send: func(writeTar func(io.Writer) (transfer.TarResult, error)) (transfer.TarResult, error) {
+					return sendPushTar(cmd.Context(), remote, writeTar)
+				},
+			})
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print files that would be pushed without connecting")
+	return cmd
+}
+
+func createReceiveCommand() *cobra.Command {
+	var dest string
+	var fromStdin bool
+	cmd := &cobra.Command{
+		Use:   "receive --dest <path> --stdin",
+		Short: "Receive a Tracer archive tar stream from standard input",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("dest") || strings.TrimSpace(dest) == "" {
+				return fmt.Errorf("--dest is required")
+			}
+			if !cmd.Flags().Changed("stdin") || !fromStdin {
+				return fmt.Errorf("--stdin is required")
+			}
+			_, err := transfer.Receive(cmd.InOrStdin(), utils.ExpandTilde(dest))
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&dest, "dest", "", "destination archive root")
+	cmd.Flags().BoolVar(&fromStdin, "stdin", false, "read a tar stream from standard input")
+	return cmd
 }
 
 func createRootCommand() *cobra.Command {
@@ -1423,6 +1612,35 @@ func createRootCommand() *cobra.Command {
 	}
 }
 
+func createCommandTree(version string) *cobra.Command {
+	rootCmd := createRootCommand()
+	configureHelpFormatting(rootCmd)
+	rootCmd.AddCommand(
+		createSyncCommand(),
+		createWatchCommand(),
+		createGetCommand(),
+		createListCommand(),
+		createOutcomeCommand(),
+		createTagCommand(false),
+		createTagCommand(true),
+		createPushCommand(),
+		createReceiveCommand(),
+		cmdpkg.CreateConfigCommand(),
+		cmdpkg.CreateSkillCommand(version),
+		cmdpkg.CreateVersionCommand(version),
+	)
+
+	rootCmd.PersistentFlags().StringVar(&outputDir, "archive-root", outputDir, "archive root for markdown output (default: ~/.local/share/tracer/archive)")
+	rootCmd.PersistentFlags().StringVar(&debugDir, "debug-dir", debugDir, "debug output directory (default: ~/.local/state/tracer/debug)")
+	rootCmd.PersistentFlags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file names and timestamps")
+	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
+	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ~/.local/state/tracer/debug.log")
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
+	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
+
+	return rootCmd
+}
+
 func applyConfigDefaults(cfg *config.Config) {
 	if cfg == nil {
 		return
@@ -1449,35 +1667,7 @@ func main() {
 	loadedConfig = cfg
 	applyConfigDefaults(cfg)
 
-	rootCmd := createRootCommand()
-	configureHelpFormatting(rootCmd)
-	syncCmd := createSyncCommand()
-	watchCmd := createWatchCommand()
-	getCmd := createGetCommand()
-	listCmd := createListCommand()
-	outcomeCmd := createOutcomeCommand()
-	tagCmd := createTagCommand(false)
-	untagCmd := createTagCommand(true)
-	configCmd := cmdpkg.CreateConfigCommand()
-	versionCmd := cmdpkg.CreateVersionCommand(version)
-
-	rootCmd.AddCommand(syncCmd)
-	rootCmd.AddCommand(watchCmd)
-	rootCmd.AddCommand(getCmd)
-	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(outcomeCmd)
-	rootCmd.AddCommand(tagCmd)
-	rootCmd.AddCommand(untagCmd)
-	rootCmd.AddCommand(configCmd)
-	rootCmd.AddCommand(versionCmd)
-
-	rootCmd.PersistentFlags().StringVar(&outputDir, "archive-root", outputDir, "archive root for markdown output (default: ~/.local/share/tracer/archive)")
-	rootCmd.PersistentFlags().StringVar(&debugDir, "debug-dir", debugDir, "debug output directory (default: ~/.local/state/tracer/debug)")
-	rootCmd.PersistentFlags().BoolVar(&localTimeZone, "local-time-zone", localTimeZone, "use local timezone for file names and timestamps")
-	rootCmd.PersistentFlags().BoolVar(&console, "console", console, "enable error/warn/info output to stdout")
-	rootCmd.PersistentFlags().BoolVar(&logFile, "log", logFile, "write error/warn/info output to ~/.local/state/tracer/debug.log")
-	rootCmd.PersistentFlags().BoolVar(&debug, "debug", debug, "enable debug-level output (requires --console or --log)")
-	rootCmd.PersistentFlags().BoolVar(&silent, "silent", silent, "suppress all non-error output")
+	rootCmd := createCommandTree(version)
 
 	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		if !silent {

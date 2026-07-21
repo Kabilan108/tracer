@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -10,6 +11,11 @@ import (
 	"strings"
 	"syscall"
 )
+
+// ErrSessionNotFound identifies a session ID that matched no archived
+// transcript, so callers can branch with errors.Is instead of matching
+// error-message text.
+var ErrSessionNotFound = errors.New("session not found")
 
 func LockTranscript(path string) (func(), error) {
 	lockPath := path + ".lock"
@@ -28,16 +34,47 @@ func LockTranscript(path string) (func(), error) {
 }
 
 func ScanArchives(roots []string) ([]Metadata, error) {
+	return scanArchives(roots, false)
+}
+
+// ScanArchivesStrict scans archives without suppressing root traversal errors.
+func ScanArchivesStrict(roots []string) ([]Metadata, error) {
+	return scanArchives(roots, true)
+}
+
+func scanArchives(roots []string, strict bool) ([]Metadata, error) {
+	seenRoots := make(map[string]struct{})
 	seenPaths := make(map[string]struct{})
 	result := make([]Metadata, 0)
-	for _, root := range roots {
-		root = filepath.Clean(root)
-		if _, ok := seenPaths[root]; ok {
+	for _, configuredRoot := range roots {
+		root, err := filepath.EvalSymlinks(filepath.Clean(configuredRoot))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if strict {
+				return nil, fmt.Errorf("resolve archive root %s: %w", configuredRoot, err)
+			}
+			slog.Warn("Skipping inaccessible archive root", "root", configuredRoot, "error", err)
 			continue
 		}
-		seenPaths[root] = struct{}{}
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		root, err = filepath.Abs(root)
+		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("resolve archive root %s: %w", configuredRoot, err)
+			}
+			slog.Warn("Skipping unresolved archive root", "root", configuredRoot, "error", err)
+			continue
+		}
+		if _, ok := seenRoots[root]; ok {
+			continue
+		}
+		seenRoots[root] = struct{}{}
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				if strict {
+					return walkErr
+				}
 				slog.Warn("Skipping inaccessible archive path", "path", path, "error", walkErr)
 				if entry != nil && entry.IsDir() {
 					return fs.SkipDir
@@ -70,6 +107,9 @@ func ScanArchives(roots []string) ([]Metadata, error) {
 			return nil
 		})
 		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("walk archive root %s: %w", root, err)
+			}
 			slog.Warn("Archive root scan was incomplete", "root", root, "error", err)
 		}
 	}
@@ -84,6 +124,15 @@ func ScanArchives(roots []string) ([]Metadata, error) {
 }
 
 func ResolveTranscript(roots []string, sessionIDOrPath string) (Metadata, error) {
+	return resolveTranscript(roots, sessionIDOrPath, false)
+}
+
+// ResolveTranscriptStrict resolves a session ID only after every root was walked successfully.
+func ResolveTranscriptStrict(roots []string, sessionIDOrPath string) (Metadata, error) {
+	return resolveTranscript(roots, sessionIDOrPath, true)
+}
+
+func resolveTranscript(roots []string, sessionIDOrPath string, strict bool) (Metadata, error) {
 	if strings.EqualFold(filepath.Ext(sessionIDOrPath), ".md") || strings.ContainsRune(sessionIDOrPath, filepath.Separator) {
 		absolutePath, err := filepath.Abs(sessionIDOrPath)
 		if err != nil {
@@ -101,7 +150,13 @@ func ResolveTranscript(roots []string, sessionIDOrPath string) (Metadata, error)
 		return metadata, nil
 	}
 
-	sessions, err := ScanArchives(roots)
+	var sessions []Metadata
+	var err error
+	if strict {
+		sessions, err = ScanArchivesStrict(roots)
+	} else {
+		sessions, err = ScanArchives(roots)
+	}
 	if err != nil {
 		return Metadata{}, err
 	}
@@ -112,7 +167,7 @@ func ResolveTranscript(roots []string, sessionIDOrPath string) (Metadata, error)
 		}
 	}
 	if len(matches) == 0 {
-		return Metadata{}, fmt.Errorf("session %q not found", sessionIDOrPath)
+		return Metadata{}, fmt.Errorf("session %q: %w", sessionIDOrPath, ErrSessionNotFound)
 	}
 	if len(matches) > 1 {
 		paths := make([]string, 0, len(matches))
@@ -135,11 +190,12 @@ func WriteMetadata(metadata Metadata) error {
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	_, body, err := ParseFrontmatter(content)
+	current, body, err := ParseFrontmatter(content)
 	if err != nil {
 		return err
 	}
-	frontmatter, err := RenderFrontmatter(metadata)
+	current = ApplyAnnotations(current, Annotations{Outcome: metadata.Outcome, Tags: metadata.Tags})
+	frontmatter, err := RenderFrontmatter(current)
 	if err != nil {
 		return err
 	}

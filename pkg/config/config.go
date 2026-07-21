@@ -5,10 +5,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -18,6 +20,14 @@ var ignoredLegacyKeys = map[string]struct{}{
 	"version_check":         {},
 	"version_check.enabled": {},
 }
+
+var (
+	// ErrPushRemoteNotFound identifies a requested name missing from push.remotes.
+	ErrPushRemoteNotFound = errors.New("push remote is not configured")
+	pushRemoteNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	pushRemoteHostPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	pushRemoteDestPattern = regexp.MustCompile(`^/[A-Za-z0-9._/@-]+$`)
+)
 
 const (
 	// ConfigFileName is the name of the configuration file.
@@ -37,6 +47,10 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 
 # Additional read-only archive roots used by commands such as tracer list.
 # additional_roots = ["/vault/userdata/tracer-ingest"]
+
+# Additional roots where outcome and tag annotations may be written by session ID.
+# Every entry must also appear in additional_roots.
+# annotatable_roots = ["/vault/userdata/tracer-ingest"]
 
 [logging]
 # Optional debug output directory.
@@ -69,6 +83,13 @@ const defaultConfigTemplate = `# Tracer CLI Configuration
 
 # Skip project paths matching filepath globs.
 # exclude_path_globs = ["/tmp/*", "/home/user/archive/*"]
+
+# Push the primary archive to another host without overwriting annotations there.
+# Names, hosts, and destinations use restricted shell-safe character sets; see docs/configuration.md.
+# [[push.remotes]]
+# name = "sietch"
+# host = "sietch"
+# dest = "/vault/userdata/tracer-ingest/jacurutu"
 `
 
 // Config represents the complete CLI configuration.
@@ -77,6 +98,7 @@ type Config struct {
 	Logging   LoggingConfig   `toml:"logging"`
 	Archive   ArchiveConfig   `toml:"archive"`
 	Ingest    IngestConfig    `toml:"ingest"`
+	Push      PushConfig      `toml:"push"`
 }
 
 // LocalSyncConfig holds local file sync settings.
@@ -95,8 +117,9 @@ type LoggingConfig struct {
 
 // ArchiveConfig configures the global markdown archive output root.
 type ArchiveConfig struct {
-	RootDir         string   `toml:"root_dir"`
-	AdditionalRoots []string `toml:"additional_roots"`
+	RootDir          string   `toml:"root_dir"`
+	AdditionalRoots  []string `toml:"additional_roots"`
+	AnnotatableRoots []string `toml:"annotatable_roots"`
 }
 
 // IngestConfig controls provider selection and exclusion behavior for sync/watch modes.
@@ -104,6 +127,18 @@ type IngestConfig struct {
 	EnabledProviders []string `toml:"enabled_providers"`
 	ExcludeProjects  []string `toml:"exclude_projects"`
 	ExcludePathGlobs []string `toml:"exclude_path_globs"`
+}
+
+// PushConfig contains named cross-host archive destinations.
+type PushConfig struct {
+	Remotes []PushRemote `toml:"remotes"`
+}
+
+// PushRemote configures one SSH destination for archive pushes.
+type PushRemote struct {
+	Name string `toml:"name"`
+	Host string `toml:"host"`
+	Dest string `toml:"dest"`
 }
 
 // CLIOverrides holds CLI flag values that override config file settings.
@@ -120,11 +155,12 @@ type CLIOverrides struct {
 
 // ConfigValidationResult holds the result of validating a config file.
 type ConfigValidationResult struct {
-	Path        string
-	Exists      bool
-	ValidTOML   bool
-	ParseError  string
-	UnknownKeys []string
+	Path            string
+	Exists          bool
+	ValidTOML       bool
+	ParseError      string
+	ValidationError string
+	UnknownKeys     []string
 }
 
 // Load reads the user config and applies CLI overrides.
@@ -154,7 +190,9 @@ func LoadPath(configPath string, cliOverrides *CLIOverrides) (*Config, error) {
 	if cliOverrides != nil {
 		applyCLIOverrides(cfg, cliOverrides)
 	}
-
+	if err := cfg.validateArchiveRootEntries(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
@@ -205,7 +243,6 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 		return result
 	}
 	result.ValidTOML = true
-
 	undecoded := md.Undecoded()
 	unknownSections := make(map[string]bool)
 	for _, key := range undecoded {
@@ -225,8 +262,60 @@ func ValidateConfigFile(path string) ConfigValidationResult {
 		}
 		result.UnknownKeys = append(result.UnknownKeys, key.String())
 	}
+	if err := cfg.validateArchiveRootEntries(); err != nil {
+		result.ValidationError = err.Error()
+	} else if err := cfg.ValidateAnnotatableRoots(); err != nil {
+		result.ValidationError = err.Error()
+	}
 
 	return result
+}
+
+// ValidatePushRemote validates the selected remote and all names needed to resolve it.
+func (c *Config) ValidatePushRemote(selectedName string) (PushRemote, error) {
+	seen := make(map[string]struct{}, len(c.Push.Remotes))
+	for i, remote := range c.Push.Remotes {
+		if !pushRemoteNamePattern.MatchString(remote.Name) {
+			return PushRemote{}, fmt.Errorf(
+				"push.remotes[%d].name %q must match %s",
+				i,
+				remote.Name,
+				pushRemoteNamePattern,
+			)
+		}
+		if _, ok := seen[remote.Name]; ok {
+			return PushRemote{}, fmt.Errorf("push remote name %q is duplicated", remote.Name)
+		}
+		seen[remote.Name] = struct{}{}
+	}
+	for _, remote := range c.Push.Remotes {
+		if remote.Name != selectedName {
+			continue
+		}
+		if !pushRemoteHostPattern.MatchString(remote.Host) {
+			return PushRemote{}, fmt.Errorf(
+				"push remote %q: host %q must match %s",
+				remote.Name,
+				remote.Host,
+				pushRemoteHostPattern,
+			)
+		}
+		if !pushRemoteDestPattern.MatchString(remote.Dest) {
+			return PushRemote{}, fmt.Errorf(
+				"push remote %q: dest %q must be an absolute path matching %s",
+				remote.Name,
+				remote.Dest,
+				pushRemoteDestPattern,
+			)
+		}
+		return remote, nil
+	}
+	return PushRemote{}, fmt.Errorf("%w: %q", ErrPushRemoteNotFound, selectedName)
+}
+
+// GetPushRemotes returns a copy of the configured push remotes.
+func (c *Config) GetPushRemotes() []PushRemote {
+	return append([]PushRemote(nil), c.Push.Remotes...)
 }
 
 func isIgnoredLegacyKey(key toml.Key) bool {
@@ -273,7 +362,66 @@ func (c *Config) GetArchiveRoot() string {
 }
 
 func (c *Config) GetAdditionalArchiveRoots() []string {
-	return append([]string(nil), c.Archive.AdditionalRoots...)
+	return normalizeRoots(c.Archive.AdditionalRoots)
+}
+
+// GetAnnotatableRoots returns normalized additional roots where annotations may be written.
+func (c *Config) GetAnnotatableRoots() []string {
+	return normalizeRoots(c.Archive.AnnotatableRoots)
+}
+
+// ValidateAnnotatableRoots ensures annotation writes are limited to configured additional roots.
+func (c *Config) ValidateAnnotatableRoots() error {
+	additionalRoots := c.GetAdditionalArchiveRoots()
+	additional := make(map[string]struct{}, len(additionalRoots))
+	for _, root := range additionalRoots {
+		additional[root] = struct{}{}
+	}
+	for _, root := range c.GetAnnotatableRoots() {
+		if _, ok := additional[root]; !ok {
+			return fmt.Errorf("archive.annotatable_roots entry %q must also be listed in archive.additional_roots", root)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateArchiveRootEntries() error {
+	rootLists := []struct {
+		name  string
+		roots []string
+	}{
+		{name: "archive.additional_roots", roots: c.Archive.AdditionalRoots},
+		{name: "archive.annotatable_roots", roots: c.Archive.AnnotatableRoots},
+	}
+	for _, rootList := range rootLists {
+		for i, root := range rootList.roots {
+			if strings.TrimSpace(root) == "" {
+				return fmt.Errorf("%s[%d] must not be empty or whitespace", rootList.name, i)
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeRoots(configured []string) []string {
+	roots := make([]string, 0, len(configured))
+	for _, root := range configured {
+		roots = append(roots, filepath.Clean(expandTilde(root)))
+	}
+	return roots
+}
+
+// This package keeps path expansion local because importing pkg/utils would
+// pull the provider and SPI trees into the low-level configuration package.
+func expandTilde(path string) string {
+	if !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
 }
 
 func (c *Config) IsConsoleEnabled() bool {
