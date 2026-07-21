@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +13,6 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/config"
 	"github.com/tracer-ai/tracer-cli/pkg/engine"
 	sessionpkg "github.com/tracer-ai/tracer-cli/pkg/session"
-	"github.com/tracer-ai/tracer-cli/pkg/spi"
-	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
 type fileInfoStub struct {
@@ -28,87 +25,6 @@ func (f fileInfoStub) Mode() os.FileMode  { return f.mode }
 func (f fileInfoStub) ModTime() time.Time { return time.Time{} }
 func (f fileInfoStub) IsDir() bool        { return false }
 func (f fileInfoStub) Sys() any           { return nil }
-
-type getTestProvider struct {
-	name    string
-	session *spi.AgentChatSession
-	queries int
-}
-
-func (p *getTestProvider) Name() string {
-	return p.name
-}
-
-func (p *getTestProvider) Check(customCommand string) spi.CheckResult {
-	return spi.CheckResult{Success: true}
-}
-
-func (p *getTestProvider) DetectAgent(projectPath string, helpOutput bool) bool {
-	return true
-}
-
-func (p *getTestProvider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
-	if p.session == nil {
-		return nil, nil
-	}
-	return []spi.AgentChatSession{*p.session}, nil
-}
-
-func (p *getTestProvider) GetAgentChatSession(projectPath string, sessionID string, debugRaw bool) (*spi.AgentChatSession, error) {
-	p.queries++
-	if p.session == nil || p.session.SessionID != sessionID {
-		return nil, nil
-	}
-	sessionCopy := *p.session
-	return &sessionCopy, nil
-}
-
-func (p *getTestProvider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
-	return nil, nil
-}
-
-func (p *getTestProvider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	return nil
-}
-
-func newGetTestSession(providerID string, sessionID string, workspaceRoot string) *spi.AgentChatSession {
-	now := "2026-03-04T00:00:00Z"
-	return &spi.AgentChatSession{
-		SessionID: sessionID,
-		CreatedAt: now,
-		Slug:      "test-session",
-		SessionData: &schema.SessionData{
-			SchemaVersion: "1.0",
-			Provider: schema.ProviderInfo{
-				ID:      providerID,
-				Name:    providerID,
-				Version: "test",
-			},
-			SessionID:     sessionID,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-			Slug:          "test-session",
-			WorkspaceRoot: workspaceRoot,
-			Exchanges: []schema.Exchange{
-				{
-					ExchangeID: sessionID + ":0",
-					StartTime:  now,
-					EndTime:    now,
-					Messages: []schema.Message{
-						{
-							ID:        "msg-1",
-							Role:      "user",
-							Timestamp: now,
-							Content: []schema.ContentPart{
-								{Type: "text", Text: "hello from get"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-}
 
 func captureStdout(t *testing.T, run func() error) (string, error) {
 	t.Helper()
@@ -136,48 +52,18 @@ func captureStdout(t *testing.T, run func() error) (string, error) {
 	return string(data), runErr
 }
 
-func writeCodexGetSessionFile(t *testing.T, homeDir string, sessionID string, workspaceRoot string) {
+func writeArchivedGetSession(t *testing.T, archiveRoot string, providerID string, project string, sessionID string, body string) string {
 	t.Helper()
 
-	sessionDir := filepath.Join(homeDir, ".codex", "sessions", "2026", "03", "04")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("failed to create codex session dir: %v", err)
+	path := filepath.Join(archiveRoot, providerID, project, sessionID+".md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("failed to create archive directory: %v", err)
 	}
-
-	records := []map[string]interface{}{
-		{
-			"type":      "session_meta",
-			"timestamp": "2026-03-04T00:00:00Z",
-			"payload": map[string]interface{}{
-				"id":        sessionID,
-				"timestamp": "2026-03-04T00:00:00Z",
-				"cwd":       workspaceRoot,
-			},
-		},
-		{
-			"type":      "message",
-			"timestamp": "2026-03-04T00:00:01Z",
-			"payload": map[string]interface{}{
-				"role":    "user",
-				"content": "hello from command get",
-			},
-		},
+	content := "---\nsession_id: " + sessionID + "\nprovider: " + providerID + "\n---\n\n" + body
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write archived session: %v", err)
 	}
-
-	var content strings.Builder
-	for _, record := range records {
-		data, err := json.Marshal(record)
-		if err != nil {
-			t.Fatalf("failed to marshal codex record: %v", err)
-		}
-		content.Write(data)
-		content.WriteString("\n")
-	}
-
-	sessionPath := filepath.Join(sessionDir, sessionID+".jsonl")
-	if err := os.WriteFile(sessionPath, []byte(content.String()), 0o644); err != nil {
-		t.Fatalf("failed to write codex session file: %v", err)
-	}
+	return path
 }
 
 func withGetCommandGlobals(t *testing.T, archiveRoot string, debugRoot string, cfg *config.Config) {
@@ -632,126 +518,12 @@ func TestGetCommandRejectsEmptySessionID(t *testing.T) {
 	}
 }
 
-func TestFindGetMatchesDuplicateMatches(t *testing.T) {
-	sessionID := "session-1"
-	workspaceRoot := filepath.Join(t.TempDir(), "project")
-	providers := map[string]spi.Provider{
-		"claude": &getTestProvider{name: "claude", session: newGetTestSession("claude", sessionID, workspaceRoot)},
-		"codex":  &getTestProvider{name: "codex", session: newGetTestSession("codex", sessionID, workspaceRoot)},
-	}
-	pathBuilder := func(providerID string, session *spi.AgentChatSession) string {
-		return filepath.Join("/archive", providerID, "project", session.SessionID+".md")
-	}
-
-	matches, err := findGetMatches(providers, sessionID, pathBuilder)
-	if err != nil {
-		t.Fatalf("findGetMatches() error = %v", err)
-	}
-	if len(matches) != 2 {
-		t.Fatalf("findGetMatches() returned %d matches, want 2", len(matches))
-	}
-
-	err = formatGetAmbiguityError(sessionID, matches)
-	if err == nil {
-		t.Fatal("expected ambiguity error")
-	}
-	if !strings.Contains(err.Error(), "claude") || !strings.Contains(err.Error(), "codex") {
-		t.Fatalf("ambiguity error missing providers: %v", err)
-	}
-}
-
-func TestFindGetMatchesProviderFilter(t *testing.T) {
-	sessionID := "session-1"
-	workspaceRoot := filepath.Join(t.TempDir(), "project")
-	claudeProvider := &getTestProvider{name: "claude", session: newGetTestSession("claude", sessionID, workspaceRoot)}
-	codexProvider := &getTestProvider{name: "codex", session: newGetTestSession("codex", sessionID, workspaceRoot)}
-	providers := map[string]spi.Provider{"codex": codexProvider}
-	pathBuilder := func(providerID string, session *spi.AgentChatSession) string {
-		return filepath.Join("/archive", providerID, "project", session.SessionID+".md")
-	}
-
-	matches, err := findGetMatches(providers, sessionID, pathBuilder)
-	if err != nil {
-		t.Fatalf("findGetMatches() error = %v", err)
-	}
-	if len(matches) != 1 || matches[0].ProviderID != "codex" {
-		t.Fatalf("unexpected matches: %+v", matches)
-	}
-	if claudeProvider.queries != 0 {
-		t.Fatalf("filtered provider should not be queried, got %d queries", claudeProvider.queries)
-	}
-	if codexProvider.queries != 1 {
-		t.Fatalf("codex provider queries = %d, want 1", codexProvider.queries)
-	}
-}
-
-func TestWriteGetSessionMarkdownPathAndContent(t *testing.T) {
-	tempDir := t.TempDir()
-	sessionID := "session-1"
-	session := newGetTestSession("codex", sessionID, filepath.Join(tempDir, "project"))
-	opts := engine.Options{
-		HistoryDir:     filepath.Join(tempDir, "history"),
-		StatisticsPath: filepath.Join(tempDir, "stats.json"),
-		StateDBPath:    filepath.Join(tempDir, "state.db"),
-		UseUTC:         true,
-		PathBuilder: func(providerID string, session *spi.AgentChatSession) string {
-			return filepath.Join(tempDir, "history", providerID, filepath.Base(session.SessionData.WorkspaceRoot), session.SessionID+".md")
-		},
-		Debounce: 1,
-	}
-
-	if err := writeGetSessionMarkdown("codex", session, opts); err != nil {
-		t.Fatalf("writeGetSessionMarkdown() error = %v", err)
-	}
-
-	wantPath := filepath.Join(tempDir, "history", "codex", "project", sessionID+".md")
-	data, err := os.ReadFile(wantPath)
-	if err != nil {
-		t.Fatalf("failed to read markdown path %s: %v", wantPath, err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "hello from get") {
-		t.Fatalf("markdown missing session content: %s", content)
-	}
-}
-
-func TestWriteGetSessionMarkdownExcludedSession(t *testing.T) {
-	tempDir := t.TempDir()
-	sessionID := "session-1"
-	session := newGetTestSession("codex", sessionID, filepath.Join(tempDir, "excluded-project"))
-	opts := engine.Options{
-		HistoryDir:     filepath.Join(tempDir, "history"),
-		StatisticsPath: filepath.Join(tempDir, "stats.json"),
-		StateDBPath:    filepath.Join(tempDir, "state.db"),
-		UseUTC:         true,
-		PathBuilder: func(providerID string, session *spi.AgentChatSession) string {
-			return filepath.Join(tempDir, "history", providerID, filepath.Base(session.SessionData.WorkspaceRoot), session.SessionID+".md")
-		},
-		ShouldProcessSession: func(providerID string, session *spi.AgentChatSession) bool {
-			return false
-		},
-		Debounce: 1,
-	}
-
-	err := writeGetSessionMarkdown("codex", session, opts)
-	if err == nil {
-		t.Fatal("writeGetSessionMarkdown() expected exclusion error")
-	}
-	if !strings.Contains(err.Error(), "excluded by configuration") || !strings.Contains(err.Error(), "excluded-project") {
-		t.Fatalf("writeGetSessionMarkdown() error = %v, want exclusion with workspace root", err)
-	}
-}
-
 func TestGetCommandMarkdownOutput(t *testing.T) {
 	tempDir := t.TempDir()
-	homeDir := filepath.Join(tempDir, "home")
-	workspaceRoot := filepath.Join(tempDir, "workspace", "get-project")
 	sessionID := "get-markdown-session"
-	t.Setenv("HOME", homeDir)
-	writeCodexGetSessionFile(t, homeDir, sessionID, workspaceRoot)
-	withGetCommandGlobals(t, filepath.Join(tempDir, "archive"), filepath.Join(tempDir, "debug"), &config.Config{
-		Ingest: config.IngestConfig{EnabledProviders: []string{"codex"}},
-	})
+	archiveRoot := filepath.Join(tempDir, "archive")
+	writeArchivedGetSession(t, archiveRoot, "codex", "get-project", sessionID, "hello from archived get\n")
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), nil)
 
 	cmd := createGetCommand()
 	cmd.SetArgs([]string{sessionID})
@@ -760,25 +532,17 @@ func TestGetCommandMarkdownOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get command error = %v", err)
 	}
-	if !strings.Contains(stdout, "<!-- Generated by Tracer") {
-		t.Fatalf("get command stdout missing markdown header: %s", stdout)
-	}
-	if !strings.Contains(stdout, "Session "+sessionID) {
-		t.Fatalf("get command stdout missing session ID: %s", stdout)
+	if !strings.Contains(stdout, "hello from archived get") {
+		t.Fatalf("get command stdout missing archived content: %s", stdout)
 	}
 }
 
 func TestGetCommandPathOutput(t *testing.T) {
 	tempDir := t.TempDir()
-	homeDir := filepath.Join(tempDir, "home")
-	workspaceRoot := filepath.Join(tempDir, "workspace", "get-project")
 	sessionID := "get-path-session"
-	t.Setenv("HOME", homeDir)
-	writeCodexGetSessionFile(t, homeDir, sessionID, workspaceRoot)
 	archiveRoot := filepath.Join(tempDir, "archive")
-	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), &config.Config{
-		Ingest: config.IngestConfig{EnabledProviders: []string{"codex"}},
-	})
+	wantPath := writeArchivedGetSession(t, archiveRoot, "codex", "get-project", sessionID, "path output\n")
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), nil)
 
 	cmd := createGetCommand()
 	cmd.SetArgs([]string{sessionID, "-P"})
@@ -788,11 +552,104 @@ func TestGetCommandPathOutput(t *testing.T) {
 		t.Fatalf("get command error = %v", err)
 	}
 
-	wantPath := filepath.Join(archiveRoot, "codex", "get-project", sessionID+".md")
 	if strings.TrimSpace(stdout) != wantPath {
 		t.Fatalf("get command path stdout = %q, want %q", strings.TrimSpace(stdout), wantPath)
 	}
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("expected archived markdown at %s: %v", wantPath, err)
+	}
+}
+
+func TestGetCommandFiltersArchivedToolOutput(t *testing.T) {
+	tempDir := t.TempDir()
+	archiveRoot := filepath.Join(tempDir, "archive")
+	sessionID := "get-filter-session"
+	body := "<tool-use data-tool-type=\"shell\" data-tool-name=\"exec\"><details>\n<summary>Run</summary>\nsecret output\n</details></tool-use>\n"
+	path := writeArchivedGetSession(t, archiveRoot, "codex", "get-project", sessionID, body)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), nil)
+
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{sessionID, "--tool-output=none"})
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("get command error = %v", err)
+	}
+	if strings.Contains(stdout, "secret output") || !strings.Contains(stdout, "<summary>Run</summary>") {
+		t.Fatalf("get command returned unexpected filtered output: %s", stdout)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("get command modified the archived transcript")
+	}
+}
+
+func TestGetCommandPrefersEarliestArchiveRootForDuplicateProvider(t *testing.T) {
+	tempDir := t.TempDir()
+	primaryRoot := filepath.Join(tempDir, "primary")
+	additionalRoot := filepath.Join(tempDir, "additional")
+	sessionID := "duplicate-session"
+	wantPath := writeArchivedGetSession(t, primaryRoot, "codex", "primary-project", sessionID, "primary copy\n")
+	writeArchivedGetSession(t, additionalRoot, "codex", "additional-project", sessionID, "additional copy\n")
+	withGetCommandGlobals(t, primaryRoot, filepath.Join(tempDir, "debug"), &config.Config{
+		Archive: config.ArchiveConfig{AdditionalRoots: []string{additionalRoot}},
+	})
+
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{sessionID, "--path"})
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("get command error = %v", err)
+	}
+	if strings.TrimSpace(stdout) != wantPath {
+		t.Fatalf("get command path = %q, want earliest-root path %q", strings.TrimSpace(stdout), wantPath)
+	}
+}
+
+func TestGetCommandSelectsUnknownProviderCaseInsensitively(t *testing.T) {
+	tempDir := t.TempDir()
+	archiveRoot := filepath.Join(tempDir, "archive")
+	sessionID := "future-provider-session"
+	writeArchivedGetSession(t, archiveRoot, "Future-Agent", "project", sessionID, "future provider copy\n")
+	withGetCommandGlobals(t, archiveRoot, filepath.Join(tempDir, "debug"), nil)
+
+	cmd := createGetCommand()
+	cmd.SetArgs([]string{sessionID, "--provider=future-agent"})
+	stdout, err := captureStdout(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("get command error = %v", err)
+	}
+	if !strings.Contains(stdout, "future provider copy") {
+		t.Fatalf("get command did not select unknown provider archive: %s", stdout)
+	}
+}
+
+func TestParseGetTurnsFlag(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+		fail  bool
+	}{
+		{value: "", want: false},
+		{value: "user,agent", want: true},
+		{value: "agent,user", want: true},
+		{value: "user", fail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			got, err := parseGetTurnsFlag(tt.value)
+			if (err != nil) != tt.fail {
+				t.Fatalf("parseGetTurnsFlag(%q) error = %v", tt.value, err)
+			}
+			if !tt.fail && got != tt.want {
+				t.Errorf("parseGetTurnsFlag(%q) = %v, want %v", tt.value, got, tt.want)
+			}
+		})
 	}
 }

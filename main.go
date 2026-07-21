@@ -65,8 +65,10 @@ type listFlags struct {
 }
 
 type getFlags struct {
-	provider string
-	path     bool
+	provider   string
+	path       bool
+	toolOutput string
+	turns      string
 }
 
 const helpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
@@ -833,89 +835,13 @@ func pageOutput(output string) error {
 	return cmd.Run()
 }
 
-type getMatch struct {
-	ProviderID string
-	Session    *spi.AgentChatSession
-	Path       string
-}
-
-func resolveGetProviders(registry *factory.Registry, providerID string) (map[string]spi.Provider, error) {
-	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	if providerID == "" {
-		return resolveProviders(registry, nil)
-	}
-
-	provider, err := registry.Get(providerID)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]spi.Provider{providerID: provider}, nil
-}
-
-func findGetMatches(providers map[string]spi.Provider, sessionID string, pathBuilder engine.PathBuilder) ([]getMatch, error) {
-	matches := make([]getMatch, 0)
-	for _, providerID := range sortedProviderIDs(providers) {
-		provider := providers[providerID]
-		session, err := provider.GetAgentChatSession("", sessionID, false)
-		if err != nil {
-			return nil, fmt.Errorf("provider %s: %w", providerID, err)
-		}
-		if session == nil {
-			continue
-		}
-
-		matches = append(matches, getMatch{
-			ProviderID: providerID,
-			Session:    session,
-			Path:       pathBuilder(providerID, session),
-		})
-	}
-	return matches, nil
-}
-
-func formatGetAmbiguityError(sessionID string, matches []getMatch) error {
-	lines := []string{fmt.Sprintf("session %q matched multiple providers; use --provider to choose one", sessionID)}
-	for _, match := range matches {
-		lines = append(lines, fmt.Sprintf("- %s: %s", match.ProviderID, match.Path))
-	}
-	return errors.New(strings.Join(lines, "\n"))
-}
-
-func sessionWorkspaceRoot(session *spi.AgentChatSession) string {
-	if session == nil || session.SessionData == nil {
-		return ""
-	}
-	return strings.TrimSpace(session.SessionData.WorkspaceRoot)
-}
-
-func writeGetSessionMarkdown(providerID string, session *spi.AgentChatSession, opts engine.Options) error {
-	if opts.ShouldProcessSession != nil && !opts.ShouldProcessSession(providerID, session) {
-		return fmt.Errorf("session %s is excluded by configuration: %s", session.SessionID, sessionWorkspaceRoot(session))
-	}
-
-	writer, err := engine.New(opts)
-	if err != nil {
-		return err
-	}
-	_, processErr := writer.ProcessSession(providerID, session)
-	closeErr := writer.Close()
-	if processErr != nil {
-		return processErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	return nil
-}
-
 func createGetCommand() *cobra.Command {
-	registry := factory.GetRegistry()
 	flags := getFlags{}
 
 	cmd := &cobra.Command{
 		Use:   "get <session-id>",
 		Short: "Fetch a session transcript by session ID",
-		Long:  "Fetches a specific provider session by ID, refreshes its archived markdown, and prints the markdown to stdout by default.",
+		Long:  "Reads a specific archived session by ID and prints its Markdown to stdout by default.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 				return err
@@ -926,41 +852,43 @@ func createGetCommand() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			toolOutputMode, truncateLines, err := sessionpkg.ParseToolOutputFlag(flags.toolOutput)
+			if err != nil {
+				return err
+			}
+			turnsOnly, err := parseGetTurnsFlag(flags.turns)
+			if err != nil {
+				return err
+			}
+			filterOptions := sessionpkg.FilterOptions{
+				ToolOutput:    toolOutputMode,
+				TruncateLines: truncateLines,
+				TurnsOnly:     turnsOnly,
+			}
+
 			sessionID := strings.TrimSpace(args[0])
-			useUTC := !localTimeZone
+			providerID := strings.ToLower(strings.TrimSpace(flags.provider))
 
-			outputConfig, err := utils.SetupOutputConfig(outputDir, debugDir)
+			roots, err := archiveReadRoots()
 			if err != nil {
 				return err
 			}
-			if err := utils.EnsureStateDirectoryExists(outputConfig); err != nil {
-				return err
-			}
-			if err := utils.EnsureHistoryDirectoryExists(outputConfig); err != nil {
-				return err
-			}
-
-			providers, err := resolveGetProviders(registry, flags.provider)
-			if err != nil {
-				return err
-			}
-
-			opts := engineOptionsFromOutputConfig(outputConfig, useUTC, 0)
-			matches, err := findGetMatches(providers, sessionID, opts.PathBuilder)
+			matches, err := findArchivedGetMatches(roots, sessionID, providerID)
 			if err != nil {
 				return err
 			}
 			if len(matches) == 0 {
-				return fmt.Errorf("session %q not found", sessionID)
+				return fmt.Errorf("session %q not found; run 'tracer sync' to refresh the archive from provider data", sessionID)
 			}
 			if len(matches) > 1 {
-				return formatGetAmbiguityError(sessionID, matches)
+				paths := make([]string, 0, len(matches))
+				for _, match := range matches {
+					paths = append(paths, fmt.Sprintf("- %s: %s", match.Provider, match.Path))
+				}
+				return fmt.Errorf("session %q matched multiple archived transcripts; use --provider or a unique session ID:\n%s", sessionID, strings.Join(paths, "\n"))
 			}
 
 			match := matches[0]
-			if err := writeGetSessionMarkdown(match.ProviderID, match.Session, opts); err != nil {
-				return err
-			}
 
 			if flags.path {
 				fmt.Fprintln(os.Stdout, match.Path)
@@ -971,14 +899,51 @@ func createGetCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read archived markdown: %w", err)
 			}
-			_, err = os.Stdout.Write(data)
+			filtered := sessionpkg.FilterTranscript(string(data), filterOptions)
+			_, err = os.Stdout.Write([]byte(filtered))
 			return err
 		},
 	}
 
 	cmd.Flags().StringVarP(&flags.provider, "provider", "p", "", "provider to search")
 	cmd.Flags().BoolVarP(&flags.path, "path", "P", false, "print archive path instead of markdown content")
+	cmd.Flags().StringVar(&flags.toolOutput, "tool-output", "full", "tool output mode: full, none, or truncate:N")
+	cmd.Flags().StringVar(&flags.turns, "turns", "", "turns to include (accepted values: user,agent or agent,user)")
 	return cmd
+}
+
+func parseGetTurnsFlag(value string) (bool, error) {
+	switch value {
+	case "":
+		return false, nil
+	case "user,agent", "agent,user":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid --turns %q: accepted values are user,agent or agent,user", value)
+	}
+}
+
+func findArchivedGetMatches(roots []string, sessionID string, providerID string) ([]sessionpkg.Metadata, error) {
+	matches := make([]sessionpkg.Metadata, 0)
+	seenProviders := make(map[string]struct{})
+	for _, root := range roots {
+		archives, err := sessionpkg.ScanArchives([]string{root})
+		if err != nil {
+			return nil, err
+		}
+		for _, archived := range archives {
+			providerKey := strings.ToLower(strings.TrimSpace(archived.Provider))
+			if archived.SessionID != sessionID || (providerID != "" && providerKey != providerID) {
+				continue
+			}
+			if _, seen := seenProviders[providerKey]; seen {
+				continue
+			}
+			seenProviders[providerKey] = struct{}{}
+			matches = append(matches, archived)
+		}
+	}
+	return matches, nil
 }
 
 func createLegacyListCommand() *cobra.Command {

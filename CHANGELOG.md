@@ -9,6 +9,7 @@
 - Add archive-backed `tracer list` JSON output with recency sorting and filters for time, project, provider, outcome, and tags.
 - Add read-only `archive.additional_roots` support for querying synchronized archives alongside the primary archive.
 - Add explicit `outcome`, `tag`, and `untag` commands for annotating archived sessions.
+- Add read-time tool-output truncation and conversation-only filtering to `tracer get` without modifying archived Markdown.
 - Add unit, integration, race, and VHS coverage for metadata generation, archive discovery, annotation preservation, and CLI workflows.
 
 ### Changed

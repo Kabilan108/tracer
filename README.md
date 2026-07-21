@@ -59,7 +59,7 @@ tracer watch
 - `tracer watch [provider-id]`
 - `tracer list [--json] [--since <timestamp|duration>] [--limit N]`
 - `tracer list [--project <name>] [--provider <id>] [--outcome <value>] [--tag <tag>]`
-- `tracer get <session-id> [--provider <provider-id>] [--path]`
+- `tracer get <session-id> [--provider <provider-id>] [--path] [--tool-output <mode>] [--turns user,agent]`
 - `tracer outcome <session-id-or-path> <done|abandoned|clear>`
 - `tracer tag <session-id-or-path> gold`
 - `tracer untag <session-id-or-path> gold`
@@ -67,7 +67,15 @@ tracer watch
 - `tracer config check [provider-id] [-c <provider-command>]`
 - `tracer version`
 
-`tracer get` refreshes the archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude` / `-p codex` to limit lookup to one provider.
+`tracer get` reads the finished archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude` / `-p codex` to limit lookup to one provider.
+
+Tool-output filtering is applied to the archived Markdown only when it is read; reads never modify the archive. `--tool-output=full` is the byte-identical default, `--tool-output=none` keeps each tool tag and summary as a stub, and `--tool-output=truncate:N` keeps the first `N` output lines per tool call with an 8 KiB hard cap. `--turns=user,agent` removes tool-use and thinking blocks entirely.
+
+```bash
+tracer get 019abc --tool-output=none
+tracer get 019abc --tool-output=truncate:20
+tracer get 019abc --turns=user,agent
+```
 
 `tracer list` reads archived Markdown rather than provider session stores. JSON output is a recency-sorted array containing the frontmatter fields and absolute transcript path. Configure `archive.additional_roots` to include synchronized, read-only archives in the same query.
 
