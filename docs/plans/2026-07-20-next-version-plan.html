@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tracer next version — plan (issues #4, #5, release workflow)</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f2e9;--surface:#fffdf8;--line:#d9d4c8;--text:#202724;--muted:#69716d;--accent:#9b5f32;--ok:#2e7d4f;--warn:#a9700c;--bad:#b3402e}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 ui-sans-serif,system-ui,sans-serif}
+main{max-width:1080px;margin:auto;padding:48px 24px 96px}
+header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:24px}
+h1{font:700 clamp(2rem,5vw,3.6rem)/1.02 ui-serif,Georgia,serif;margin:0 0 12px}
+h2{font:700 1.6rem/1.2 ui-serif,Georgia,serif;border-bottom:1px solid var(--line);padding-bottom:8px}
+h3{margin:20px 0 8px}
+.lead{font-size:1.12rem;max-width:52rem}
+.meta,.muted{color:var(--muted)}
+nav{position:sticky;top:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(10px);display:flex;gap:16px;overflow:auto;padding:12px 0;z-index:2;border-bottom:1px solid var(--line)}
+nav a{color:var(--accent);white-space:nowrap;text-decoration:none}
+nav a:hover{text-decoration:underline}
+section{scroll-margin-top:64px;margin:44px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;min-width:0}
+.card h3{margin-top:0}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px;margin:12px 0}
+table{border-collapse:collapse;width:100%;background:var(--surface);font-size:.95rem}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:none}
+th{background:color-mix(in srgb,var(--surface) 70%,var(--bg))}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#171b19;color:#edf0ed;padding:14px 16px;border-radius:8px;overflow:auto;font-size:.88rem;line-height:1.5}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+p>code,li>code,td>code{background:color-mix(in srgb,var(--surface) 55%,var(--bg));border:1px solid var(--line);border-radius:4px;padding:0 4px}
+.badge{display:inline-block;font:600 .72rem/1 ui-monospace,monospace;letter-spacing:.04em;text-transform:uppercase;border-radius:99px;padding:4px 10px;border:1px solid var(--line);vertical-align:middle}
+.badge.m{background:color-mix(in srgb,var(--accent) 14%,var(--surface));color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.badge.q{background:color-mix(in srgb,var(--warn) 14%,var(--surface));color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,var(--line))}
+.rec{color:var(--ok);font-weight:600}
+.risk-h{color:var(--bad);font-weight:600}.risk-m{color:var(--warn);font-weight:600}.risk-l{color:var(--muted)}
+.flow{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;margin:14px 0}
+.flow .step{flex:1 1 180px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:.9rem}
+.flow .step b{display:block;margin-bottom:2px}
+.flow .arrow{align-self:center;color:var(--muted);font-size:1.1rem}
+details{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:10px 0}
+summary{cursor:pointer;font-weight:600}
+.qcard{border-left:4px solid var(--warn)}
+kbd{font-family:ui-monospace,monospace;background:color-mix(in srgb,var(--surface) 55%,var(--bg));border:1px solid var(--line);border-radius:4px;padding:0 5px}
+@media(prefers-color-scheme:dark){:root{--bg:#171b19;--surface:#202522;--line:#3b423e;--text:#edf0ed;--muted:#a9b0ac;--accent:#d79a61;--ok:#6fbf8f;--warn:#d9a441;--bad:#e07a63}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+</style>
+</head>
+<body><main>
+
+<header>
+<p class="meta">PLAN · APPROVED — ALL DECISIONS RESOLVED · 2026-07-20</p>
+<h1>Tracer next version</h1>
+<p class="lead">Ship read-time tool-output filtering (<a href="https://github.com/Kabilan108/tracer-cli/issues/4">#4</a>) and native cross-host sync with annotation preservation (<a href="https://github.com/Kabilan108/tracer-cli/issues/5">#5</a>), plus a flake-versioned release pipeline: bump <code>version</code> in <code>flake.nix</code> → CI builds Linux binaries, tags, and publishes a GitHub release with the version embedded in the binary. Together these let the vault wiki-compile pipeline drop its <code>seen.txt</code> bookkeeping and its regex transcript-stripping, and let the dotfiles <code>tracer-sync</code> unit become a thin <code>tracer push</code> wrapper.</p>
+<p class="meta">Note: the request referenced issues 5 and 6; the repo has issues 4 and 5 (issue 6 does not exist). Issue 5 cross-references #4 as the pair targeting the next version, so this plan covers <b>#4 + #5</b>.</p>
+</header>
+
+<nav aria-label="On this page">
+<a href="#scope">Scope</a>
+<a href="#flows">Current → target</a>
+<a href="#milestones">Milestones</a>
+<a href="#decisions">Open questions</a>
+<a href="#release">Release workflow</a>
+<a href="#risks">Risks</a>
+<a href="#testing">Testing</a>
+<a href="#done">Definition of done</a>
+</nav>
+
+<section id="scope">
+<h2>Scope and non-goals</h2>
+<div class="grid">
+<article class="card">
+<h3>In scope</h3>
+<ul>
+<li><code>tracer get --tool-output=full|none|truncate:N</code> — read-time filtering of <code>&lt;tool-use&gt;</code> blocks; archive files never modified.</li>
+<li><code>tracer push &lt;remote&gt;</code> + <code>tracer receive</code> — incremental cross-host transfer that merge-preserves receiver-side annotations.</li>
+<li>Annotations (<code>outcome</code>/<code>tag</code>/<code>untag</code>) on opted-in additional roots, so receiver-side pipeline tags like <code>wiki:compiled</code> work.</li>
+<li><code>tracer list</code> tag-filter upgrades: repeatable <code>--tag</code> and <code>!</code> negation (<code>--tag '!wiki:compiled'</code>), required by issue 5's payoff.</li>
+<li>Version single-sourced in <code>flake.nix</code>; CI (currently <b>none exists</b> — greenfield <code>.github/workflows/</code>): test/lint on PR, and on version bump → build Linux binaries, tag <code>vX.Y.Z</code>, create release with binaries attached.</li>
+<li><code>tracer skill</code> — prints version-matched agent instructions (SKILL.md format with YAML frontmatter), mirroring <code>pagebin skill</code>, so agent skills can defer to the installed binary instead of hardcoding CLI knowledge that goes stale.</li>
+</ul>
+</article>
+<article class="card">
+<h3>Non-goals</h3>
+<ul>
+<li>No change to the on-disk archive format — v2.1 markdown + YAML frontmatter stays as-is (filtering is read-time only).</li>
+<li>No custom network protocol or SSH library — transport rides plain <code>ssh</code> (see Q3).</li>
+<li>No bidirectional sync / pull; push-only, matching the current jacurutu → sietch topology.</li>
+<li>No new Go dependencies anticipated: <code>os/exec</code>+<code>ssh</code>, <code>archive/tar</code>, <code>crypto/sha256</code>, and the existing <code>modernc.org/sqlite</code> state store cover everything.</li>
+<li>Dotfiles changes (<code>tracer-sync</code> unit → <code>tracer push</code> wrapper, tracer-digest dropping <code>seen.txt</code>) are follow-ups in the dotfiles repo, noted but not part of this repo's work.</li>
+</ul>
+</article>
+</div>
+<h3>New files (per repo policy, listed for explicit approval)</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>File</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>pkg/session/filter.go</code> + <code>filter_test.go</code></td><td>Read-time <code>&lt;tool-use&gt;</code> block filtering over generated markdown</td></tr>
+<tr><td><code>pkg/transfer/push.go</code>, <code>receive.go</code>, <code>cursor.go</code> + tests</td><td>Push/receive engine, annotation merge, per-remote sync cursor (name avoids clash with existing <code>sync</code> command)</td></tr>
+<tr><td><code>.github/workflows/ci.yml</code></td><td>PR/push gate: gofmt check, <code>go vet</code>, <code>go test</code>, <code>nix build</code> (catches vendorHash drift)</td></tr>
+<tr><td><code>.github/workflows/release.yml</code></td><td>Version-bump-triggered build + tag + release</td></tr>
+<tr><td><code>pkg/cmd/skill.go</code></td><td><code>tracer skill</code> command printing version-matched agent instructions (pattern: <code>pagebin skill</code>)</td></tr>
+<tr><td><code>tests/tapes/get-filter.tape</code>, <code>push-receive.tape</code> (+ goldens)</td><td>VHS CLI golden tests for the new commands</td></tr>
+</tbody>
+</table></div>
+</section>
+
+<section id="flows">
+<h2>Current → target flow</h2>
+
+<h3>Transcript consumption (issue #4)</h3>
+<div class="flow">
+<div class="step"><b>Now</b>ingest renders once (<code>GenerateMarkdownWithMetadata</code> → <code>renderToolInfo</code>, <code>pkg/session/markdown.go:211</code>); consumers regex-strip <code>&lt;tool-use&gt;</code> themselves; sessions ≈85% tool-output bytes</div>
+<div class="arrow">→</div>
+<div class="step"><b>Target</b><code>tracer get &lt;id&gt; --tool-output=none</code> emits the archived markdown with tool payloads dropped to a one-line stub (tag + <code>&lt;summary&gt;</code> kept), or head-truncated with <code>truncate:N</code>. Tracer owns the format; consumers stop parsing it.</div>
+</div>
+<p>Key design consequence from the code: rendering happens <b>once at ingest</b> and <code>get</code> reads the finished <code>.md</code>. So filtering operates on the archived markdown itself — a depth-aware scan for <code>&lt;tool-use&gt;…&lt;/tool-use&gt;</code> blocks — not a re-render from provider JSONL (source files may be gone, and re-rendering wouldn't work for sessions synced from other hosts). This also makes the filter work uniformly for every archived session ever written.</p>
+
+<h3>Cross-host sync (issue #5)</h3>
+<div class="flow">
+<div class="step"><b>Now</b>dotfiles systemd unit rsyncs jacurutu → sietch <code>/vault/userdata/tracer-ingest/jacurutu/</code>; sietch reads via <code>archive.additional_roots</code> (read-only, enforced by <code>mutationReadRoots</code>, <code>main.go:1145</code>); rsync clobbers any receiver-side annotation; tracer-digest keeps parallel <code>seen.txt</code></div>
+<div class="arrow">→</div>
+<div class="step"><b>Target</b><code>tracer push sietch</code> transfers only new/changed sessions (SQLite cursor keyed on file hash), streams over <code>ssh</code> to <code>tracer receive</code> on sietch, which merge-preserves receiver annotations using the same <code>ExtractAnnotations</code>/<code>ApplyAnnotations</code> machinery sync/watch already uses locally (<code>pkg/session/metadata.go:120</code>, <code>pkg/engine/engine.go:363</code>). Receiver tags sessions <code>wiki:compiled</code>; state lives in frontmatter and survives re-pushes.</div>
+</div>
+
+<h3>Release (new)</h3>
+<div class="flow">
+<div class="step"><b>Now</b>version duplicated: <code>flake.nix:16</code> hardcodes <code>0.1.0</code>, <code>main.go:35</code> defaults <code>"dev"</code>, <code>just build</code> passes no ldflags; no <code>.github/</code> at all</div>
+<div class="arrow">→</div>
+<div class="step"><b>Target</b><code>flake.nix</code> is the single version source. Push to <code>main</code> that changes it → CI: tests → <code>nix build</code> → tag <code>vX.Y.Z</code> → GitHub release with Linux binaries; <code>tracer version</code> prints the release version because the existing ldflags injection (<code>-X main.version</code>) is reused everywhere, including <code>just build</code>.</div>
+</div>
+</section>
+
+<section id="milestones">
+<h2>Milestones</h2>
+<p class="muted">Ordered so each lands independently. M1 first: it's zero-risk plumbing and every later milestone then ships through the new release pipe.</p>
+
+<article class="card">
+<h3><span class="badge m">M1</span> Version plumbing + CI + release workflow</h3>
+<ul>
+<li><b>Files:</b> <code>flake.nix</code>, <code>justfile</code>, <code>.github/workflows/ci.yml</code>, <code>.github/workflows/release.yml</code>. No Go code changes — <code>var version = "dev"</code> (<code>main.go:35</code>) and <code>cmd.CreateVersionCommand</code> already exist.</li>
+<li><b>Behavior:</b> CI gate on PRs/pushes (gofmt, <code>go vet</code>, <code>go test</code>, <code>nix build</code>). Release workflow per the <a href="#release">design below</a>. <code>just build</code> embeds <code>dev-&lt;git-sha&gt;</code> locally so a dev binary is distinguishable from a release.</li>
+<li><b>Acceptance:</b> bump version → push → release <code>vX.Y.Z</code> appears with binary + checksums; <code>./tracer version</code> from the release asset prints the flake version; re-running on an already-tagged version is a no-op.</li>
+<li><b>Rollback:</b> delete workflows; nothing else depends on them.</li>
+</ul>
+</article>
+
+<article class="card">
+<h3><span class="badge m">M2</span> Read-time tool-output filtering (issue #4)</h3>
+<ul>
+<li><b>Files:</b> new <code>pkg/session/filter.go</code>; <code>main.go</code> (<code>getFlags</code>, <code>createGetCommand</code>).</li>
+<li><b>Behavior:</b> <code>--tool-output=full</code> (default, byte-identical passthrough), <code>none</code> (keep <code>&lt;tool-use&gt;</code> open tag + <code>&lt;summary&gt;</code> line as the stub — the <code>data-tool-type</code>/<code>data-tool-name</code> attrs and provider summaries are already there — drop the body), <code>truncate:N</code> (keep first N <b>lines</b> per block + <code>… (truncated)</code> marker, with a ~8&nbsp;KB/block hard cap against pathological single lines), and <code>--turns=user,agent</code> (conversation-only view: drops <code>&lt;tool-use&gt;</code> and <code>&lt;think&gt;</code> blocks entirely). Depth-aware tag scanner handles tool output that itself contains literal <code>&lt;tool-use&gt;</code> markup (real risk: digest agents read tracer's own archive, so transcripts of transcripts exist).</li>
+<li><b>Acceptance:</b> unit tests incl. nested-tag fixture; <code>full</code> is byte-identical; frontmatter/user/agent/<code>&lt;think&gt;</code> untouched; archive file mtime/content unchanged after any <code>get</code>. Golden VHS tape.</li>
+<li><b>Decisions applied:</b> Q1 = lines; Q2 = <code>--turns</code> included in this milestone.</li>
+<li><b>Rollback:</b> flag removal; default path untouched.</li>
+</ul>
+</article>
+
+<article class="card">
+<h3><span class="badge m">M3</span> <code>list</code> tag filtering: repeatable + negation</h3>
+<ul>
+<li><b>Files:</b> <code>main.go</code> (<code>listFlags.tag</code> → <code>[]string</code> via <code>StringArrayVar</code>; <code>metadataMatches</code>, <code>main.go:1189</code>).</li>
+<li><b>Behavior:</b> each <code>--tag</code> must match (AND); <code>!</code> prefix negates (<code>--tag '!wiki:compiled'</code> = tag absent). Tags are already lowercased/deduped on write (<code>normalizeTags</code>) so matching stays simple.</li>
+<li><b>Acceptance:</b> table-driven tests over positive/negative/mixed sets; <code>tracer list --json --since 168h --tag '!wiki:compiled'</code> returns exactly the unprocessed set against fixtures.</li>
+<li><b>Rollback:</b> single-flag behavior is a strict subset; no migration.</li>
+</ul>
+</article>
+
+<article class="card">
+<h3><span class="badge m">M4</span> <code>tracer push</code> / <code>tracer receive</code> (issue #5 core)</h3>
+<ul>
+<li><b>Files:</b> new <code>pkg/transfer/</code>; <code>pkg/config/config.go</code> (<code>[[push.remotes]]</code>); <code>main.go</code> command wiring; <code>docs/configuration.md</code>.</li>
+<li><b>Config:</b>
+<pre>[[push.remotes]]
+name = "sietch"
+host = "sietch"                                  # ssh destination (alias from ~/.ssh/config)
+dest = "/vault/userdata/tracer-ingest/jacurutu"  # receiving root on the remote</pre></li>
+<li><b>Behavior (sender):</b> scan primary archive (<code>archiveReadRoots()[0]</code> only — additional roots are never re-pushed), compute sha256 of each file's bytes, diff against per-remote cursor table <code>push_state(remote, rel_path, content_hash, pushed_at)</code> in the existing SQLite state store (<code>pkg/engine/state_store.go</code> pattern). Hashing file bytes — not the engine's markdown <code>content_hash</code> — means sender-side annotation edits also propagate. Stream changed files as a tar over <code>ssh &lt;host&gt; tracer receive --dest &lt;dest&gt; --stdin</code>; update cursor only after the receiver acks success, so failed pushes retry naturally.</li>
+<li><b>Behavior (receiver):</b> for each incoming file: <code>LockTranscript</code> → if a copy exists, <code>ParseFrontmatter</code> both, merge annotations (receiver's <code>outcome</code> wins if set; tags = union — pending Q4) → temp file + atomic rename, reusing the exact locking/atomicity pattern of <code>WriteMetadata</code> (<code>pkg/session/archive.go:127</code>). Paths constrained under <code>dest</code> (reject <code>..</code>/absolute names).</li>
+<li><b>Acceptance:</b> unit tests for cursor diffing and merge matrix (no local copy / local annotations / both annotated / interrupted push); end-to-end test with a local <code>receive --stdin</code> pipe (no ssh needed); re-push of a receiver-tagged session preserves <code>wiki:compiled</code>. slog wide events: per-push summary (counted, transferred bytes, skipped, failed).</li>
+<li><b>Decisions applied:</b> Q3 = ssh + remote <code>receive</code> (per-push invocation, <b>no daemon</b> and no new systemd unit on the receiver); Q4 = tags union, outcome receiver-wins, sidecar rejected. Requires the receiver to run a tracer ≥ this version — acceptable since M1 gives sietch a release channel.</li>
+<li><b>Rollback:</b> the rsync unit keeps working untouched throughout; push is purely additive.</li>
+</ul>
+</article>
+
+<article class="card">
+<h3><span class="badge m">M5</span> Annotations on additional roots (issue #5, receiver side)</h3>
+<ul>
+<li><b>Files:</b> <code>pkg/config/config.go</code>, <code>main.go</code> (<code>mutationReadRoots</code>, <code>main.go:1145</code>), <code>docs/configuration.md</code>.</li>
+<li><b>Behavior:</b> additional roots gain opt-in annotation writes — <code>annotatable_roots = [...]</code> (or per-root table, pending Q5's shape) — so <code>tracer tag &lt;session-id&gt; wiki:compiled</code> on sietch resolves into the ingest root and writes frontmatter. Roots stay read-only for ingest/regeneration; only <code>outcome</code>/<code>tag</code>/<code>untag</code> unlock. Safe <em>only because</em> M4's merge-preserve replaces clobbering rsync — ordering matters: M5 must not be enabled on a root still fed by raw rsync.</li>
+<li><b>Acceptance:</b> tag on an annotatable-root session persists and survives a subsequent <code>tracer push</code> from the origin host; tag on a non-annotatable root still errors; ambiguous session-id across roots errors with candidate paths.</li>
+<li><b>Rollback:</b> config opt-in; removing the key restores read-only behavior.</li>
+</ul>
+</article>
+
+<article class="card">
+<h3><span class="badge m">M6</span> <code>tracer skill</code> — version-matched agent instructions</h3>
+<ul>
+<li><b>Files:</b> new <code>pkg/cmd/skill.go</code> (fits the existing <code>pkg/cmd</code> pattern alongside <code>version.go</code>/<code>help.go</code>); <code>main.go</code> wiring.</li>
+<li><b>Behavior:</b> <code>tracer skill</code> prints a SKILL.md-format document to stdout — YAML frontmatter (<code>name: tracer</code>, one-line <code>description</code>) followed by concise agent instructions, exactly the <code>pagebin skill</code> pattern (<code>~/repos/cli/pagebin/src/cli.ts</code>, <code>skillText()</code>). Takes no arguments; interpolates the ldflags-injected <code>version</code> into the heading (<code>CreateSkillCommand(version string)</code>, mirroring <code>CreateVersionCommand</code>). Content covers: archive layout (<code>&lt;root&gt;/&lt;provider&gt;/&lt;project&gt;/&lt;session-id&gt;.md</code> + frontmatter fields), <code>list</code> filtering incl. <code>--json</code>/<code>--since</code>/<code>--tag</code>/negation, <code>get</code> incl. <code>--tool-output</code> modes and when to use each, annotation commands (<code>outcome</code>/<code>tag</code>/<code>untag</code>) and the primary-vs-annotatable-root rules, <code>push</code>/<code>receive</code> usage, and the "archive files are never modified by reads" guarantee. Kept as a Go string constant — no templating machinery.</li>
+<li><b>Ordering:</b> lands last so the text documents the final CLI surface of this release; updating it becomes part of every future flag change (noted in AGENTS.md).</li>
+<li><b>Acceptance:</b> output parses as valid YAML frontmatter + markdown; heading version equals <code>tracer version</code>; every flag it mentions exists (guard: table-driven test running <code>--help</code> for each documented command and asserting mentioned flags appear); VHS golden tape.</li>
+<li><b>Rollback:</b> additive command; removal affects nothing.</li>
+</ul>
+</article>
+
+<details><summary>Downstream follow-ups (dotfiles repo, after release)</summary>
+<ul>
+<li><code>tracer-sync</code> systemd unit: replace rsync invocation with <code>tracer push sietch</code>.</li>
+<li><code>tracer-digest</code>: delete <code>seen.txt</code>; select with <code>tracer list --json --since … --tag '!wiki:compiled'</code>, mark with <code>tracer tag &lt;id&gt; wiki:compiled</code>, and pre-render slim transcripts via <code>tracer get --tool-output=none</code> (issue 4's ~5-7× token cut).</li>
+<li>Home-manager: <code>programs.tracer.settings</code> passes the new <code>[[push.remotes]]</code>/annotatable-roots keys through unchanged (<code>nix/hm-module.nix</code> renders arbitrary TOML).</li>
+<li>Agent setup: a thin <code>~/.claude/skills/tracer</code> skill whose body says "run <code>tracer skill</code> for exact, version-matched instructions" — same relationship pagebin's skill has to <code>pagebin skill</code>.</li>
+</ul>
+</details>
+</section>
+
+<section id="decisions">
+<h2><span class="badge q">Resolved</span> Decisions</h2>
+<p>All six resolved by Kabilan on 2026-07-20. Option tables kept for the record; the decided option is marked on each card.</p>
+
+<article class="card qcard">
+<h3>Q1 — <code>truncate:N</code>: lines or bytes? <span class="rec">✓ Decided: lines</span></h3>
+<p class="rec">N = lines per block, with a secondary hard cap (~8&nbsp;KB/block) against pathological single lines.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><b>Lines</b> <span class="rec">(recommended)</span></td><td>Matches how you eyeball logs ("first 40 lines of build output"); stable across reflow; issue text says "first N lines/bytes" with lines first</td><td>A single pathological long line can still be huge (mitigate: secondary hard cap ~8&nbsp;KB/block)</td></tr>
+<tr><td>Bytes</td><td>Directly bounds token cost</td><td>Cuts mid-line/mid-word; harder to reason about when choosing N</td></tr>
+<tr><td>Both (<code>truncate:40</code> lines, <code>truncate:2kb</code> bytes)</td><td>Flexible</td><td>Two code paths + parsing for a flag with one real consumer today</td></tr>
+</tbody>
+</table></div>
+</article>
+
+<article class="card qcard">
+<h3>Q2 — Include <code>--turns=user,agent</code> (conversation-only view) now? <span class="rec">✓ Decided: include in M2</span></h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><b>Yes, in M2</b> <span class="rec">(recommended)</span></td><td>~Free once the block scanner exists (drop <code>&lt;tool-use&gt;</code> and <code>&lt;think&gt;</code> blocks); digest will want it for the cheapest pass</td><td>Slightly larger flag surface to stabilize</td></tr>
+<tr><td>Defer</td><td>Issue says <code>--tool-output</code> alone unblocks the pipeline; smallest M2</td><td>Second release needed when digest wants it</td></tr>
+</tbody>
+</table></div>
+</article>
+
+<article class="card qcard">
+<h3>Q3 — Push transport <span class="rec">✓ Decided: A — ssh + remote <code>tracer receive</code></span></h3>
+<p class="rec">Confirmed detail: <b>no persistent daemon on sietch.</b> <code>receive</code> is invoked per-push by the sender over ssh, reads the tar stream from stdin, merges, writes, exits — the rsync-remote-side / <code>git receive-pack</code> model. No open port, no new systemd unit on the receiver.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><b>A: <code>ssh</code> → remote <code>tracer receive</code></b> <span class="rec">(recommended)</span></td><td>Receiver-side merge is real code, not rsync tricks — reuses <code>ApplyAnnotations</code>; incremental via cursor; no new deps; systemd unit becomes one line; structured slog events on both ends</td><td>Requires tracer installed on the receiver (true for sietch; M1's release pipe keeps it current); version-skew care across upgrades</td></tr>
+<tr><td>B: smarter rsync wrapper</td><td>No receiver binary needed</td><td><b>Cannot</b> merge-preserve receiver annotations — the core requirement; whole-file copy still clobbers. Fails issue 5</td></tr>
+<tr><td>C: pure-Go SSH lib (<code>golang.org/x/crypto/ssh</code>)</td><td>No <code>ssh</code> binary dependency</td><td>New dependency + key/agent/known-hosts handling reimplemented; system <code>ssh</code> with your existing config is strictly simpler on this fleet</td></tr>
+</tbody>
+</table></div>
+</article>
+
+<article class="card qcard">
+<h3>Q4 — Annotation merge semantics on re-push <span class="rec">✓ Decided: tags union · outcome receiver-wins · no sidecar</span></h3>
+<p>When the receiver's copy already has annotations and the sender pushes an updated file:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><b>Tags: union · outcome: receiver wins if set</b> <span class="rec">(recommended)</span></td><td>Receiver pipeline tags (<code>wiki:compiled</code>) survive; sender-side tag additions still arrive; matches issue's "keeps them" wording while being strictly more informative</td><td>A tag deliberately removed on the receiver reappears if the sender still has it (in practice sender never carries pipeline tags — document as a known limitation)</td></tr>
+<tr><td>Receiver wins wholesale (tags + outcome, no union)</td><td>Simplest mental model; exact "keeps them"</td><td>Sender annotation improvements never propagate after first receiver touch</td></tr>
+<tr><td>Sidecar overlay store on receiver (issue's alternative)</td><td>Roots stay fully read-only; no merge logic in transfer</td><td>Splits annotation truth across frontmatter + DB; <code>list</code>/<code>get</code>/digest must consult both; not "inspectable in the file" — loses issue 5's stated payoff. <span class="risk-h">Recommend rejecting</span> (this also answers issue 5's "alternatively/additionally")</td></tr>
+</tbody>
+</table></div>
+</article>
+
+<article class="card qcard">
+<h3>Q5 — Release binaries: nix-built x86_64 only, or cross-compiled matrix? <span class="rec">✓ Decided: nix-built <code>linux-amd64</code> only</span></h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Option</th><th>Pros</th><th>Cons</th></tr></thead>
+<tbody>
+<tr><td><b>Nix build, <code>linux-amd64</code> only</b> <span class="rec">(recommended)</span></td><td>Bit-identical to what the flake/HM module deploys; CI validates <code>vendorHash</code> for free; <code>CGO_ENABLED=0</code> → fully static, portable asset; flake is <code>x86_64-linux</code>-only today anyway</td><td>No arm64 asset (fleet is x86_64; add later by widening <code>systems</code>)</td></tr>
+<tr><td><code>setup-go</code> matrix (amd64 + arm64)</td><td>Faster CI; arm64 now</td><td>Release artifact built differently from the deployed path; version/ldflags logic duplicated outside the flake; vendorHash drift caught later</td></tr>
+</tbody>
+</table></div>
+</article>
+
+<article class="card qcard">
+<h3>Q6 — Next version number? <span class="rec">✓ Decided: <code>0.2.0</code></span></h3>
+<p>Flake says <code>0.1.0</code>; the markdown <em>format</em> banner says v2.1.0 (separate concern — format version stays untouched). This release is the largest feature set since the archive rework. <span class="rec">Recommend <code>0.2.0</code></span> — stays semver-honest pre-1.0; the alternative is jumping to <code>2.2.0</code> to align binary and format versions, which couples two things that change at different rates. Also fine to split: M1 ships as <code>0.1.1</code> to prove the pipeline, features land in <code>0.2.0</code>.</p>
+</article>
+</section>
+
+<section id="release">
+<h2>Release workflow design (M1 detail)</h2>
+<p><code>flake.nix</code> becomes the single source of truth; everything else derives from it. Per Q6, this feature set ships as <b><code>v0.2.0</code></b>.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Surface</th><th>Change</th></tr></thead>
+<tbody>
+<tr><td><code>flake.nix</code></td><td>Keep <code>version = "X.Y.Z"</code> (line 16) as the canonical value; existing <code>buildPhase</code> ldflags already inject it — unchanged</td></tr>
+<tr><td><code>justfile</code></td><td><code>build</code> gains <code>-ldflags "-X main.version=dev-$(git rev-parse --short HEAD)"</code> so local binaries self-identify</td></tr>
+<tr><td><code>ci.yml</code></td><td>on PR + push to main: <code>gofmt -l</code> (fail if nonempty), <code>go vet ./...</code>, <code>go test ./...</code>, <code>nix build .#tracer</code> (vendorHash gate)</td></tr>
+<tr><td><code>release.yml</code></td><td>below</td></tr>
+</tbody>
+</table></div>
+<pre># .github/workflows/release.yml (sketch)
+on:
+  push: { branches: [main], paths: [flake.nix] }
+  workflow_dispatch: {}
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v14
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - id: v
+        run: echo "version=$(nix eval --raw .#tracer.version)" >> "$GITHUB_OUTPUT"
+      - name: Skip if already released
+        run: git fetch --tags && (git rev-parse "v${{ steps.v.outputs.version }}" 2>/dev/null && exit 78 || true)
+      - run: nix build .#tracer          # tests already gated by ci.yml on the same push
+      - name: Package
+        run: |
+          install -D result/bin/tracer dist/tracer-linux-amd64
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Tag + release
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          git tag "v${{ steps.v.outputs.version }}" && git push origin "v${{ steps.v.outputs.version }}"
+          gh release create "v${{ steps.v.outputs.version }}" dist/* --generate-notes</pre>
+<ul>
+<li><b>Trigger semantics:</b> <code>paths: [flake.nix]</code> narrows the trigger; the tag-exists check makes it idempotent, so a flake.nix edit that doesn't change the version (e.g. <code>vendorHash</code>) is a clean no-op. <code>workflow_dispatch</code> covers manual re-runs.</li>
+<li><b>Version verification:</b> release job runs <code>result/bin/tracer version</code> and asserts it equals the flake version before publishing — closes the "binary has the version properly stored" requirement end-to-end.</li>
+<li><b>Version extraction</b> uses <code>nix eval</code>, not grep — immune to formatting changes in the flake.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2>Risks</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Risk</th><th>L×I</th><th>Mitigation / verification</th></tr></thead>
+<tbody>
+<tr><td>Tool output containing literal <code>&lt;tool-use&gt;</code>/<code>&lt;/tool-use&gt;</code> (transcripts-of-transcripts) corrupts filtering</td><td><span class="risk-m">M×M</span></td><td>Depth-counting scanner, not regex; dedicated nested fixture in <code>filter_test.go</code>; <code>full</code> mode always byte-identical passthrough</td></tr>
+<tr><td>Race: <code>receive</code> writes while receiver-side <code>tag</code> or a reader touches the same file</td><td><span class="risk-m">M×M</span></td><td>Reuse existing <code>LockTranscript</code> flock + temp-file/rename (same discipline as <code>WriteMetadata</code>/<code>processSession</code>); concurrency test in <code>pkg/transfer</code></td></tr>
+<tr><td>Version skew: old <code>receive</code> on sietch meets new <code>push</code></td><td><span class="risk-m">M×L</span></td><td>Handshake line with protocol version before streaming; clear error tells operator to upgrade; M1's release pipe makes upgrading trivial</td></tr>
+<tr><td>Cursor says "pushed" but transfer half-failed</td><td><span class="risk-l">L×M</span></td><td>Cursor updated only per-file after receiver ack; interrupted-push test; <code>tracer push --dry-run</code> shows pending set for inspection</td></tr>
+<tr><td>rsync unit and <code>tracer push</code> both active during migration → rsync clobbers receiver tags</td><td><span class="risk-m">M×H</span></td><td>Sequencing: enable M5 annotations on the ingest root only after the dotfiles unit is switched to <code>tracer push</code>; called out in M5 acceptance</td></tr>
+<tr><td>Malicious/corrupt tar paths on receive (<code>../</code> escape)</td><td><span class="risk-l">L×H</span></td><td>Reject absolute/parent-traversal names; all writes constrained under <code>dest</code>; unit test</td></tr>
+<tr><td><code>vendorHash</code> drift breaks release build on version-bump day</td><td><span class="risk-m">M×L</span></td><td><code>ci.yml</code> runs <code>nix build</code> on every PR, so drift is caught at dep-change time, not release time</td></tr>
+<tr><td>Tag negation syntax <code>!tag</code> collides with shell history expansion</td><td><span class="risk-l">L×L</span></td><td>Docs show single-quoted form; optionally accept <code>--not-tag</code> alias if it bites</td></tr>
+</tbody>
+</table></div>
+</section>
+
+<section id="testing">
+<h2>Test strategy and observability</h2>
+<ul>
+<li><b>Unit (table-driven, per repo convention):</b> <code>filter_test.go</code> (modes × nested tags × empty blocks × frontmatter preservation); <code>metadataMatches</code> tag matrix; <code>pkg/transfer</code> merge matrix + cursor diffing + path-traversal rejection.</li>
+<li><b>Integration:</b> push→receive end-to-end through a local pipe (no ssh required in CI): populate a fixture archive, push twice, tag on receiver between pushes, assert tag survives and only-changed files transfer.</li>
+<li><b>VHS goldens</b> (per <code>cli-test</code> conventions, extending <code>tests/tapes/</code>): <code>get-filter.tape</code> against <code>tests/fixtures/archive</code>; <code>list</code> negation tape; <code>push-receive.tape</code> against a tmp archive.</li>
+<li><b>Observability:</b> wide slog events per existing convention — one summary event per push (<code>remote</code>, <code>scanned</code>, <code>transferred</code>, <code>bytes</code>, <code>skipped</code>, <code>failed</code>, <code>duration</code>), one per receive, one per filtered get (<code>mode</code>, <code>blocks_filtered</code>, <code>bytes_saved</code>).</li>
+<li><b>Gates:</b> <code>go vet ./...</code> + <code>gofmt</code> after every change, <code>go test ./...</code> after every milestone (repo policy), CI enforces the same.</li>
+</ul>
+</section>
+
+<section id="done">
+<h2>Definition of done</h2>
+<ul>
+<li>Bumping <code>version</code> in <code>flake.nix</code> on main produces, unattended: green tests → tagged <code>vX.Y.Z</code> → GitHub release with <code>tracer-linux-amd64</code> + checksums, and that binary's <code>tracer version</code> prints exactly the flake version.</li>
+<li><code>tracer get &lt;id&gt; --tool-output=none</code> yields a conversation-narrative transcript with one-line tool stubs; <code>truncate:N</code> bounds each block; archive bytes untouched.</li>
+<li>On sietch: <code>tracer tag &lt;id&gt; wiki:compiled</code> works on ingested sessions, and the tag survives the next <code>tracer push</code> from jacurutu.</li>
+<li><code>tracer list --json --since 168h --tag '!wiki:compiled'</code> returns the unprocessed set — <code>seen.txt</code> is deletable.</li>
+<li><code>tracer skill</code> prints accurate, version-matched instructions covering every command shipped in this release.</li>
+<li><code>README.md</code>, <code>docs/configuration.md</code>, and <code>CHANGELOG.md</code> updated (repo policy); issues #4 and #5 closable with links to the release.</li>
+</ul>
+</section>
+
+</main></body>
+</html>
