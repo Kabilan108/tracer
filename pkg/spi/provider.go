@@ -25,7 +25,6 @@ type AgentChatSession struct {
 	CreatedAt   string              // Stable ISO 8601 timestamp when session was created
 	Slug        string              // Stable human-readable but file name safe slug, often derived from first user message
 	SessionData *schema.SessionData // Structured session data in unified format
-	RawData     string              // Raw session data (e.g., JSON blobs for Cursor CLI, JSONL for Claude Code and Codex CLI, etc.)
 }
 
 // SessionMetadata contains lightweight metadata about a session without full content

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `tracer watch` batches write events per transcript and parses off the event loop, at most once per second and less often for transcripts that are slow to parse. Previously every write event re-parsed the whole file, so a growing 100 MB transcript cost about a CPU-second per append (#14).
+- The Home Manager `tracer-watch` service runs with `Nice=10`, `CPUWeight=20`, and `IOSchedulingClass=idle` by default so archiving yields to interactive work.
+
+### Removed
+
+- Remove `AgentChatSession.RawData` and the watcher's per-callback session fingerprint. The engine's rendered-markdown hash already skips unchanged sessions, and building the raw copy doubled memory and re-encoded every record on each update.
+
 ## 0.2.2
 
 ### Added

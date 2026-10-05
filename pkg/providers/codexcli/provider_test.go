@@ -89,15 +89,14 @@ func TestLoadCodexSessionMeta(t *testing.T) {
 }
 
 // TestProcessSessionRecords was removed because processSessionRecords is not exported
-// The logic is tested indirectly through readSessionRawData and processSessionToAgentChat
+// The logic is tested indirectly through readSessionRecords and processSessionToAgentChat
 
-func TestReadSessionRawData(t *testing.T) {
+func TestReadSessionRecords(t *testing.T) {
 	tests := []struct {
 		name            string
 		content         string
 		wantError       bool
 		wantRecordCount int
-		wantRawLines    int
 	}{
 		{
 			name: "valid session file",
@@ -107,14 +106,12 @@ func TestReadSessionRawData(t *testing.T) {
 `,
 			wantError:       false,
 			wantRecordCount: 3,
-			wantRawLines:    3,
 		},
 		{
 			name:            "empty file",
 			content:         "",
 			wantError:       false,
 			wantRecordCount: 0,
-			wantRawLines:    0,
 		},
 		{
 			name: "file with empty lines",
@@ -125,7 +122,6 @@ func TestReadSessionRawData(t *testing.T) {
 `,
 			wantError:       false,
 			wantRecordCount: 2,
-			wantRawLines:    2, // Empty lines not included in raw output
 		},
 		{
 			name: "file with malformed JSON",
@@ -135,7 +131,6 @@ func TestReadSessionRawData(t *testing.T) {
 `,
 			wantError:       false,
 			wantRecordCount: 2, // Malformed line skipped but parsing continues
-			wantRawLines:    3, // Raw data includes all non-empty lines
 		},
 		{
 			name: "very long line (under limit)",
@@ -143,7 +138,6 @@ func TestReadSessionRawData(t *testing.T) {
 `,
 			wantError:       false,
 			wantRecordCount: 1,
-			wantRawLines:    1,
 		},
 	}
 
@@ -156,34 +150,26 @@ func TestReadSessionRawData(t *testing.T) {
 			}
 
 			// Test the function
-			records, rawData, err := readSessionRawData(tmpFile)
+			records, err := readSessionRecords(tmpFile)
 
 			// Check error expectation
 			if tt.wantError && err == nil {
-				t.Error("readSessionRawData() expected error, got nil")
+				t.Error("readSessionRecords() expected error, got nil")
 			}
 			if !tt.wantError && err != nil {
-				t.Errorf("readSessionRawData() unexpected error: %v", err)
+				t.Errorf("readSessionRecords() unexpected error: %v", err)
 			}
 
 			// Check record count
 			if len(records) != tt.wantRecordCount {
-				t.Errorf("readSessionRawData() record count = %d, want %d", len(records), tt.wantRecordCount)
+				t.Errorf("readSessionRecords() record count = %d, want %d", len(records), tt.wantRecordCount)
 			}
 
-			// Check raw data line count
-			rawLines := 0
-			if len(rawData) > 0 {
-				rawLines = len(strings.Split(strings.TrimSpace(rawData), "\n"))
-			}
-			if rawLines != tt.wantRawLines {
-				t.Errorf("readSessionRawData() raw line count = %d, want %d", rawLines, tt.wantRawLines)
-			}
 		})
 	}
 }
 
-func TestReadSessionRawData_ExceedsMaxSize(t *testing.T) {
+func TestReadSessionRecords_ExceedsMaxSize(t *testing.T) {
 	// Create a line that exceeds maxReasonableLineSize
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "huge.jsonl")
@@ -199,12 +185,12 @@ func TestReadSessionRawData_ExceedsMaxSize(t *testing.T) {
 			t.Fatalf("Failed to create test file: %v", err)
 		}
 
-		records, _, err := readSessionRawData(tmpFile)
+		records, err := readSessionRecords(tmpFile)
 		if err != nil {
-			t.Errorf("readSessionRawData() unexpected error for normal file: %v", err)
+			t.Errorf("readSessionRecords() unexpected error for normal file: %v", err)
 		}
 		if len(records) != 1 {
-			t.Errorf("readSessionRawData() should parse normal file, got %d records", len(records))
+			t.Errorf("readSessionRecords() should parse normal file, got %d records", len(records))
 		}
 	})
 }

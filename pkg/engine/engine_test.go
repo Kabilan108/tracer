@@ -79,7 +79,6 @@ func newSession(providerID, providerName, sessionID, slug, userText string) spi.
 		SessionID: sessionID,
 		CreatedAt: now,
 		Slug:      slug,
-		RawData:   "{}",
 		SessionData: &schema.SessionData{
 			SchemaVersion: "1.0",
 			Provider: schema.ProviderInfo{

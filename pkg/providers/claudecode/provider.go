@@ -84,22 +84,11 @@ func processSession(session Session, workspaceRoot string, debugRaw bool) *spi.A
 		return nil
 	}
 
-	// Convert session records to JSONL format for raw data
-	// Note: Uses unfiltered session.Records (not filteredSession.Records) to preserve
-	// all records including warmup messages in the raw data for complete audit trail
-	var rawDataBuilder strings.Builder
-	for _, record := range session.Records {
-		jsonBytes, _ := json.Marshal(record.Data)
-		rawDataBuilder.Write(jsonBytes)
-		rawDataBuilder.WriteString("\n")
-	}
-
 	return &spi.AgentChatSession{
 		SessionID:   session.SessionUuid,
 		CreatedAt:   timestamp, // ISO 8601 timestamp
 		Slug:        slug,
 		SessionData: sessionData,
-		RawData:     rawDataBuilder.String(),
 	}
 }
 

@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,6 +36,11 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 		return fmt.Errorf("failed to create Claude watcher: %w", err)
 	}
 	defer func() { _ = watcher.Close() }()
+
+	throttle := spi.NewSessionFileThrottle(func(path string) {
+		emitClaudeSessions(filepath.Dir(path), debugRaw, sessionCallback, path)
+	})
+	defer throttle.Stop()
 
 	watchedDirs := make(map[string]bool)
 	addWatch := func(dir string) error {
@@ -110,7 +114,7 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
-				emitClaudeSessions(filepath.Dir(event.Name), debugRaw, sessionCallback, event.Name)
+				throttle.Trigger(event.Name)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -127,6 +131,11 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 		return fmt.Errorf("failed to create Claude project watcher: %w", err)
 	}
 	defer func() { _ = watcher.Close() }()
+
+	throttle := spi.NewSessionFileThrottle(func(path string) {
+		emitClaudeSessions(claudeProjectDir, debugRaw, sessionCallback, path)
+	})
+	defer throttle.Stop()
 
 	parentDir := filepath.Dir(claudeProjectDir)
 	projectDirWatched := false
@@ -160,7 +169,7 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
-				emitClaudeSessions(claudeProjectDir, debugRaw, sessionCallback, event.Name)
+				throttle.Trigger(event.Name)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -260,18 +269,10 @@ func convertToAgentChatSession(session Session, workspaceRoot string, debugRaw b
 		return nil
 	}
 
-	var rawDataBuilder strings.Builder
-	for _, record := range session.Records {
-		jsonBytes, _ := json.Marshal(record.Data)
-		rawDataBuilder.Write(jsonBytes)
-		rawDataBuilder.WriteString("\n")
-	}
-
 	return &spi.AgentChatSession{
 		SessionID:   session.SessionUuid,
 		CreatedAt:   timestamp,
 		Slug:        slug,
 		SessionData: sessionData,
-		RawData:     rawDataBuilder.String(),
 	}
 }

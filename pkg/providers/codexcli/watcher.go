@@ -109,6 +109,12 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		}
 	}()
 
+	throttle := spi.NewSessionFileThrottle(func(path string) {
+		ScanCodexSessions(projectPath, filepath.Dir(path), &path, debugRaw, sessionCallback)
+	})
+	// Stop runs before the watcher closes so no parse outlives this function.
+	defer throttle.Stop()
+
 	watchedDirs := make(map[string]bool)
 	var watchedDirsMutex sync.Mutex
 
@@ -249,7 +255,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 					slog.Info("startCodexSessionWatcher: JSONL file event",
 						"operation", event.Op.String(),
 						"file", eventPath)
-					ScanCodexSessions(projectPath, parentDir, &eventPath, debugRaw, sessionCallback)
+					throttle.Trigger(eventPath)
 				case event.Has(fsnotify.Remove):
 					slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
 					ScanCodexSessions(projectPath, parentDir, nil, debugRaw, sessionCallback)

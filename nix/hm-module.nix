@@ -89,6 +89,13 @@ in
         ExecStart = watchExec;
         Restart = "always";
         RestartSec = 5;
+        # Archiving is background work: under contention, interactive processes
+        # should win. Defaults so users can override them per host.
+        Nice = lib.mkDefault 10;
+        CPUWeight = lib.mkDefault 20;
+        # Only honoured by I/O schedulers with priority support (BFQ,
+        # mq-deadline); it is a no-op on NVMe devices using `none`.
+        IOSchedulingClass = lib.mkDefault "idle";
       };
 
       Install = {
