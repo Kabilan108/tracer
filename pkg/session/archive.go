@@ -17,19 +17,38 @@ import (
 // error-message text.
 var ErrSessionNotFound = errors.New("session not found")
 
+// LockTranscript excludes other writers of the transcript at path, across
+// processes, until the returned func is called. Sync and watch, receive, and
+// the annotation commands all write through it.
+//
+// Why lock the parent directory: a sibling lock file can never be removed
+// safely, because a waiter can end up holding a lock on an unlinked inode
+// while a newcomer creates and locks a fresh file, so one would be left beside
+// every transcript forever. The transcript itself cannot carry the lock either,
+// because writes replace it by rename. The directory's inode survives those
+// renames, flock works on it, and locking it creates no files. The cost is
+// that writers of different transcripts in one project directory wait for
+// each other, which is brief because each holds the lock for one write.
+//
+// flock locks belong to an open file description, so two opens of the same
+// directory conflict even within one process. Callers must not take a second
+// transcript lock while holding one.
+//
+// On NFS a directory flock is local to one client. That is enough because
+// each host writes its own archive and transcripts cross hosts only through
+// push and receive.
 func LockTranscript(path string) (func(), error) {
-	lockPath := path + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {
-		return nil, fmt.Errorf("open transcript lock: %w", err)
+		return nil, fmt.Errorf("open transcript directory lock: %w", err)
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		_ = lockFile.Close()
-		return nil, fmt.Errorf("lock transcript: %w", err)
+	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX); err != nil {
+		_ = dir.Close()
+		return nil, fmt.Errorf("lock transcript directory: %w", err)
 	}
 	return func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		_ = lockFile.Close()
+		_ = syscall.Flock(int(dir.Fd()), syscall.LOCK_UN)
+		_ = dir.Close()
 	}, nil
 }
 
