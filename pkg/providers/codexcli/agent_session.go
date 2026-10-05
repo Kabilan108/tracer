@@ -194,9 +194,12 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 
 	// Why: newer Codex versions write each turn as an item_completed item
 	// instead of the user_message, agent_message and agent_reasoning events.
-	// Should a file carry both forms of the same turns, rendering both would
-	// show every message twice, so the item form wins.
-	preferItems := hasItemTextRecords(records)
+	// Should a file carry both forms of the same turn, rendering both would
+	// show it twice, so a legacy event is dropped when an item carries the
+	// same text. Unmatched legacy events still render: a session started by
+	// an older Codex and resumed by a newer one holds only the legacy form
+	// for its early turns.
+	itemTexts := itemTextCounts(records)
 
 	appendText := func(index int, timestamp string, text codexText) {
 		switch text.kind {
@@ -205,8 +208,11 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 			if currentExchange != nil && len(currentExchange.Messages) > 0 {
 				exchanges = append(exchanges, *currentExchange)
 			}
+			// EndTime marks the latest activity, so a prompt that is not
+			// answered yet still counts toward when the session ended.
 			currentExchange = &Exchange{
 				StartTime: timestamp,
+				EndTime:   timestamp,
 				Messages:  []Message{},
 			}
 			message := Message{
@@ -252,7 +258,10 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 		timestamp, _ := record["timestamp"].(string)
 
 		if text := codexRecordText(record); text.kind != codexTextNone {
-			if !text.legacy || !preferItems {
+			key := text.key()
+			if text.legacy && itemTexts[key] > 0 {
+				itemTexts[key]--
+			} else {
 				appendText(i, timestamp, text)
 			}
 			continue
@@ -284,28 +293,19 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 
 			switch payloadType {
 			case "token_count":
-				// Token usage event - attach to the most recent agent message
-				if currentExchange == nil || len(currentExchange.Messages) == 0 {
-					continue
-				}
-
 				usage := extractUsageFromTokenCount(payload)
 				if usage == nil {
 					continue
 				}
 
-				// Find the most recent agent message to attach usage to
-				for j := len(currentExchange.Messages) - 1; j >= 0; j-- {
-					if currentExchange.Messages[j].Role == "agent" {
-						currentExchange.Messages[j].Usage = usage
-						slog.Debug("Attached token usage to agent message",
-							"messageID", currentExchange.Messages[j].ID,
-							"inputTokens", usage.InputTokens,
-							"outputTokens", usage.OutputTokens,
-							"cachedInputTokens", usage.CachedInputTokens,
-							"reasoningOutputTokens", usage.ReasoningOutputTokens)
-						break
-					}
+				if target := latestAgentMessage(exchanges, currentExchange); target != nil {
+					target.Usage = usage
+					slog.Debug("Attached token usage to agent message",
+						"messageID", target.ID,
+						"inputTokens", usage.InputTokens,
+						"outputTokens", usage.OutputTokens,
+						"cachedInputTokens", usage.CachedInputTokens,
+						"reasoningOutputTokens", usage.ReasoningOutputTokens)
 				}
 			}
 
@@ -476,6 +476,47 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 	return exchanges, nil
 }
 
+// latestAgentMessage returns the agent message a token_count event reports
+// on: the latest agent message of the current turn, or nil if the turn has
+// none yet.
+// Why look past the current exchange: a message from another agent can
+// arrive between a reply and its token_count. It opens a new exchange but
+// does not start a new turn, so the search continues into earlier exchanges
+// until it reaches a prompt from a person.
+func latestAgentMessage(exchanges []Exchange, current *Exchange) *Message {
+	candidates := make([]*Exchange, 0, len(exchanges)+1)
+	if current != nil {
+		candidates = append(candidates, current)
+	}
+	for i := len(exchanges) - 1; i >= 0; i-- {
+		candidates = append(candidates, &exchanges[i])
+	}
+
+	var target *Message
+	for _, exchange := range candidates {
+		turnStarted := false
+		for j := len(exchange.Messages) - 1; j >= 0 && target == nil && !turnStarted; j-- {
+			message := &exchange.Messages[j]
+			switch {
+			case message.Role == "agent":
+				target = message
+			case !isInterAgentMessage(*message):
+				turnStarted = true
+			}
+		}
+		if target != nil || turnStarted {
+			break
+		}
+	}
+	return target
+}
+
+// isInterAgentMessage reports whether message came from another agent.
+func isInterAgentMessage(message Message) bool {
+	meta, _ := message.Metadata["isMeta"].(bool)
+	return message.Role == "user" && meta
+}
+
 // codexTextKind classifies records that carry conversation text.
 type codexTextKind int
 
@@ -495,6 +536,8 @@ type codexText struct {
 	text string
 	// legacy marks the event_msg forms that older Codex versions wrote.
 	legacy bool
+	// parts holds a reasoning item's separate summaries, which text joins.
+	parts []string
 }
 
 // codexRecordText returns the conversation text in record, in any of the
@@ -548,7 +591,7 @@ func completedItemText(item map[string]interface{}) codexText {
 				parts = append(parts, summaryText)
 			}
 		}
-		text = codexText{kind: codexTextReasoning, text: strings.Join(parts, "\n\n")}
+		text = codexText{kind: codexTextReasoning, text: strings.Join(parts, "\n\n"), parts: parts}
 	}
 	return text
 }
@@ -599,16 +642,35 @@ func interAgentText(payload map[string]interface{}) string {
 	return text
 }
 
-// hasItemTextRecords reports whether records use the item_completed form
-// for any conversation text.
-func hasItemTextRecords(records []map[string]interface{}) bool {
+// codexTextKey identifies conversation text, so a legacy event can be
+// matched to the item that carries the same turn.
+type codexTextKey struct {
+	kind codexTextKind
+	text string
+}
+
+func (t codexText) key() codexTextKey {
+	return codexTextKey{kind: t.kind, text: strings.TrimSpace(t.text)}
+}
+
+// itemTextCounts counts the conversation texts that records carry in item
+// form. A reasoning item's summary parts also count one by one, because
+// older versions wrote one agent_reasoning event per part.
+func itemTextCounts(records []map[string]interface{}) map[codexTextKey]int {
+	counts := make(map[codexTextKey]int)
 	for _, record := range records {
 		text := codexRecordText(record)
-		if text.kind != codexTextNone && text.kind != codexTextInterAgent && !text.legacy {
-			return true
+		if text.kind == codexTextNone || text.kind == codexTextInterAgent || text.legacy {
+			continue
+		}
+		counts[text.key()]++
+		if len(text.parts) > 1 {
+			for _, part := range text.parts {
+				counts[codexText{kind: text.kind, text: part}.key()]++
+			}
 		}
 	}
-	return false
+	return counts
 }
 
 // subagentInfo returns the parent session and agent name that a subagent

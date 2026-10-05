@@ -374,12 +374,42 @@ func TestGenerateAgentSession_ConversationText(t *testing.T) {
 				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"user_message","message":"Fix the flaky test"}}`,
 				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Fix the flaky test"}]}}}`,
 				`{"type":"event_msg","timestamp":"2026-10-01T10:00:02Z","payload":{"type":"agent_reasoning","text":"Thinking"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:02Z","payload":{"type":"item_completed","item":{"type":"Reasoning","summary_text":["Thinking"]}}}`,
 				`{"type":"event_msg","timestamp":"2026-10-01T10:00:03Z","payload":{"type":"agent_message","message":"Fixed."}}`,
 				`{"type":"event_msg","timestamp":"2026-10-01T10:00:03Z","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"Fixed."}]}}}`,
 			},
 			wantMessages: []wantMessage{
 				{role: "user", partType: "text", text: "Fix the flaky test"},
+				{role: "agent", partType: "thinking", text: "Thinking"},
 				{role: "agent", partType: "text", text: "Fixed."},
+			},
+			wantExchanges: 1,
+		},
+		{
+			name: "legacy turns of a session resumed by a newer version still render",
+			lines: []string{
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"user_message","message":"Old prompt"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:02Z","payload":{"type":"agent_message","message":"Old reply"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T11:00:01Z","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"New prompt"}]}}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T11:00:02Z","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"New reply"}]}}}`,
+			},
+			wantMessages: []wantMessage{
+				{role: "user", partType: "text", text: "Old prompt"},
+				{role: "agent", partType: "text", text: "Old reply"},
+				{role: "user", partType: "text", text: "New prompt"},
+				{role: "agent", partType: "text", text: "New reply"},
+			},
+			wantExchanges: 2,
+		},
+		{
+			name: "legacy reasoning parts match the item that joins them",
+			lines: []string{
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"agent_reasoning","text":"Part one"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"agent_reasoning","text":"Part two"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:02Z","payload":{"type":"item_completed","item":{"type":"Reasoning","summary_text":["Part one","Part two"]}}}`,
+			},
+			wantMessages: []wantMessage{
+				{role: "agent", partType: "thinking", text: "Part one\n\nPart two"},
 			},
 			wantExchanges: 1,
 		},
@@ -532,5 +562,73 @@ func TestGenerateAgentSession_SubagentMatchesSchema(t *testing.T) {
 	}
 	if err := validateJSONDocument(t, jsonData); err != nil {
 		t.Errorf("subagent session does not match the schema: %v", err)
+	}
+}
+
+func TestGenerateAgentSession_TurnBoundaries(t *testing.T) {
+	const (
+		reply      = `{"type":"event_msg","timestamp":"2026-10-01T11:00:02Z","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"Reply"}]}}}`
+		interAgent = `{"type":"response_item","timestamp":"2026-10-01T11:00:03Z","payload":{"type":"agent_message","content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nDone."}]}}`
+		prompt     = `{"type":"event_msg","timestamp":"2026-10-01T11:00:03Z","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Next"}]}}}`
+		tokenCount = `{"type":"event_msg","timestamp":"2026-10-01T11:00:04Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":5}}}}`
+	)
+	tests := []struct {
+		name          string
+		lines         []string
+		wantEnded     string
+		wantUsage     bool
+		wantUsageOnID string
+	}{
+		{
+			name:      "message from another agent after the reply counts toward the end time",
+			lines:     []string{reply, interAgent},
+			wantEnded: "2026-10-01T11:00:03Z",
+		},
+		{
+			name:      "unanswered prompt counts toward the end time",
+			lines:     []string{reply, prompt},
+			wantEnded: "2026-10-01T11:00:03Z",
+		},
+		{
+			name:          "usage reaches the reply across a message from another agent",
+			lines:         []string{reply, interAgent, tokenCount},
+			wantEnded:     "2026-10-01T11:00:03Z",
+			wantUsage:     true,
+			wantUsageOnID: "a_1",
+		},
+		{
+			name:      "usage does not reach the previous turn across a prompt",
+			lines:     []string{reply, prompt, tokenCount},
+			wantEnded: "2026-10-01T11:00:03Z",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			records := recordsFromJSONL(t, append([]string{testSessionMetaLine}, tt.lines...)...)
+			session, err := GenerateAgentSession(records, "/work")
+			if err != nil {
+				t.Fatalf("GenerateAgentSession() error = %v", err)
+			}
+
+			last := session.Exchanges[len(session.Exchanges)-1]
+			if last.EndTime != tt.wantEnded {
+				t.Errorf("last exchange EndTime = %q, want %q", last.EndTime, tt.wantEnded)
+			}
+			var usageOn []string
+			for _, exchange := range session.Exchanges {
+				for _, message := range exchange.Messages {
+					if message.Usage != nil {
+						usageOn = append(usageOn, message.ID)
+					}
+				}
+			}
+			switch {
+			case tt.wantUsage && (len(usageOn) != 1 || usageOn[0] != tt.wantUsageOnID):
+				t.Errorf("usage attached to %v, want [%s]", usageOn, tt.wantUsageOnID)
+			case !tt.wantUsage && len(usageOn) != 0:
+				t.Errorf("usage attached to %v, want none", usageOn)
+			}
+		})
 	}
 }
