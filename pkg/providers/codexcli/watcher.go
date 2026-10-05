@@ -162,17 +162,23 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		}
 	}
 
-	watchDayDir := func(dayDir string) {
+	// The scan flag is false while registering the existing tree at startup:
+	// historical ingest has just parsed those sessions, and re-parsing every
+	// day directory here doubled startup work. Directories created later are
+	// scanned because files can appear in them before their watch is added.
+	watchDayDir := func(dayDir string, scan bool) {
 		if err := addWatch(dayDir); err != nil {
 			slog.Error("startCodexSessionWatcher: Failed to watch day directory",
 				"directory", dayDir,
 				"error", err)
 			return
 		}
-		scanDayDir(dayDir)
+		if scan {
+			scanDayDir(dayDir)
+		}
 	}
 
-	watchMonthDir := func(monthDir string) {
+	watchMonthDir := func(monthDir string, scan bool) {
 		if err := addWatch(monthDir); err != nil {
 			slog.Error("startCodexSessionWatcher: Failed to watch month directory",
 				"directory", monthDir,
@@ -194,12 +200,12 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 			if len(entry.Name()) == 2 {
 				dayDir := filepath.Join(monthDir, entry.Name())
-				watchDayDir(dayDir)
+				watchDayDir(dayDir, scan)
 			}
 		}
 	}
 
-	watchYearDir := func(yearDir string) {
+	watchYearDir := func(yearDir string, scan bool) {
 		if err := addWatch(yearDir); err != nil {
 			slog.Error("startCodexSessionWatcher: Failed to watch year directory",
 				"directory", yearDir,
@@ -221,7 +227,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 			if len(entry.Name()) == 2 {
 				monthDir := filepath.Join(yearDir, entry.Name())
-				watchMonthDir(monthDir)
+				watchMonthDir(monthDir, scan)
 			}
 		}
 	}
@@ -244,7 +250,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 			if len(entry.Name()) == 4 {
 				yearDir := filepath.Join(sessionsRoot, entry.Name())
-				watchYearDir(yearDir)
+				watchYearDir(yearDir, false)
 			}
 		}
 	}
@@ -264,7 +270,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 				return nil
 			}
 
-			if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) && !event.Has(fsnotify.Remove) {
+			if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) && !event.Has(fsnotify.Remove) && !event.Has(fsnotify.Rename) {
 				continue
 			}
 
@@ -277,11 +283,12 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 						"operation", event.Op.String(),
 						"file", eventPath)
 					throttle.Trigger(eventPath)
-				case event.Has(fsnotify.Remove):
+				case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 					// Each rollout is its own session, so removing one changes no
-					// other session's archive and needs no rescan. The removed
-					// session's archive is kept.
+					// other session's archive and needs no rescan; only its cached
+					// read state goes. The removed session's archive is kept.
 					slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
+					codexTails.forget(eventPath)
 				}
 				continue
 			}
@@ -290,13 +297,13 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 				switch dirType(eventPath, sessionsRoot) {
 				case "year":
 					slog.Info("startCodexSessionWatcher: New year directory created", "directory", eventPath)
-					watchYearDir(eventPath)
+					watchYearDir(eventPath, true)
 				case "month":
 					slog.Info("startCodexSessionWatcher: New month directory created", "directory", eventPath)
-					watchMonthDir(eventPath)
+					watchMonthDir(eventPath, true)
 				case "day":
 					slog.Info("startCodexSessionWatcher: New day directory created", "directory", eventPath)
-					watchDayDir(eventPath)
+					watchDayDir(eventPath, true)
 				}
 			}
 		case err, ok := <-watcher.Errors:
@@ -388,53 +395,38 @@ func ScanCodexSessions(projectPath string, sessionDir string, changedFile *strin
 }
 
 // processCodexSessionFile processes a single Codex session file and calls the callback
-// if the session matches the project path.
+// if the session matches the project path. Only lines appended since the previous
+// call for the same file are decoded (see codexTailCache).
 func processCodexSessionFile(sessionPath string, projectPath string, normalizedProjectPath string, debugRaw bool, callback func(*spi.AgentChatSession)) error {
-	// Load session metadata
-	meta, err := loadCodexSessionMeta(sessionPath)
+	return processCodexSessionFileWith(codexTails, sessionPath, projectPath, normalizedProjectPath, debugRaw, callback)
+}
+
+func processCodexSessionFileWith(tails *codexTailCache, sessionPath string, projectPath string, normalizedProjectPath string, debugRaw bool, callback func(*spi.AgentChatSession)) error {
+	meta, records, err := tails.read(sessionPath, func(meta *codexSessionMeta) bool {
+		return codexSessionMatches(meta, projectPath, normalizedProjectPath)
+	})
 	if err != nil {
-		return fmt.Errorf("failed to load session meta: %w", err)
+		return fmt.Errorf("failed to read session: %w", err)
 	}
-
-	// Check if session matches project path
-	sessionID := strings.TrimSpace(meta.Payload.ID)
-	normalizedCWD := normalizeCodexPath(meta.Payload.CWD)
-	if normalizedCWD == "" {
-		slog.Debug("processCodexSessionFile: Session meta missing cwd", "sessionID", sessionID, "path", sessionPath)
-		return fmt.Errorf("session meta missing cwd")
-	}
-
-	// Empty projectPath means global mode: include every session.
-	matched := strings.TrimSpace(projectPath) == ""
-	if !matched {
-		if normalizedProjectPath != "" {
-			matched = normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath)
-		} else {
-			matched = normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath)
-		}
-	}
-
-	if !matched {
-		slog.Debug("processCodexSessionFile: Session does not match project path",
-			"sessionID", sessionID,
-			"sessionCWD", normalizedCWD,
+	if meta == nil {
+		slog.Debug("processCodexSessionFile: No matching session in file",
+			"sessionPath", sessionPath,
 			"projectPath", normalizedProjectPath)
 		return nil // Not an error, just doesn't match
 	}
 
+	sessionID := strings.TrimSpace(meta.Payload.ID)
 	slog.Info("processCodexSessionFile: Session matched project",
 		"sessionID", sessionID,
 		"sessionPath", sessionPath)
 
-	// Create session info
 	sessionInfo := &codexSessionInfo{
 		SessionID:   sessionID,
 		SessionPath: sessionPath,
 		Meta:        meta,
 	}
 
-	// Process the session
-	agentSession, err := processSessionToAgentChat(sessionInfo, projectPath, debugRaw)
+	agentSession, err := agentChatFromRecords(sessionInfo, records, projectPath, debugRaw)
 	if err != nil {
 		return fmt.Errorf("failed to process session: %w", err)
 	}

@@ -82,3 +82,60 @@ type Provider interface {
 	// The implementation should handle its own file watching and session tracking
 	WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*AgentChatSession)) error
 }
+
+// SessionSource is the smallest set of files a provider parses as a whole.
+// Sessions parsed from a source depend only on the files listed in it, so an
+// unchanged source yields unchanged sessions.
+type SessionSource struct {
+	Key   string     // Stable identifier, e.g. a session file or project directory path
+	Files []FileStat // Every file the source's sessions are parsed from, stat'ed before parsing
+}
+
+// SessionVisitor receives sessions from SessionStreamer one source at a time.
+// Callbacks are invoked sequentially from the streaming goroutine.
+type SessionVisitor struct {
+	// Sources is called once, before any source is parsed, with the number of sources found.
+	Sources func(total int)
+	// ShouldParse reports whether src must be parsed. Returning false skips it without reading its files.
+	ShouldParse func(src SessionSource) bool
+	// Session receives each session parsed from src.
+	Session func(src SessionSource, session *AgentChatSession)
+	// Done is called after the last session of a parsed src, with the parse error if any.
+	Done func(src SessionSource, err error)
+}
+
+// SessionStreamer is implemented by providers that can stream historical sessions
+// instead of returning them all at once from GetAgentChatSessions.
+// Why: holding every parsed session of a provider in one slice made peak memory
+// scale with the whole history; streaming bounds it by the largest source.
+type SessionStreamer interface {
+	// StreamAgentChatSessions parses sources for projectPath (empty = all projects) and
+	// reports them to visitor. It stops between sources when ctx is cancelled.
+	StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor SessionVisitor) error
+}
+
+// ReportSources calls Sources when set.
+func (v SessionVisitor) ReportSources(total int) {
+	if v.Sources != nil {
+		v.Sources(total)
+	}
+}
+
+// ParseNeeded calls ShouldParse when set; without it every source is parsed.
+func (v SessionVisitor) ParseNeeded(src SessionSource) bool {
+	return v.ShouldParse == nil || v.ShouldParse(src)
+}
+
+// ReportSession calls Session when set.
+func (v SessionVisitor) ReportSession(src SessionSource, session *AgentChatSession) {
+	if v.Session != nil {
+		v.Session(src, session)
+	}
+}
+
+// ReportDone calls Done when set.
+func (v SessionVisitor) ReportDone(src SessionSource, err error) {
+	if v.Done != nil {
+		v.Done(src, err)
+	}
+}

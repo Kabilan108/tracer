@@ -3,6 +3,7 @@ package claudecode
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
@@ -348,7 +349,12 @@ func buildAgentMessage(record JSONLRecord, workspaceRoot string, isSidechain boo
 					// Extract tool information
 					toolName, _ := contentMap["name"].(string)
 					toolUseID, _ := contentMap["id"].(string)
-					toolInput, _ := contentMap["input"].(map[string]interface{})
+					// Why clone: formatToolAsMarkdown adds keys to the tool input, and the
+					// watcher caches parsed records across rebuilds; writing into the
+					// record's own map would leak into later rebuilds and race with
+					// markdown rendering of the previous snapshot.
+					recordInput, _ := contentMap["input"].(map[string]interface{})
+					toolInput := maps.Clone(recordInput)
 
 					toolInfo = &ToolInfo{
 						Name:  toolName,

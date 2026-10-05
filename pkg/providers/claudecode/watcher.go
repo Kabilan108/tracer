@@ -122,6 +122,9 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 				throttle.Trigger(event.Name)
 			}
+			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				claudeTails.forget(event.Name)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -177,6 +180,9 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 				throttle.Trigger(event.Name)
 			}
+			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				claudeTails.forget(event.Name)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -195,6 +201,10 @@ func newClaudeThrottle(run func(key string)) *spi.FileThrottle {
 	return spi.NewSessionFileThrottle(1, run)
 }
 
+// emitClaudeSessions parses Claude sessions and calls sessionCallback for each.
+// With a changedFile, only the session that file belongs to is emitted, and it
+// is rebuilt incrementally from cached records (see claudeTailCache).
+// Without one, every session in the project directory is parsed from scratch.
 func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession), changedFile ...string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -202,41 +212,28 @@ func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback 
 		}
 	}()
 
-	parser := NewJSONLParser()
-	targetSessionUUID := ""
-
+	var agentSessions []*spi.AgentChatSession
 	if len(changedFile) > 0 && changedFile[0] != "" {
-		sessionID, err := extractSessionIDFromFile(changedFile[0])
-		if err != nil || sessionID == "" {
+		sessions, err := claudeTails.agentSessionsForFile(claudeProjectDir, changedFile[0], debugRaw)
+		if err != nil {
+			slog.Warn("emitClaudeSessions: failed to parse changed session", "file", changedFile[0], "error", err)
 			return
 		}
-		targetSessionUUID = sessionID
-	}
-
-	var parseErr error
-	if targetSessionUUID != "" {
-		parseErr = parser.ParseProjectSessionsForSession(claudeProjectDir, true, targetSessionUUID)
+		agentSessions = sessions
 	} else {
-		parseErr = parser.ParseProjectSessions(claudeProjectDir, true)
+		parser := NewJSONLParser()
+		if err := parser.ParseProjectSessions(claudeProjectDir, true); err != nil {
+			slog.Warn("emitClaudeSessions: failed to parse project sessions", "directory", claudeProjectDir, "error", err)
+			return
+		}
+		for _, session := range parser.Sessions {
+			if agentSession := convertToAgentChatSession(session, "", debugRaw); agentSession != nil {
+				agentSessions = append(agentSessions, agentSession)
+			}
+		}
 	}
-	if parseErr != nil {
-		slog.Warn("emitClaudeSessions: failed to parse project sessions", "directory", claudeProjectDir, "error", parseErr)
-		return
-	}
 
-	for _, session := range parser.Sessions {
-		if len(session.Records) == 0 {
-			continue
-		}
-		if targetSessionUUID != "" && session.SessionUuid != targetSessionUUID {
-			continue
-		}
-
-		agentSession := convertToAgentChatSession(session, "", debugRaw)
-		if agentSession == nil {
-			continue
-		}
-
+	for _, agentSession := range agentSessions {
 		// Delivered synchronously so snapshots reach the engine in the order
 		// they were parsed; the callback only queues the update.
 		func() {
