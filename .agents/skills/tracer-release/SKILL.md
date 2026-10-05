@@ -64,7 +64,7 @@ PATH gotcha: bare `tracer` resolves to the older home-manager binary in
 3. Post-rollout end-to-end proof:
    - `systemctl --user start tracer-sync.service` on jacurutu; check
      `journalctl --user -u tracer-sync` for the `Archive push complete` wide
-     event (note: no-op pushes with nothing pending do not emit the summary).
+     event. Up-to-date runs emit it too, with `transferred=0`.
    - Annotation round-trip: tag a session `wiki:compiled` on sietch, tag the
      same session `gold` on jacurutu, push again, confirm sietch's copy has
      BOTH tags (union merge) and only the dirtied file transferred.
