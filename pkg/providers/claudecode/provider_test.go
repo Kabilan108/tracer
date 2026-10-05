@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -719,6 +720,99 @@ func TestClaudeWatchers_RecoverFromEventOverflow(t *testing.T) {
 			appendFile(t, createdPath, lines)
 			waitUntil(t, "a watched write to the session created during the overflow", func() bool {
 				return watched.contains("Please do step 3")
+			})
+
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("watcher returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not stop")
+			}
+		})
+	}
+}
+
+// TestClaudeWatchers_ReplacedDirectoryIsWatchedAgain: a watch is on a
+// directory, not its path, so a project directory deleted and created again
+// at the same path must be watched again, whether its events arrive or were
+// lost to an overflow, or writes to it would never be archived.
+func TestClaudeWatchers_ReplacedDirectoryIsWatchedAgain(t *testing.T) {
+	type watchFunc func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error
+	watchAll := func(ctx context.Context, _ string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+		return watchClaudeProjects(ctx, false, catchUp, callback)
+	}
+	watchOne := func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+		return watchClaudeProject(ctx, projectDir, false, catchUp, callback)
+	}
+	tests := []struct {
+		name  string
+		watch watchFunc
+		// projectsWatched is set when the projects directory is watched, so
+		// the project directory's creation produces an event.
+		projectsWatched bool
+		overflow        bool
+	}{
+		{name: "all projects, events delivered", watch: watchAll, projectsWatched: true},
+		{name: "all projects, events lost to an overflow", watch: watchAll, projectsWatched: true, overflow: true},
+		{name: "one project, events delivered", watch: watchOne},
+		{name: "one project, events lost to an overflow", watch: watchOne, overflow: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			projectsDir := filepath.Join(home, ".claude", "projects")
+			projectDir := filepath.Join(projectsDir, "-tmp-claude-replaced")
+			fixture := newClaudeFixture(t)
+			lines, _ := fixture.exchange(testClaudeSession, "", 0, 0)
+			writeFile(t, filepath.Join(projectDir, testClaudeSession+".jsonl"), lines)
+			lossyCreated := installLossyWatcher(t)
+
+			var watched sessionLog
+			var catchUps atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- tt.watch(ctx, projectDir, func() { catchUps.Add(1) }, func(session *spi.AgentChatSession) {
+					watched.add(t, session)
+				})
+			}()
+			lossy := <-lossyCreated
+			waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+			lossy.dropping.Store(tt.overflow)
+			if err := os.RemoveAll(projectDir); err != nil {
+				t.Fatal(err)
+			}
+			// Once the removal's event was read, fsnotify has dropped the
+			// old watch, so a watch on the path can only be a new one.
+			lossy.waitRead(t, projectDir)
+			if err := os.Mkdir(projectDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.overflow {
+				if tt.projectsWatched {
+					marker := filepath.Join(projectsDir, "marker")
+					writeFile(t, marker, "")
+					lossy.waitRead(t, marker)
+				}
+				lossy.dropping.Store(false)
+				lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+				waitUntil(t, "overflow recovery", func() bool { return catchUps.Load() == 2 })
+			}
+			waitUntil(t, "a watch on the replaced project directory", func() bool {
+				return slices.Contains(lossy.watcher.WatchList(), projectDir)
+			})
+
+			lines, _ = fixture.exchange(testOtherSession, "", 2, 0)
+			writeFile(t, filepath.Join(projectDir, testOtherSession+".jsonl"), lines)
+			waitUntil(t, "a watched write to the replaced project directory", func() bool {
+				return watched.contains("Please do step 2")
 			})
 
 			cancel()

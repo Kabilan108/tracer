@@ -387,31 +387,36 @@ func (e *Engine) processSnapshot(providerID string, session *spi.AgentChatSessio
 		e.recordOutcome(OutcomeSkipped)
 		return OutcomeSkipped, nil
 	}
-	outcome, err := e.processSessionLocked(providerID, session)
-	if err == nil && seq != 0 {
+	outcome, archived, err := e.processSessionLocked(providerID, session)
+	// Why archived rather than a nil error: the markdown is replaced before
+	// its state row is saved, so when saving the row fails this snapshot is
+	// still the one on disk, and an older one must not be written over it.
+	if archived && seq != 0 {
 		e.writtenSeq[key] = seq
 	}
 	return outcome, err
 }
 
-// processSessionLocked renders and writes session. Callers hold processMu.
-func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatSession) (ProcessOutcome, error) {
+// processSessionLocked renders and writes session. Its bool reports whether
+// the markdown on disk now holds session, even when an error is returned.
+// Callers hold processMu.
+func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatSession) (ProcessOutcome, bool, error) {
 	filePath := e.opts.PathBuilder(providerID, session)
 	if filePath == "" {
-		return OutcomeError, fmt.Errorf("empty output path")
+		return OutcomeError, false, fmt.Errorf("empty output path")
 	}
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-		return OutcomeError, fmt.Errorf("create output directory: %w", err)
+		return OutcomeError, false, fmt.Errorf("create output directory: %w", err)
 	}
 	unlock, err := sessionpkg.LockTranscript(filePath)
 	if err != nil {
-		return OutcomeError, err
+		return OutcomeError, false, err
 	}
 	defer unlock()
 
 	host, err := os.Hostname()
 	if err != nil {
-		return OutcomeError, fmt.Errorf("get hostname: %w", err)
+		return OutcomeError, false, fmt.Errorf("get hostname: %w", err)
 	}
 	annotations := sessionpkg.Annotations{}
 	if existing, readErr := os.ReadFile(filePath); readErr == nil {
@@ -420,19 +425,19 @@ func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatS
 	metadata := sessionpkg.ApplyAnnotations(sessionpkg.DeriveMetadata(session.SessionData, host), annotations)
 	markdownContent, err := sessionpkg.GenerateMarkdownWithMetadata(session.SessionData, metadata, false, e.opts.UseUTC)
 	if err != nil {
-		return OutcomeError, fmt.Errorf("generate markdown: %w", err)
+		return OutcomeError, false, fmt.Errorf("generate markdown: %w", err)
 	}
 
 	contentHash := hashMarkdown(markdownContent)
 	existingState, hasState, err := e.state.Get(providerID, session.SessionID)
 	if err != nil {
-		return OutcomeError, err
+		return OutcomeError, false, err
 	}
 
 	if hasState && existingState.ContentHash == contentHash {
 		if data, readErr := os.ReadFile(filePath); readErr == nil && string(data) == markdownContent {
 			e.recordOutcome(OutcomeSkipped)
-			return OutcomeSkipped, nil
+			return OutcomeSkipped, true, nil
 		}
 	}
 
@@ -443,11 +448,11 @@ func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatS
 
 	temporaryPath := filePath + ".tmp"
 	if err := os.WriteFile(temporaryPath, []byte(markdownContent), 0o644); err != nil {
-		return OutcomeError, fmt.Errorf("write markdown: %w", err)
+		return OutcomeError, false, fmt.Errorf("write markdown: %w", err)
 	}
 	if err := os.Rename(temporaryPath, filePath); err != nil {
 		_ = os.Remove(temporaryPath)
-		return OutcomeError, fmt.Errorf("replace markdown: %w", err)
+		return OutcomeError, false, fmt.Errorf("replace markdown: %w", err)
 	}
 
 	if err := e.state.Upsert(SessionState{
@@ -457,19 +462,19 @@ func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatS
 		OutputPath:  filePath,
 		UpdatedAt:   time.Now().UTC(),
 	}); err != nil {
-		return OutcomeError, err
+		return OutcomeError, true, err
 	}
 
 	if err := e.saveStatistics(providerID, session, markdownContent); err != nil {
-		return OutcomeError, err
+		return OutcomeError, true, err
 	}
 
 	if fileExists {
 		e.recordOutcome(OutcomeUpdated)
-		return OutcomeUpdated, nil
+		return OutcomeUpdated, true, nil
 	}
 	e.recordOutcome(OutcomeCreated)
-	return OutcomeCreated, nil
+	return OutcomeCreated, true, nil
 }
 
 // ProcessSession writes one session to the archive using the same path, state,

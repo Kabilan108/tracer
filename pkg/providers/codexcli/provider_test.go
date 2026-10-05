@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1253,6 +1254,89 @@ func TestCodexWatcher_RecoversFromEventOverflow(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("watcher did not stop")
+	}
+}
+
+// TestCodexWatcher_ReplacedDirectoryIsWatchedAgain: a watch is on a
+// directory, not its path, so a day directory deleted and created again at
+// the same path must be watched again, whether its events arrive or were lost
+// to an overflow, or writes to it would never be archived.
+func TestCodexWatcher_ReplacedDirectoryIsWatchedAgain(t *testing.T) {
+	const otherSessionID = "019a0000-0000-7000-8000-000000000002"
+	tests := []struct {
+		name     string
+		overflow bool
+	}{
+		{name: "events delivered"},
+		{name: "events lost to an overflow", overflow: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionsRoot := filepath.Join(t.TempDir(), "sessions")
+			monthDir := filepath.Join(sessionsRoot, "2026", "10")
+			dayDir := filepath.Join(monthDir, "05")
+			if err := os.MkdirAll(dayDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeCodexFixture(t, filepath.Join(dayDir, "rollout-a.jsonl"), 1, 0)
+			lossyCreated := installLossyWatcher(t)
+
+			var watched sessionLog
+			var catchUps atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- startCodexSessionWatcher(ctx, "", sessionsRoot, false, func() { catchUps.Add(1) }, func(session *spi.AgentChatSession) {
+					watched.add(t, session)
+				})
+			}()
+			lossy := <-lossyCreated
+			waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+			lossy.dropping.Store(tt.overflow)
+			if err := os.RemoveAll(dayDir); err != nil {
+				t.Fatal(err)
+			}
+			// Once the removal's event was read, fsnotify has dropped the
+			// old watch, so a watch on the path can only be a new one.
+			lossy.waitRead(t, dayDir)
+			if err := os.Mkdir(dayDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.overflow {
+				marker := filepath.Join(monthDir, "marker")
+				if err := os.WriteFile(marker, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				lossy.waitRead(t, marker)
+				lossy.dropping.Store(false)
+				lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+				waitUntil(t, "overflow recovery", func() bool { return catchUps.Load() == 2 })
+			}
+			waitUntil(t, "a watch on the replaced day directory", func() bool {
+				return slices.Contains(lossy.watcher.WatchList(), dayDir)
+			})
+
+			createdPath := filepath.Join(dayDir, "rollout-b.jsonl")
+			if err := os.WriteFile(createdPath, []byte(codexMetaLine(t, otherSessionID)+codexExchangeLines(t, 2, 0)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			waitUntil(t, "a watched write to the replaced day directory", func() bool {
+				return watched.contains("Please run step 2")
+			})
+
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("watcher returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not stop")
+			}
+		})
 	}
 }
 

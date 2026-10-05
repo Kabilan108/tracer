@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -91,23 +90,13 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	// Stop runs before the watcher closes so no parse outlives this function.
 	defer throttle.Stop()
 
-	watchedDirs := make(map[string]bool)
-	var watchedDirsMutex sync.Mutex
-
+	watches := spi.NewDirWatches(watcher)
 	addWatch := func(dir string) error {
-		watchedDirsMutex.Lock()
-		defer watchedDirsMutex.Unlock()
-
-		if watchedDirs[dir] {
-			return nil
+		added, err := watches.Add(dir)
+		if added {
+			slog.Info("startCodexSessionWatcher: Added watch", "directory", dir)
 		}
-
-		if err := watcher.Add(dir); err != nil {
-			return err
-		}
-		watchedDirs[dir] = true
-		slog.Info("startCodexSessionWatcher: Added watch", "directory", dir)
-		return nil
+		return err
 	}
 
 	// Day directories that appear while watching are fed through the throttle
@@ -229,6 +218,16 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	}
 	watchExistingTree()
 
+	// Recovery from an overflow adds every directory again, the sessions
+	// root included, because any of them may have been replaced unseen.
+	rewatchAll := func() {
+		watches.Reset()
+		if err := addWatch(sessionsRoot); err != nil {
+			slog.Warn("startCodexSessionWatcher: Failed to watch sessions root", "directory", sessionsRoot, "error", err)
+		}
+		watchExistingTree()
+	}
+
 	// Why before the event loop: writes made between historical ingest and the
 	// watches above produced no event. Events that arrive while catchUp runs
 	// wait in the watcher's queue, so their parses land after catchUp's.
@@ -271,6 +270,11 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 				continue
 			}
 
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				watches.Forget(eventPath)
+				continue
+			}
+
 			if event.Has(fsnotify.Create) {
 				switch dirType(eventPath, sessionsRoot) {
 				case "year":
@@ -290,7 +294,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 				return nil
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
-				spi.RecoverFromOverflow("codex", throttle, watchExistingTree, catchUp)
+				spi.RecoverFromOverflow("codex", throttle, rewatchAll, catchUp)
 				continue
 			}
 			log.UserWarn("Watcher error: %v", err)

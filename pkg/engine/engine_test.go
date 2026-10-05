@@ -581,6 +581,94 @@ func TestCatchUp_NotOverwrittenByOlderPendingUpdate(t *testing.T) {
 	}
 }
 
+// sessionHookStreamer runs afterSession once each session it streams was
+// handled, before its source is reported done.
+type sessionHookStreamer struct {
+	*fileStreamProvider
+	afterSession func()
+}
+
+func (p sessionHookStreamer) StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor spi.SessionVisitor) error {
+	handle := visitor.Session
+	visitor.Session = func(src spi.SessionSource, session *spi.AgentChatSession) {
+		handle(src, session)
+		p.afterSession()
+	}
+	return p.fileStreamProvider.StreamAgentChatSessions(ctx, projectPath, debugRaw, visitor)
+}
+
+// TestCatchUp_StateWriteFailureKeepsSnapshotOrder: when saving a session's
+// state row fails after its markdown was replaced, the newer markdown must
+// still not be overwritten by an older pending snapshot, the failure must be
+// counted, and the source must not be fingerprinted as archived.
+func TestCatchUp_StateWriteFailureKeepsSnapshotOrder(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := newEngineForTest(t, tempDir)
+	// The older snapshot must still be pending when the catch-up pass runs.
+	engine.opts.Debounce = time.Hour
+	defer func() {
+		if err := engine.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	sourceDir := t.TempDir()
+	provider := newFileStreamProvider(t, sourceDir, map[string]string{"busy": "NEWER_SNAPSHOT"})
+	sourcePath := filepath.Join(sourceDir, "busy")
+	older := newSession("stream", "Stream", "busy", "busy", "OLDER_SNAPSHOT")
+	if _, err := engine.ProcessSession("stream", &older); err != nil {
+		t.Fatalf("ProcessSession() error = %v", err)
+	}
+	engine.QueueSessionUpdate("stream", &older)
+
+	// A second connection holding the write lock makes the engine's state
+	// writes fail with SQLITE_BUSY, as a concurrent sync could.
+	blocker, err := OpenStateStore(filepath.Join(tempDir, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Close() }()
+	if _, err := engine.state.db.Exec("PRAGMA busy_timeout=1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.db.Exec("BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	// Released once the session is handled, so recording the source's
+	// fingerprint would succeed if the engine attempted it.
+	release := func() {
+		if _, err := blocker.db.Exec("ROLLBACK"); err != nil {
+			t.Error(err)
+		}
+	}
+
+	var outcomes []ProcessOutcome
+	hooked := sessionHookStreamer{fileStreamProvider: provider, afterSession: release}
+	engine.ingestProvider(context.Background(), "stream", hooked, "", false, true, func(outcome ProcessOutcome) {
+		outcomes = append(outcomes, outcome)
+	})
+	if len(outcomes) != 1 || outcomes[0] != OutcomeError {
+		t.Errorf("catch-up outcomes = %v, want one %v", outcomes, OutcomeError)
+	}
+	if errs := engine.SnapshotSummary().Errors; errs != 1 {
+		t.Errorf("summary errors = %d, want 1", errs)
+	}
+	if _, ok, err := engine.state.GetSource("stream", sourcePath); err != nil || ok {
+		t.Errorf("GetSource() = ok %v, err %v; want the source left unrecorded so it is parsed again", ok, err)
+	}
+
+	if err := engine.FlushPending(); err != nil {
+		t.Fatalf("FlushPending() error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tempDir, "history", "stream", "2026-03-04_00-00-00Z-busy.md"))
+	if err != nil {
+		t.Fatalf("read output file: %v", err)
+	}
+	if !strings.Contains(string(content), "NEWER_SNAPSHOT") || strings.Contains(string(content), "OLDER_SNAPSHOT") {
+		t.Errorf("archive holds an older snapshot than the catch-up wrote:\n%s", content)
+	}
+}
+
 func TestIngestProviders_ProgressCallbacks(t *testing.T) {
 	tempDir := t.TempDir()
 

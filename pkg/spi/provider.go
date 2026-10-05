@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
@@ -146,9 +150,12 @@ var ErrNothingToWatch = errors.New("nothing to watch")
 // Why: the kernel dropped events, so files written and directories created
 // in the meantime are unknown to the watcher, and a session whose last write
 // fell in that window would stay unarchived until it is written again.
-// rewatch registers directories that appeared, before the rescan, so any
-// later write produces an event. The throttle is flushed so that no run
-// scheduled before the overflow delivers its snapshot after the rescan's.
+// rewatch registers every directory that should be watched, before the
+// rescan, so any later write produces an event: directories that appeared,
+// and directories replaced at the same path, whose watch ended with the
+// directory it was on (see DirWatches.Reset). The throttle is flushed so
+// that no run scheduled before the overflow delivers its snapshot after the
+// rescan's.
 // catchUp then parses every source changed since it was last archived, as at
 // startup, and events that queue up meanwhile are handled after it returns,
 // so their parses land after the rescan's, as at startup.
@@ -163,6 +170,57 @@ func RecoverFromOverflow(watcher string, throttle *FileThrottle, rewatch func(),
 		"watcher", watcher,
 		"reason", "events were dropped, so changes made meanwhile may have had no event",
 		"duration", time.Since(started))
+}
+
+// DirWatches adds directories to an fsnotify watcher once each, remembering
+// which ones it added. It is not safe for concurrent use; call it from the
+// goroutine that handles the watcher's events.
+type DirWatches struct {
+	watcher *fsnotify.Watcher
+	added   map[string]bool
+}
+
+// NewDirWatches returns an empty DirWatches for watcher.
+func NewDirWatches(watcher *fsnotify.Watcher) *DirWatches {
+	return &DirWatches{watcher: watcher, added: make(map[string]bool)}
+}
+
+// Add watches dir unless it was already added, and reports whether it added it.
+// Why skip: watchers walk their whole tree again whenever a directory
+// appears, and re-adding every directory each time would be wasted work.
+func (d *DirWatches) Add(dir string) (bool, error) {
+	if d.added[dir] {
+		return false, nil
+	}
+	if err := d.watcher.Add(dir); err != nil {
+		return false, err
+	}
+	d.added[dir] = true
+	return true, nil
+}
+
+// Forget drops path and every directory under it, so they are added again.
+// Call it when path is removed or renamed.
+// Why: a watch is on the directory, not its path. Once it is removed or
+// moved away, a directory created at the same path gets no watch unless it
+// is added again, and directories under a moved one keep watching their
+// moved copies.
+func (d *DirWatches) Forget(path string) {
+	prefix := path + string(filepath.Separator)
+	maps.DeleteFunc(d.added, func(dir string, _ bool) bool {
+		return dir == path || strings.HasPrefix(dir, prefix)
+	})
+}
+
+// Reset forgets every directory, so the next walk adds each one again.
+// Call it after the event queue overflowed.
+// Why: the events that tell of a directory's removal can be among those
+// dropped, and then Forget never ran for it. fsnotify's own WatchList is no
+// better, because it too only learns of a removal from those events.
+// Adding a path again watches whatever directory is there now, and does
+// nothing to a watch that is still live.
+func (d *DirWatches) Reset() {
+	clear(d.added)
 }
 
 // ReportSources calls Sources when set.

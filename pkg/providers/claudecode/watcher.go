@@ -56,16 +56,10 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 	})
 	defer throttle.Stop()
 
-	watchedDirs := make(map[string]bool)
+	watches := spi.NewDirWatches(watcher)
 	addWatch := func(dir string) error {
-		if watchedDirs[dir] {
-			return nil
-		}
-		if err := watcher.Add(dir); err != nil {
-			return err
-		}
-		watchedDirs[dir] = true
-		return nil
+		_, err := watches.Add(dir)
+		return err
 	}
 
 	watchProjectDir := func(projectDir string) {
@@ -104,6 +98,15 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 		}
 	}
 	watchExisting()
+	// Recovery from an overflow adds every directory again, because any of
+	// them may have been replaced unseen.
+	rewatchAll := func() {
+		watches.Reset()
+		if err := addWatch(homeDir); err != nil {
+			slog.Warn("watchClaudeProjects: failed to watch home directory", "directory", homeDir, "error", err)
+		}
+		watchExisting()
+	}
 	if catchUp != nil {
 		catchUp()
 	}
@@ -141,12 +144,15 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
 				claudeTails.forget(event.Name)
 			}
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				watches.Forget(event.Name)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
-				spi.RecoverFromOverflow("claude", throttle, watchExisting, catchUp)
+				spi.RecoverFromOverflow("claude", throttle, rewatchAll, catchUp)
 				continue
 			}
 			slog.Warn("watchClaudeProjects: watcher error", "error", err)
@@ -182,20 +188,34 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 	if catchUp != nil {
 		catchUp()
 	}
-	// The project directory may have been created while its creation event
-	// was lost.
-	watchCreatedProjectDir := func() {
-		if projectDirWatched {
-			return
-		}
+	watchProjectDir := func() bool {
 		if info, err := os.Stat(claudeProjectDir); err != nil || !info.IsDir() {
-			return
+			return false
 		}
 		if err := watcher.Add(claudeProjectDir); err != nil {
 			slog.Warn("watchClaudeProject: failed to watch project directory", "directory", claudeProjectDir, "error", err)
-			return
+			return false
 		}
 		projectDirWatched = true
+		return true
+	}
+	// rewatch watches the project directory if it exists, or else its parent,
+	// so that its creation produces an event. It runs when the directory is
+	// removed or renamed, and after an overflow, when it may have been
+	// created, or replaced at the same path, while the events were lost.
+	// Adding a directory already watched does nothing (see spi.DirWatches.Reset).
+	rewatch := func() {
+		if watchProjectDir() {
+			return
+		}
+		projectDirWatched = false
+		if err := watcher.Add(parentDir); err != nil {
+			slog.Warn("watchClaudeProject: failed to watch project parent directory", "directory", parentDir, "error", err)
+			return
+		}
+		// Checked again because the directory may have been created before
+		// its parent was watched, which produced no event.
+		watchProjectDir()
 	}
 
 	for {
@@ -214,6 +234,10 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 				projectDirWatched = true
 				continue
 			}
+			if strings.EqualFold(event.Name, claudeProjectDir) && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				rewatch()
+				continue
+			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 				throttle.Trigger(event.Name)
@@ -226,7 +250,7 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 				return nil
 			}
 			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
-				spi.RecoverFromOverflow("claude", throttle, watchCreatedProjectDir, catchUp)
+				spi.RecoverFromOverflow("claude", throttle, rewatch, catchUp)
 				continue
 			}
 			slog.Warn("watchClaudeProject: watcher error", "error", err)
