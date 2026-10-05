@@ -14,7 +14,7 @@ description: Archive, list, filter, annotate, and cross-host-sync coding-agent s
 
 # Tracer CLI %s
 
-Tracer archives Claude Code and Codex CLI sessions as Markdown at <root>/<provider>/<project>/<session-id>.md. Each transcript has YAML frontmatter fields including session_id, title, host, cwd, provider, models, started, ended, user_turns, agent_turns, tool_calls, and the user-maintained outcome and tags annotations.
+Tracer archives Claude Code and Codex CLI sessions as Markdown at <root>/<provider>/<project>/<session-id>.md. Each transcript has YAML frontmatter fields including session_id, title, host, cwd, provider, models, started, ended, user_turns, agent_turns, tool_calls, parent_session_id for Codex subagent runs, and the user-maintained outcome and tags annotations.
 
 ## Archive sessions
 

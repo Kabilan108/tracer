@@ -36,7 +36,12 @@ type SessionData struct {
 	UpdatedAt     string       `json:"updatedAt,omitempty"`
 	Slug          string       `json:"slug,omitempty"`
 	WorkspaceRoot string       `json:"workspaceRoot"`
-	Exchanges     []Exchange   `json:"exchanges"`
+	// ParentSessionID and SubagentName are set when another agent session
+	// started this one, so subagent runs can be traced back to the session
+	// that delegated them.
+	ParentSessionID string     `json:"parentSessionId,omitempty"`
+	SubagentName    string     `json:"subagentName,omitempty"`
+	Exchanges       []Exchange `json:"exchanges"`
 }
 
 // ProviderInfo is the information about the agent provider that created the session

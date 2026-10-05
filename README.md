@@ -121,7 +121,7 @@ tags:
 ---
 ```
 
-Derived fields are refreshed by sync and watch. User-set `outcome` and `tags` values are preserved.
+Derived fields are refreshed by sync and watch. User-set `outcome` and `tags` values are preserved. Codex subagent runs also carry `parent_session_id`, the session that started them, and are titled after their agent, such as `Subagent: /root/build_review`.
 
 Outcome and tag commands resolve bare session IDs in the writable primary archive and roots explicitly configured in `archive.annotatable_roots`. Duplicate IDs are rejected as ambiguous; explicit transcript paths continue to work for any archive path.
 

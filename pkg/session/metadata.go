@@ -13,20 +13,21 @@ import (
 const frontmatterDelimiter = "---\n"
 
 type Metadata struct {
-	SessionID  string   `yaml:"session_id" json:"session_id"`
-	Title      string   `yaml:"title" json:"title"`
-	Host       string   `yaml:"host" json:"host"`
-	CWD        string   `yaml:"cwd" json:"cwd"`
-	Provider   string   `yaml:"provider" json:"provider"`
-	Models     []string `yaml:"models" json:"models"`
-	Started    string   `yaml:"started" json:"started"`
-	Ended      string   `yaml:"ended" json:"ended"`
-	UserTurns  int      `yaml:"user_turns" json:"user_turns"`
-	AgentTurns int      `yaml:"agent_turns" json:"agent_turns"`
-	ToolCalls  int      `yaml:"tool_calls" json:"tool_calls"`
-	Outcome    string   `yaml:"outcome,omitempty" json:"outcome,omitempty"`
-	Tags       []string `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Path       string   `yaml:"-" json:"path,omitempty"`
+	SessionID       string   `yaml:"session_id" json:"session_id"`
+	Title           string   `yaml:"title" json:"title"`
+	Host            string   `yaml:"host" json:"host"`
+	CWD             string   `yaml:"cwd" json:"cwd"`
+	Provider        string   `yaml:"provider" json:"provider"`
+	ParentSessionID string   `yaml:"parent_session_id,omitempty" json:"parent_session_id,omitempty"`
+	Models          []string `yaml:"models" json:"models"`
+	Started         string   `yaml:"started" json:"started"`
+	Ended           string   `yaml:"ended" json:"ended"`
+	UserTurns       int      `yaml:"user_turns" json:"user_turns"`
+	AgentTurns      int      `yaml:"agent_turns" json:"agent_turns"`
+	ToolCalls       int      `yaml:"tool_calls" json:"tool_calls"`
+	Outcome         string   `yaml:"outcome,omitempty" json:"outcome,omitempty"`
+	Tags            []string `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Path            string   `yaml:"-" json:"path,omitempty"`
 }
 
 type Annotations struct {
@@ -40,14 +41,15 @@ func DeriveMetadata(data *schema.SessionData, host string) Metadata {
 		title = data.CreatedAt
 	}
 	metadata := Metadata{
-		SessionID: data.SessionID,
-		Title:     title,
-		Host:      host,
-		CWD:       strings.TrimSpace(data.WorkspaceRoot),
-		Provider:  data.Provider.ID,
-		Started:   data.CreatedAt,
-		Ended:     data.CreatedAt,
-		Models:    []string{},
+		SessionID:       data.SessionID,
+		Title:           title,
+		Host:            host,
+		CWD:             strings.TrimSpace(data.WorkspaceRoot),
+		Provider:        data.Provider.ID,
+		ParentSessionID: data.ParentSessionID,
+		Started:         data.CreatedAt,
+		Ended:           data.CreatedAt,
+		Models:          []string{},
 	}
 	if len(data.Exchanges) > 0 && data.Exchanges[0].StartTime != "" {
 		metadata.Started = data.Exchanges[0].StartTime
@@ -150,6 +152,11 @@ func normalizeTags(tags []string) []string {
 }
 
 func deriveTitle(data *schema.SessionData) string {
+	// Why: a subagent's prompt is written by its parent agent, and Codex
+	// encrypts it, so the agent's name is the only readable description.
+	if data.SubagentName != "" {
+		return SubagentTitle(data.SubagentName)
+	}
 	for _, exchange := range data.Exchanges {
 		for _, message := range exchange.Messages {
 			if message.Role != schema.RoleUser || isSidechain(message) || isInternalMessage(message) {
@@ -173,6 +180,12 @@ func deriveTitle(data *schema.SessionData) string {
 		}
 	}
 	return ""
+}
+
+// SubagentTitle names a subagent session after its agent. Providers' session
+// listings use it too, so a session has the same name everywhere.
+func SubagentTitle(name string) string {
+	return "Subagent: " + name
 }
 
 func hasSubstantiveText(message schema.Message) bool {

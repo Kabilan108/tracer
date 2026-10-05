@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
@@ -128,6 +130,9 @@ func GenerateAgentSession(records []map[string]interface{}, workspaceRoot string
 
 	slog.Info("GenerateAgentSession: Built exchanges", "count", len(exchanges))
 
+	metaPayload, _ := records[0]["payload"].(map[string]interface{})
+	parentSessionID, subagentName := subagentInfo(metaPayload)
+
 	sessionData := &SessionData{
 		SchemaVersion: "1.0",
 		Provider: ProviderInfo{
@@ -135,10 +140,12 @@ func GenerateAgentSession(records []map[string]interface{}, workspaceRoot string
 			Name:    "Codex CLI",
 			Version: "unknown", // Codex doesn't currently include version in JSONL
 		},
-		SessionID:     sessionID,
-		CreatedAt:     createdAt,
-		WorkspaceRoot: workspaceRoot,
-		Exchanges:     exchanges,
+		SessionID:       sessionID,
+		CreatedAt:       createdAt,
+		WorkspaceRoot:   workspaceRoot,
+		ParentSessionID: parentSessionID,
+		SubagentName:    subagentName,
+		Exchanges:       exchanges,
 	}
 
 	return sessionData, nil
@@ -185,9 +192,71 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 	var currentModel string
 	pendingTools := make(map[string]*PendingToolCall) // callID -> pending tool call
 
+	// Why: newer Codex versions write each turn as an item_completed item
+	// instead of the user_message, agent_message and agent_reasoning events.
+	// Should a file carry both forms of the same turns, rendering both would
+	// show every message twice, so the item form wins.
+	preferItems := hasItemTextRecords(records)
+
+	appendText := func(index int, timestamp string, text codexText) {
+		switch text.kind {
+		case codexTextUser, codexTextInterAgent:
+			// Each prompt, from a person or another agent, starts an exchange
+			if currentExchange != nil && len(currentExchange.Messages) > 0 {
+				exchanges = append(exchanges, *currentExchange)
+			}
+			currentExchange = &Exchange{
+				StartTime: timestamp,
+				Messages:  []Message{},
+			}
+			message := Message{
+				ID:        fmt.Sprintf("u_%d", index),
+				Timestamp: timestamp,
+				Role:      "user",
+				Content:   []ContentPart{{Type: "text", Text: text.text}},
+			}
+			if text.kind == codexTextInterAgent {
+				// Why: another agent wrote it, so it must not count as a
+				// user turn or become the session title.
+				message.ID = fmt.Sprintf("ia_%d", index)
+				message.Metadata = map[string]interface{}{"isMeta": true}
+			}
+			currentExchange.Messages = append(currentExchange.Messages, message)
+
+		case codexTextAgent, codexTextReasoning:
+			if currentExchange == nil {
+				// Create exchange if missing (shouldn't happen)
+				currentExchange = &Exchange{
+					StartTime: timestamp,
+					Messages:  []Message{},
+				}
+			}
+			message := Message{
+				ID:        fmt.Sprintf("a_%d", index),
+				Timestamp: timestamp,
+				Role:      "agent",
+				Model:     currentModel,
+				Content:   []ContentPart{{Type: "text", Text: text.text}},
+			}
+			if text.kind == codexTextReasoning {
+				message.ID = fmt.Sprintf("r_%d", index)
+				message.Content = []ContentPart{{Type: "thinking", Text: text.text}}
+			}
+			currentExchange.Messages = append(currentExchange.Messages, message)
+			currentExchange.EndTime = timestamp
+		}
+	}
+
 	for i, record := range records {
 		recordType, _ := record["type"].(string)
 		timestamp, _ := record["timestamp"].(string)
+
+		if text := codexRecordText(record); text.kind != codexTextNone {
+			if !text.legacy || !preferItems {
+				appendText(i, timestamp, text)
+			}
+			continue
+		}
 
 		switch recordType {
 		case "session_meta":
@@ -206,7 +275,6 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 			continue
 
 		case "event_msg":
-			// Handle user messages, agent messages, and agent reasoning
 			payload, ok := record["payload"].(map[string]interface{})
 			if !ok {
 				continue
@@ -215,89 +283,6 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 			payloadType, _ := payload["type"].(string)
 
 			switch payloadType {
-			case "user_message":
-				// Start a new exchange
-				message, ok := payload["message"].(string)
-				if !ok || message == "" {
-					continue
-				}
-
-				// Save previous exchange if exists
-				if currentExchange != nil && len(currentExchange.Messages) > 0 {
-					exchanges = append(exchanges, *currentExchange)
-				}
-
-				// Start new exchange
-				currentExchange = &Exchange{
-					StartTime: timestamp,
-					Messages:  []Message{},
-				}
-
-				// Add user message
-				userMsg := Message{
-					ID:        fmt.Sprintf("u_%d", i),
-					Timestamp: timestamp,
-					Role:      "user",
-					Content: []ContentPart{
-						{Type: "text", Text: message},
-					},
-				}
-				currentExchange.Messages = append(currentExchange.Messages, userMsg)
-
-			case "agent_message":
-				// Agent text response - keep as separate message per user's requirement
-				message, ok := payload["message"].(string)
-				if !ok || message == "" {
-					continue
-				}
-
-				if currentExchange == nil {
-					// Create exchange if missing (shouldn't happen)
-					currentExchange = &Exchange{
-						StartTime: timestamp,
-						Messages:  []Message{},
-					}
-				}
-
-				agentMsg := Message{
-					ID:        fmt.Sprintf("a_%d", i),
-					Timestamp: timestamp,
-					Role:      "agent",
-					Model:     currentModel,
-					Content: []ContentPart{
-						{Type: "text", Text: message},
-					},
-				}
-				currentExchange.Messages = append(currentExchange.Messages, agentMsg)
-				currentExchange.EndTime = timestamp
-
-			case "agent_reasoning":
-				// Agent thinking - keep as separate message with thinking content type
-				text, ok := payload["text"].(string)
-				if !ok || text == "" {
-					continue
-				}
-
-				if currentExchange == nil {
-					// Create exchange if missing (shouldn't happen)
-					currentExchange = &Exchange{
-						StartTime: timestamp,
-						Messages:  []Message{},
-					}
-				}
-
-				reasoningMsg := Message{
-					ID:        fmt.Sprintf("r_%d", i),
-					Timestamp: timestamp,
-					Role:      "agent",
-					Model:     currentModel,
-					Content: []ContentPart{
-						{Type: "thinking", Text: text},
-					},
-				}
-				currentExchange.Messages = append(currentExchange.Messages, reasoningMsg)
-				currentExchange.EndTime = timestamp
-
 			case "token_count":
 				// Token usage event - attach to the most recent agent message
 				if currentExchange == nil || len(currentExchange.Messages) == 0 {
@@ -489,6 +474,178 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 	}
 
 	return exchanges, nil
+}
+
+// codexTextKind classifies records that carry conversation text.
+type codexTextKind int
+
+const (
+	codexTextNone codexTextKind = iota
+	codexTextUser
+	codexTextAgent
+	codexTextReasoning
+	// codexTextInterAgent is a message from another agent in a multi-agent
+	// run, such as a parent assigning a task or a subagent reporting back.
+	codexTextInterAgent
+)
+
+// codexText is the conversation text a record carries.
+type codexText struct {
+	kind codexTextKind
+	text string
+	// legacy marks the event_msg forms that older Codex versions wrote.
+	legacy bool
+}
+
+// codexRecordText returns the conversation text in record, in any of the
+// forms Codex has written it. Records without text yield codexTextNone.
+func codexRecordText(record map[string]interface{}) codexText {
+	recordType, _ := record["type"].(string)
+	payload, _ := record["payload"].(map[string]interface{})
+	payloadType, _ := payload["type"].(string)
+
+	var text codexText
+	switch {
+	case recordType == "event_msg" && payloadType == "item_completed":
+		item, _ := payload["item"].(map[string]interface{})
+		text = completedItemText(item)
+	case recordType == "event_msg" && payloadType == "user_message":
+		message, _ := payload["message"].(string)
+		text = codexText{kind: codexTextUser, text: message, legacy: true}
+	case recordType == "event_msg" && payloadType == "agent_message":
+		message, _ := payload["message"].(string)
+		text = codexText{kind: codexTextAgent, text: message, legacy: true}
+	case recordType == "event_msg" && payloadType == "agent_reasoning":
+		reasoning, _ := payload["text"].(string)
+		text = codexText{kind: codexTextReasoning, text: reasoning, legacy: true}
+	case recordType == "response_item" && payloadType == "agent_message":
+		text = codexText{kind: codexTextInterAgent, text: interAgentText(payload)}
+	}
+
+	if strings.TrimSpace(text.text) == "" {
+		text = codexText{}
+	}
+	return text
+}
+
+// completedItemText returns the text of a finished UserMessage, AgentMessage
+// or Reasoning item.
+func completedItemText(item map[string]interface{}) codexText {
+	itemType, _ := item["type"].(string)
+	var text codexText
+	switch itemType {
+	case "UserMessage":
+		text = codexText{kind: codexTextUser, text: joinTextParts(item["content"])}
+	case "AgentMessage":
+		text = codexText{kind: codexTextAgent, text: joinTextParts(item["content"])}
+	case "Reasoning":
+		// summary_text is empty unless the model produced a reasoning summary;
+		// the full reasoning is never written in readable form.
+		summaries, _ := item["summary_text"].([]interface{})
+		var parts []string
+		for _, summary := range summaries {
+			if summaryText, ok := summary.(string); ok && strings.TrimSpace(summaryText) != "" {
+				parts = append(parts, summaryText)
+			}
+		}
+		text = codexText{kind: codexTextReasoning, text: strings.Join(parts, "\n\n")}
+	}
+	return text
+}
+
+// joinTextParts concatenates the text parts of an item's content. Images and
+// other non-text parts are skipped.
+// Why concatenate without separators: Codex splits one message into parts
+// that carry their own line breaks, so joining them restores the original.
+func joinTextParts(content interface{}) string {
+	parts, _ := content.([]interface{})
+	var builder strings.Builder
+	for _, part := range parts {
+		partMap, _ := part.(map[string]interface{})
+		// User message parts are typed "text" and agent message parts "Text"
+		partType, _ := partMap["type"].(string)
+		if !strings.EqualFold(partType, "text") {
+			continue
+		}
+		partText, _ := partMap["text"].(string)
+		builder.WriteString(partText)
+	}
+	return builder.String()
+}
+
+// interAgentText renders a message between agents. Codex keeps the routing
+// header (message type, task and sender) as plain text but encrypts the
+// payload of most messages, so only the header survives.
+func interAgentText(payload map[string]interface{}) string {
+	parts, _ := payload["content"].([]interface{})
+	var builder strings.Builder
+	encrypted := false
+	for _, part := range parts {
+		partMap, _ := part.(map[string]interface{})
+		partType, _ := partMap["type"].(string)
+		switch partType {
+		case "input_text":
+			partText, _ := partMap["text"].(string)
+			builder.WriteString(partText)
+		case "encrypted_content":
+			encrypted = true
+		}
+	}
+
+	text := strings.TrimRight(builder.String(), "\n")
+	if encrypted {
+		text += "\n[encrypted]"
+	}
+	return text
+}
+
+// hasItemTextRecords reports whether records use the item_completed form
+// for any conversation text.
+func hasItemTextRecords(records []map[string]interface{}) bool {
+	for _, record := range records {
+		text := codexRecordText(record)
+		if text.kind != codexTextNone && text.kind != codexTextInterAgent && !text.legacy {
+			return true
+		}
+	}
+	return false
+}
+
+// subagentInfo returns the parent session and agent name that a subagent
+// run's session_meta payload records. Sessions a person started have a
+// string source ("cli", "vscode", "exec") and yield empty values. Subagent
+// runs have a {"subagent": ...} source holding {"thread_spawn": {...}} for
+// spawned agents, {"other": "guardian"} for approval reviewers, or a bare
+// string for internal jobs such as memory consolidation.
+func subagentInfo(metaPayload map[string]interface{}) (parentID, name string) {
+	source, _ := metaPayload["source"].(map[string]interface{})
+	switch subagent := source["subagent"].(type) {
+	case string:
+		name = subagent
+	case map[string]interface{}:
+		// Sorted so output stays stable if Codex ever records several kinds
+		for _, kind := range slices.Sorted(maps.Keys(subagent)) {
+			switch detail := subagent[kind].(type) {
+			case string:
+				name = detail
+			case map[string]interface{}:
+				parentID, _ = detail["parent_thread_id"].(string)
+				name, _ = detail["agent_path"].(string)
+				if name == "" {
+					name, _ = detail["agent_nickname"].(string)
+				}
+			}
+			if name == "" {
+				name = kind
+			}
+		}
+	}
+
+	// Older versions record the parent only at the top level
+	if name != "" && parentID == "" {
+		parentID, _ = metaPayload["parent_thread_id"].(string)
+	}
+	return parentID, name
 }
 
 // formatToolWithSummary generates custom summary and formatted markdown for a Codex tool
