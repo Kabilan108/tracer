@@ -136,10 +136,29 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		return nil
 	}
 
+	// Once the event loop runs, a parse of a file may already be scheduled or
+	// in flight on the throttle. Day directories found from then on are fed
+	// through the throttle file by file, so one file is never parsed by two
+	// runs at once and an older snapshot can never land after a newer one.
+	eventLoopStarted := false
 	scanDayDir := func(dayDir string) {
-		if _, err := os.Stat(dayDir); err == nil {
-			slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir)
+		if _, err := os.Stat(dayDir); err != nil {
+			return
+		}
+		slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir, "viaThrottle", eventLoopStarted)
+		if !eventLoopStarted {
 			ScanCodexSessions(projectPath, dayDir, nil, debugRaw, sessionCallback)
+			return
+		}
+		entries, err := os.ReadDir(dayDir)
+		if err != nil {
+			slog.Warn("startCodexSessionWatcher: Cannot read day directory", "directory", dayDir, "error", err)
+			return
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".jsonl" {
+				throttle.Trigger(filepath.Join(dayDir, entry.Name()))
+			}
 		}
 	}
 
@@ -231,6 +250,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	}
 
 	scanDayDir(initialDayDir)
+	eventLoopStarted = true
 
 	slog.Info("startCodexSessionWatcher: Now watching for file and directory events")
 	for {
@@ -249,7 +269,6 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 
 			eventPath := event.Name
-			parentDir := filepath.Dir(eventPath)
 
 			if strings.HasSuffix(eventPath, ".jsonl") {
 				switch {
@@ -259,8 +278,10 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 						"file", eventPath)
 					throttle.Trigger(eventPath)
 				case event.Has(fsnotify.Remove):
+					// Each rollout is its own session, so removing one changes no
+					// other session's archive and needs no rescan. The removed
+					// session's archive is kept.
 					slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
-					ScanCodexSessions(projectPath, parentDir, nil, debugRaw, sessionCallback)
 				}
 				continue
 			}
