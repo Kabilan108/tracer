@@ -1,6 +1,25 @@
 package spi
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
+
+// ExpandCommandPath expands a tilde-prefix in the executable of a custom
+// provider command, such as "~/bin/claude" or "~bob/bin/codex".
+//
+// Why it falls back to the literal path instead of failing: the caller hands it
+// to exec, which then reports a clear "not found" error naming the path the
+// user configured. That is the same thing a shell does with an unresolvable
+// tilde-prefix.
+func ExpandCommandPath(path string) string {
+	expanded, err := ExpandTilde(path)
+	if err != nil {
+		slog.Warn("Could not expand custom command path", "path", path, "error", err)
+		expanded = path
+	}
+	return expanded
+}
 
 // SplitCommandLine splits a command line string into arguments, respecting quoted strings.
 //

@@ -1,7 +1,6 @@
 package spi
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -23,22 +22,6 @@ func NormalizePath(path, workspaceRoot string) string {
 	}
 
 	return path
-}
-
-// expandTilde replaces a leading ~/ with the user's home directory.
-// Returns the path unchanged if it doesn't start with ~/ or if the
-// home directory can't be determined.
-func expandTilde(path string) string {
-	if !strings.HasPrefix(path, "~/") {
-		return path
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-
-	return filepath.Join(home, path[2:])
 }
 
 // ExtractShellPathHints parses a shell command and extracts file paths that
@@ -639,10 +622,13 @@ func resolvePath(raw, cwd, workspaceRoot string) string {
 		return ""
 	}
 
-	path := raw
-
-	// Expand tilde
-	path = expandTilde(path)
+	path, err := ExpandTilde(raw)
+	if err != nil {
+		// Why: a shell leaves an unresolvable tilde-prefix such as
+		// "~nosuchuser/x" literal, so the literal path is the one the command
+		// actually wrote to.
+		path = raw
+	}
 
 	// Resolve relative paths against cwd
 	if !filepath.IsAbs(path) && cwd != "" {

@@ -2,10 +2,115 @@ package spi
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// stubLookupUser replaces the user database with fixed entries for the
+// duration of a test, so "~user" cases do not depend on the host's accounts.
+func stubLookupUser(t *testing.T, homes map[string]string) {
+	t.Helper()
+	original := lookupUser
+	lookupUser = func(name string) (*user.User, error) {
+		home, ok := homes[name]
+		if !ok {
+			return nil, user.UnknownUserError(name)
+		}
+		return &user.User{Username: name, HomeDir: home}, nil
+	}
+	t.Cleanup(func() { lookupUser = original })
+}
+
+func TestExpandTilde(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		home    string
+		want    string
+		wantErr string
+	}{
+		{name: "empty input", path: "", want: ""},
+		{name: "absolute path", path: "/srv/archive", want: "/srv/archive"},
+		{name: "relative path", path: "archive/x", want: "archive/x"},
+		{name: "tilde in the middle of a relative path", path: "a/~/b", want: "a/~/b"},
+		{name: "tilde-user in the middle of an absolute path", path: "/x/~bob/y", want: "/x/~bob/y"},
+		{name: "bare tilde", path: "~", want: "/home/me"},
+		{name: "tilde slash", path: "~/", want: "/home/me"},
+		{name: "tilde path", path: "~/x/y", want: "/home/me/x/y"},
+		{name: "tilde path is cleaned", path: "~//x/../y", want: "/home/me/y"},
+		{name: "tilde user", path: "~bob", want: "/srv/bob"},
+		{name: "tilde user slash", path: "~bob/", want: "/srv/bob"},
+		{name: "tilde user path", path: "~bob/x", want: "/srv/bob/x"},
+		{name: "unknown user", path: "~nosuchuser/x", wantErr: "unknown user nosuchuser"},
+		{name: "user without home directory", path: "~nohome/x", wantErr: "has no home directory"},
+		{name: "plus is not a username", path: "~+/x", wantErr: "unknown user +"},
+		{name: "unset HOME", path: "~/x", home: "-", wantErr: "$HOME is not defined"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := "/home/me"
+			if tt.home == "-" {
+				home = ""
+			}
+			t.Setenv("HOME", home)
+			stubLookupUser(t, map[string]string{"bob": "/srv/bob", "nohome": ""})
+
+			got, err := ExpandTilde(tt.path)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ExpandTilde(%q) error = %v, want error containing %q", tt.path, err, tt.wantErr)
+				}
+				if got != "" {
+					t.Errorf("ExpandTilde(%q) = %q on error, want empty", tt.path, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExpandTilde(%q) error = %v", tt.path, err)
+			}
+			if got != tt.want {
+				t.Errorf("ExpandTilde(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExpandTilde_RealUserDatabase(t *testing.T) {
+	// Why: the other cases stub the lookup, so this one proves an unknown
+	// name fails through os/user rather than falling back to $HOME.
+	t.Setenv("HOME", "/home/me")
+	got, err := ExpandTilde("~tracer-no-such-user-12/x")
+	if err == nil {
+		t.Fatalf("ExpandTilde() = %q, want an unknown-user error", got)
+	}
+}
+
+func TestExpandCommandPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "bare command", path: "claude", want: "claude"},
+		{name: "tilde path", path: "~/bin/claude", want: "/home/me/bin/claude"},
+		{name: "tilde user path", path: "~bob/bin/codex", want: "/srv/bob/bin/codex"},
+		{name: "unknown user stays literal", path: "~nosuchuser/bin/codex", want: "~nosuchuser/bin/codex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", "/home/me")
+			stubLookupUser(t, map[string]string{"bob": "/srv/bob"})
+
+			if got := ExpandCommandPath(tt.path); got != tt.want {
+				t.Errorf("ExpandCommandPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestGetCanonicalPath(t *testing.T) {
 	tests := []struct {

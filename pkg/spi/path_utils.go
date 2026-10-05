@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -204,6 +205,51 @@ func GetCanonicalPath(p string) (string, error) {
 	}
 
 	return result, nil
+}
+
+// lookupUser is a seam so tests can resolve "~user" without depending on the
+// host's user database.
+var lookupUser = user.Lookup
+
+// ExpandTilde expands a leading tilde-prefix the way a POSIX shell does: "~"
+// and "~/x" use the current user's home directory ($HOME), while "~bob" and
+// "~bob/x" use bob's home directory from the user database. Paths that do not
+// start with "~" are returned unchanged.
+//
+// Why it returns an error: an unresolved "~bob/x" is a relative path, so a
+// caller that creates directories would silently work under ./~bob. Callers
+// that cannot report the error decide their own fallback.
+func ExpandTilde(path string) (string, error) {
+	if !strings.HasPrefix(path, "~") {
+		return path, nil
+	}
+
+	username, rest, _ := strings.Cut(path[1:], "/")
+	home, err := tildeHomeDir(username)
+	if err != nil {
+		return "", fmt.Errorf("expand %q: %w", path, err)
+	}
+	return filepath.Join(home, rest), nil
+}
+
+// tildeHomeDir returns the home directory a tilde-prefix names. An empty
+// username means the current user, whose home comes from $HOME rather than the
+// user database, matching how shells expand a bare "~".
+func tildeHomeDir(username string) (string, error) {
+	if username == "" {
+		return os.UserHomeDir()
+	}
+
+	u, err := lookupUser(username)
+	if err != nil {
+		return "", err
+	}
+	// Why: joining onto an empty home would turn "~bob/x" into the relative
+	// path "x" instead of failing.
+	if u.HomeDir == "" {
+		return "", fmt.Errorf("user %q has no home directory", username)
+	}
+	return u.HomeDir, nil
 }
 
 // debugBaseDirOverride allows overriding the base directory for debug output.

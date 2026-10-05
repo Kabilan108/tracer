@@ -44,6 +44,8 @@ dest = "/vault/userdata/tracer-ingest/jacurutu"
 - `additional_roots`: read-only archive roots included by `tracer list`
 - `annotatable_roots`: additional roots searched by session ID for `outcome`, `tag`, and `untag`
 
+Archive paths expand a leading tilde the way a shell does: `~` and `~/x` use `$HOME`, and `~bob` and `~bob/x` use user bob's home directory. A `~user` that names no account is an error. For `additional_roots` and `annotatable_roots`, config loading fails. For `root_dir`, and `[logging] debug_dir`, commands that open the archive fail. A `~` later in a path is a literal character.
+
 Only `root_dir` receives sync and watch output. Additional roots are recursively scanned for archived transcripts and may point at host-specific rsync destinations.
 
 Every `annotatable_roots` entry must also be listed in `additional_roots`. For annotation commands, bare session IDs collect matches across the primary root and all annotatable roots. If the same ID exists in more than one searched root, Tracer reports every candidate path and requires an explicit transcript path. Explicit-path annotation works for any path.

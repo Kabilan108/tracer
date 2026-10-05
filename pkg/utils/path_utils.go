@@ -5,7 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // Directory and file constants
@@ -31,25 +32,16 @@ type OutputPathConfig struct {
 // Ensure OutputPathConfig implements OutputConfig interface
 var _ OutputConfig = (*OutputPathConfig)(nil)
 
-// ExpandTilde expands a leading ~ to the user's home directory.
-// Go's filepath.Abs does not handle ~ — it treats it as a literal directory name.
-func ExpandTilde(path string) string {
-	if !strings.HasPrefix(path, "~") {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	return filepath.Join(home, path[1:])
-}
-
 // validateDirectory validates a directory path: expands ~, converts to absolute,
 // checks existence and write permissions, or creates it if missing.
 // Returns the validated absolute path.
 func validateDirectory(dir, label string) (string, error) {
-	// Expand ~ to home directory before converting to absolute
-	dir = ExpandTilde(dir)
+	// Why: filepath.Abs treats ~ as a literal directory name, so an
+	// unresolvable "~bob" would otherwise create ./~bob under the cwd.
+	dir, err := spi.ExpandTilde(dir)
+	if err != nil {
+		return "", ValidationError{Message: fmt.Sprintf("invalid %s path: %v", label, err)}
+	}
 
 	// Convert to absolute path if relative
 	absPath, err := filepath.Abs(dir)
