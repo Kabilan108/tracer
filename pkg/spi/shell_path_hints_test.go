@@ -494,6 +494,11 @@ func TestExtractShellPathHints_TildeExpansion(t *testing.T) {
 			want:    []string{"~/bin/tool"},
 		},
 		{
+			name:    "literal marker rune is not taken for a tilde",
+			command: "touch \"\uE000bob/x\" \uE001\uE000y",
+			want:    []string{"\uE000bob/x", "\uE001\uE000y"},
+		},
+		{
 			name:    "heredoc delimiter starting with a tilde still ends the body",
 			command: "cat <<~EOF > ~bob/out\nbody\n~EOF\ntouch ~/after",
 			want:    []string{"/srv/bob/out", "/home/me/after"},
