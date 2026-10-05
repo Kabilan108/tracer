@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/tracer-ai/tracer-cli/pkg/session"
 )
@@ -127,6 +129,49 @@ func TestWriteReceivedFile_MergeMatrix(t *testing.T) {
 				t.Errorf("body = %q, want %q", body, tt.wantIncomingBody)
 			}
 		})
+	}
+}
+
+func TestWriteReceivedFile_WaitsForTranscriptLock(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "codex", "project", "one.md")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Why a sibling: the lock covers the transcript's directory, so a
+	// tag on another session in the same project must also hold off receive.
+	unlock, err := session.LockTranscript(filepath.Join(filepath.Dir(target), "two.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := sync.OnceFunc(unlock)
+	t.Cleanup(release)
+
+	incoming := transcriptBytes(t, "one", "", nil, "# incoming\n")
+	done := make(chan error, 1)
+	go func() {
+		_, err := writeReceivedFile(root, target, incoming)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("writeReceivedFile() returned %v while the transcript lock was held", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("transcript was written while the lock was held: stat error = %v", err)
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("writeReceivedFile() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("writeReceivedFile() did not finish after the lock was released")
+	}
+	if _, body := readAnnotations(t, target); body != "# incoming\n" {
+		t.Errorf("body = %q, want incoming body", body)
 	}
 }
 

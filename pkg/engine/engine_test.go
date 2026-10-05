@@ -262,6 +262,53 @@ func TestProcessSession_PreservesAnnotations(t *testing.T) {
 	}
 }
 
+func TestProcessSession_WaitsForTranscriptLock(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := newRunModeOptions(tempDir, 40*time.Millisecond)
+	engine, err := New(opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+	session := newSession("codex", "Codex CLI", "locked", "locked", "first request")
+	target := opts.PathBuilder("codex", &session)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := sessionpkg.LockTranscript(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := sync.OnceFunc(unlock)
+	t.Cleanup(release)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := engine.ProcessSession("codex", &session)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("ProcessSession() returned %v while the transcript lock was held", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("transcript was written while the lock was held: stat error = %v", err)
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ProcessSession() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessSession() did not finish after the lock was released")
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("transcript was not written: %v", err)
+	}
+}
+
 func TestQueueSessionUpdate_DebouncesByProviderAndSession(t *testing.T) {
 	tempDir := t.TempDir()
 	engine := newEngineForTest(t, tempDir)
