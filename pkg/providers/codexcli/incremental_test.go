@@ -205,6 +205,71 @@ func TestCodexIncremental_PartialTrailingLine(t *testing.T) {
 	assertSameCodexSession(t, completed, fullCodexSession(t, sessionPath))
 }
 
+// TestCodexIncremental_FinalRecordWithoutNewline: a complete final record
+// whose newline is not written yet is part of a full read, so it must be in
+// the incremental output, without entering the cache it is read into again
+// once the newline arrives.
+func TestCodexIncremental_FinalRecordWithoutNewline(t *testing.T) {
+	tests := []struct {
+		name    string
+		content func(t *testing.T) string
+	}{
+		{
+			name: "last record of a session",
+			content: func(t *testing.T) string {
+				return codexMetaLine(t, testCodexSessionID) + codexExchangeLines(t, 0, 0)
+			},
+		},
+		{
+			name:    "only the meta line",
+			content: func(t *testing.T) string { return codexMetaLine(t, testCodexSessionID) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionPath := filepath.Join(t.TempDir(), "rollout.jsonl")
+			content := strings.TrimSuffix(tt.content(t), "\n")
+			if err := os.WriteFile(sessionPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			full := func() string {
+				records, err := readSessionRecords(sessionPath)
+				if err != nil {
+					t.Fatalf("full read: %v", err)
+				}
+				data, _ := json.Marshal(records)
+				return string(data)
+			}
+			accept := func(*codexSessionMeta) bool { return true }
+
+			tails := newCodexTailCache(time.Hour)
+			for _, step := range []string{"first read", "re-read without changes"} {
+				meta, records, err := tails.read(sessionPath, accept)
+				if err != nil || meta == nil {
+					t.Fatalf("%s: meta = %v, err = %v", step, meta, err)
+				}
+				if got, _ := json.Marshal(records); string(got) != full() {
+					t.Errorf("%s: records differ from a full read\n got: %s\nwant: %s", step, got, full())
+				}
+			}
+
+			more := codexExchangeLines(t, 1, 0)
+			appendToFile(t, sessionPath, "\n"+more)
+			_, records, err := tails.read(sessionPath, accept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := json.Marshal(records); string(got) != full() {
+				t.Errorf("after the newline: records differ from a full read\n got: %s\nwant: %s", got, full())
+			}
+			if consumed := tails.bytesRead.Load(); consumed != fileSize(t, sessionPath) {
+				t.Errorf("consumed %d bytes in total, want each byte once (%d)", consumed, fileSize(t, sessionPath))
+			}
+		})
+	}
+}
+
 func TestCodexIncremental_RestartsWhenFileIsRewritten(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -214,6 +279,24 @@ func TestCodexIncremental_RestartsWhenFileIsRewritten(t *testing.T) {
 			name: "truncated to fewer exchanges",
 			rewrite: func(t *testing.T, sessionPath string) {
 				writeCodexFixture(t, sessionPath, 2, 0)
+			},
+		},
+		{
+			name: "rewritten in place to the same size",
+			rewrite: func(t *testing.T, sessionPath string) {
+				content, err := os.ReadFile(sessionPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Changing the last record keeps the result independent of the
+				// filesystem's mtime granularity.
+				rewritten := strings.ReplaceAll(string(content), " done", " fine")
+				if len(rewritten) != len(content) {
+					t.Fatalf("fixture: rewrite changed the size")
+				}
+				if err := os.WriteFile(sessionPath, []byte(rewritten), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 		{

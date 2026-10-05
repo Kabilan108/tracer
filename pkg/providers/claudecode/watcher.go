@@ -22,7 +22,9 @@ func ensureClaudeDirWatch(claudeDir string, projectsDir string, addWatch func(st
 	}
 }
 
-func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+// catchUp, when set, runs once after every existing project directory is
+// watched and before the first event is handled (see spi.CatchUpWatcher).
+func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get user home directory: %w", err)
@@ -91,6 +93,9 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	if info, err := os.Stat(projectsDir); err == nil && info.IsDir() {
 		watchProjectsRoot()
 	}
+	if catchUp != nil {
+		catchUp()
+	}
 
 	for {
 		select {
@@ -134,7 +139,7 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	}
 }
 
-func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create Claude project watcher: %w", err)
@@ -158,6 +163,9 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 		if err := watcher.Add(parentDir); err != nil {
 			return fmt.Errorf("failed to watch Claude project parent directory: %w", err)
 		}
+	}
+	if catchUp != nil {
+		catchUp()
 	}
 
 	for {

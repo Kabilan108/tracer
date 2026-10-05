@@ -2,8 +2,11 @@ package spi
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"sync"
@@ -51,25 +54,47 @@ type TailCursor struct {
 	Dev    uint64
 	Inode  uint64
 	Offset int64 // bytes consumed; always just past a newline
+
+	// Size and ModTime are the file's stat when it was last read, and
+	// Boundary hashes the bytes just before Offset. Together they tell an
+	// append from an in-place rewrite (see cursorContinues).
+	Size     int64
+	ModTime  int64
+	Boundary uint64
 }
 
 // TailResult reports what one ReadAppendedLines call did.
 type TailResult struct {
 	Restarted bool  // the cursor no longer applied, so the file was read from the start
 	Bytes     int64 // bytes of complete lines consumed by this call, newlines included
+
+	// Pending is the text after the last newline when it is a complete JSON
+	// value. It is not consumed: the cursor stays before it, so it is
+	// delivered again, as a regular line, once its newline is written.
+	// Callers include it in their output without adding it to their per-file
+	// state, which keeps it from being counted twice.
+	Pending []byte
 }
+
+// boundaryWindow is how many bytes before the cursor offset are hashed.
+// Why 64: the end of a JSONL record usually carries its timestamp or ids, so
+// the last bytes before the boundary differ between records; 64 bytes cost a
+// single small pread to verify.
+const boundaryWindow = 64
 
 // ReadAppendedLines calls onLine for every complete line written to path after
 // cursor, then advances cursor past the last newline.
 //
-// A trailing line without a newline is left unread: the writer may still be in
+// A trailing line without a newline is not consumed: the writer may still be in
 // the middle of it, and consuming half a JSON record would either drop it as
-// corrupt or require re-reading it later anyway.
+// corrupt or require re-reading it later anyway. When that trailing text is
+// already a complete JSON value it is returned in TailResult.Pending, because
+// a full read of the file includes it as the final record.
 //
 // When the file was truncated, replaced (different device/inode), or rewritten
-// in place so the byte before the cursor is no longer a newline, restart is
-// called before any line is delivered and the file is read from the beginning.
-// Callers must discard their per-file state in restart.
+// in place (see cursorContinues), restart is called before any line is
+// delivered and the file is read from the beginning. Callers must discard
+// their per-file state in restart.
 //
 // If onLine returns an error, reading stops, cursor is left unchanged, and the
 // caller's per-file state reflects a partial read; callers must discard it.
@@ -104,6 +129,9 @@ func ReadAppendedLines(path string, cursor *TailCursor, restart func(), onLine f
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if errors.Is(readErr, io.EOF) {
+			if trailing := bytes.TrimSpace(line); len(trailing) > 0 && json.Valid(trailing) {
+				result.Pending = line
+			}
 			break
 		}
 		if readErr != nil {
@@ -115,12 +143,36 @@ func ReadAppendedLines(path string, cursor *TailCursor, restart func(), onLine f
 		}
 	}
 
-	*cursor = TailCursor{Dev: stat.Dev, Inode: stat.Inode, Offset: offset}
+	boundary, err := boundaryHash(file, offset)
+	if err != nil {
+		return result, fmt.Errorf("read %s before offset %d: %w", path, offset, err)
+	}
+	*cursor = TailCursor{
+		Dev:      stat.Dev,
+		Inode:    stat.Inode,
+		Offset:   offset,
+		Size:     stat.Size,
+		ModTime:  stat.ModTime,
+		Boundary: boundary,
+	}
 	result.Bytes = offset - start
 	return result, nil
 }
 
 // cursorContinues reports whether the file can be read from cursor.Offset.
+//
+// Why these checks: transcripts only grow, so an append always leaves the
+// same device and inode with a larger size. A file that is smaller than at the
+// last read, or the same size with a different mtime, was modified some other
+// way. A rewrite that grows the file is caught by the hash of the bytes just
+// before the consumed boundary no longer matching.
+//
+// Blind spot: a rewrite that grows the file (or keeps its size within the
+// filesystem's mtime granularity) and leaves the boundaryWindow bytes before
+// the offset identical is taken for an append, so changed earlier records stay
+// cached until the file is replaced, truncated or evicted from the cache.
+// Hashing more of the prefix would close it at the cost of re-reading it on
+// every event, which is the cost incremental reading removes.
 func cursorContinues(file *os.File, cursor TailCursor, stat FileStat) bool {
 	if cursor.Inode == 0 && cursor.Offset == 0 {
 		return false
@@ -128,17 +180,23 @@ func cursorContinues(file *os.File, cursor TailCursor, stat FileStat) bool {
 	if cursor.Dev != stat.Dev || cursor.Inode != stat.Inode || stat.Size < cursor.Offset {
 		return false
 	}
-	if cursor.Offset == 0 {
-		return true
-	}
-	// Why: a truncate-and-rewrite between two events can leave the file at
-	// least as long as before with the same inode; the consumed prefix ending
-	// in a newline is the cheapest evidence that it is still the same content.
-	var last [1]byte
-	if _, err := file.ReadAt(last[:], cursor.Offset-1); err != nil {
+	if stat.Size < cursor.Size || (stat.Size == cursor.Size && stat.ModTime != cursor.ModTime) {
 		return false
 	}
-	return last[0] == '\n'
+	boundary, err := boundaryHash(file, cursor.Offset)
+	return err == nil && boundary == cursor.Boundary
+}
+
+// boundaryHash hashes the up to boundaryWindow bytes that end at offset.
+func boundaryHash(file *os.File, offset int64) (uint64, error) {
+	size := min(offset, boundaryWindow)
+	window := make([]byte, size)
+	if _, err := file.ReadAt(window, offset-size); err != nil {
+		return 0, err
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write(window)
+	return hash.Sum64(), nil
 }
 
 // DefaultTailIdleTTL is how long a session file's decoded records stay cached

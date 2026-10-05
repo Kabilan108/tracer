@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "time/tzdata" // the zone tests must not depend on the host's zoneinfo
 
 	"github.com/tracer-ai/tracer-cli/pkg/providers/claudecode"
 	"github.com/tracer-ai/tracer-cli/pkg/providers/codexcli"
@@ -234,6 +235,17 @@ func setStoredSourceVersion(t *testing.T, dbPath string, version int) {
 type parseCountingProvider struct {
 	spi.Provider
 	parsed []string
+	// caughtUp, when set, is closed once the watcher's catch-up pass returned.
+	caughtUp chan struct{}
+}
+
+func (p *parseCountingProvider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
+	return p.Provider.(spi.CatchUpWatcher).WatchAgentWithCatchUp(ctx, projectPath, debugRaw, func() {
+		catchUp()
+		if p.caughtUp != nil {
+			close(p.caughtUp)
+		}
+	}, sessionCallback)
 }
 
 func (p *parseCountingProvider) StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor spi.SessionVisitor) error {
@@ -252,18 +264,8 @@ func TestRunDaemonStartup_RealProvidersSkipUnchangedSources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	codexPath := filepath.Join(home, ".codex", "sessions", "2026", "10", "01", "rollout-2026-10-01T12-00-00-019a0000-0000-7000-8000-00000000000a.jsonl")
-	writeFixture(t, codexPath,
-		`{"type":"session_meta","timestamp":"2026-10-01T12:00:00Z","payload":{"id":"019a0000-0000-7000-8000-00000000000a","timestamp":"2026-10-01T12:00:00Z","cwd":"/tmp/startup-project"}}`,
-		`{"type":"event_msg","timestamp":"2026-10-01T12:00:01Z","payload":{"type":"user_message","message":"Codex prompt"}}`,
-		`{"type":"event_msg","timestamp":"2026-10-01T12:00:02Z","payload":{"type":"agent_message","message":"Codex reply"}}`,
-	)
-	claudeProject := filepath.Join(home, ".claude", "projects", "-tmp-startup-project")
-	claudePath := filepath.Join(claudeProject, "33333333-3333-4333-8333-333333333333.jsonl")
-	writeFixture(t, claudePath,
-		`{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"33333333-3333-4333-8333-333333333333","timestamp":"2026-10-01T12:00:00.000Z","cwd":"/tmp/startup-project","message":{"role":"user","content":"Claude prompt"}}`,
-		`{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"33333333-3333-4333-8333-333333333333","timestamp":"2026-10-01T12:00:01.000Z","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"Claude reply"}]}}`,
-	)
+	codexPath, claudePath := writeRealProviderFixtures(t, home, t.TempDir())
+	claudeProject := filepath.Dir(claudePath)
 
 	codex := &parseCountingProvider{Provider: codexcli.NewProvider()}
 	claude := &parseCountingProvider{Provider: claudecode.NewProvider()}
@@ -329,5 +331,231 @@ func writeFixture(t *testing.T, path string, lines ...string) {
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+const (
+	testCodexSessionID  = "019a0000-0000-7000-8000-00000000000a"
+	testClaudeSessionID = "33333333-3333-4333-8333-333333333333"
+)
+
+// writeRealProviderFixtures writes one Codex rollout, dated before today, and
+// one Claude session under home. It returns their paths.
+func writeRealProviderFixtures(t *testing.T, home string, cwd string) (string, string) {
+	t.Helper()
+	codexPath := filepath.Join(home, ".codex", "sessions", "2026", "10", "01", "rollout-2026-10-01T12-00-00-"+testCodexSessionID+".jsonl")
+	writeFixture(t, codexPath,
+		`{"type":"session_meta","timestamp":"2026-10-01T12:00:00Z","payload":{"id":"`+testCodexSessionID+`","timestamp":"2026-10-01T12:00:00Z","cwd":"`+cwd+`"}}`,
+		`{"type":"event_msg","timestamp":"2026-10-01T12:00:01Z","payload":{"type":"user_message","message":"Codex prompt"}}`,
+		`{"type":"event_msg","timestamp":"2026-10-01T12:00:02Z","payload":{"type":"agent_message","message":"Codex reply"}}`,
+	)
+	// GetClaudeCodeProjectDir requires the projects root to exist
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeProject, err := claudecode.GetClaudeCodeProjectDir(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudePath := filepath.Join(claudeProject, testClaudeSessionID+".jsonl")
+	writeFixture(t, claudePath,
+		`{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"`+testClaudeSessionID+`","timestamp":"2026-10-01T12:00:00.000Z","cwd":"`+cwd+`","message":{"role":"user","content":"Claude prompt"}}`,
+		`{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"`+testClaudeSessionID+`","timestamp":"2026-10-01T12:00:01.000Z","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"Claude reply"}]}}`,
+	)
+	return codexPath, claudePath
+}
+
+// TestIngestProviders_UnreadableSourceIsRetried: a source that cannot be read
+// is counted as an error and not fingerprinted, so once it is readable again
+// the next startup parses it instead of skipping it as unchanged.
+func TestIngestProviders_UnreadableSourceIsRetried(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files regardless of permissions")
+	}
+
+	tests := []struct {
+		name       string
+		providerID string
+		scoped     bool // ingest only the fixture's project
+	}{
+		{name: "codex rollout", providerID: "codex"},
+		{name: "claude project, all projects", providerID: "claude"},
+		{name: "claude project, project-scoped ingest", providerID: "claude", scoped: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			cwd := t.TempDir()
+			codexPath, claudePath := writeRealProviderFixtures(t, home, cwd)
+
+			unreadable := codexPath
+			provider := &parseCountingProvider{Provider: codexcli.NewProvider()}
+			if tt.providerID == "claude" {
+				unreadable = claudePath
+				provider = &parseCountingProvider{Provider: claudecode.NewProvider()}
+			}
+			projectPath := ""
+			if tt.scoped {
+				projectPath = cwd
+			}
+			if err := os.Chmod(unreadable, 0o000); err != nil {
+				t.Fatal(err)
+			}
+
+			opts := newRunModeOptions(t.TempDir(), 10*time.Millisecond)
+			opts.SkipUnchangedSources = true
+			startup := func() Summary {
+				provider.parsed = nil
+				engine, err := New(opts)
+				if err != nil {
+					t.Fatalf("New() error = %v", err)
+				}
+				summary, err := engine.IngestProviders(context.Background(), projectPath, map[string]spi.Provider{tt.providerID: provider}, false)
+				if err != nil {
+					t.Fatalf("IngestProviders() error = %v", err)
+				}
+				if err := engine.Close(); err != nil {
+					t.Fatalf("Close() error = %v", err)
+				}
+				return summary
+			}
+
+			if summary := startup(); summary.Errors != 1 || summary.Created != 0 {
+				t.Errorf("unreadable source: summary = %+v, want 1 error", summary)
+			}
+
+			if err := os.Chmod(unreadable, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			summary := startup()
+			if summary.Errors != 0 || summary.Created != 1 || len(provider.parsed) != 1 {
+				t.Errorf("readable again: summary = %+v, parsed %v; want the source parsed and its session created", summary, provider.parsed)
+			}
+		})
+	}
+}
+
+// TestWatchProviders_CatchUpArchivesWritesBeforeWatchStarts: a write made
+// after ingest read a source but before the watcher watched it produces no
+// event. The catch-up pass must archive it, for files outside today's Codex
+// directory too, while still parsing nothing when nothing changed.
+func TestWatchProviders_CatchUpArchivesWritesBeforeWatchStarts(t *testing.T) {
+	tests := []struct {
+		name        string
+		change      string // provider whose source is appended to: "codex", "claude" or ""
+		wantArchive string // text the changed session's archive must contain
+	}{
+		{name: "codex rollout from an earlier day", change: "codex", wantArchive: "Codex caught up"},
+		{name: "claude session", change: "claude", wantArchive: "Claude caught up"},
+		{name: "no changes parse nothing", change: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			codexPath, claudePath := writeRealProviderFixtures(t, home, t.TempDir())
+
+			codex := &parseCountingProvider{Provider: codexcli.NewProvider()}
+			claude := &parseCountingProvider{Provider: claudecode.NewProvider()}
+			providers := map[string]spi.Provider{"codex": codex, "claude": claude}
+			opts := newRunModeOptions(t.TempDir(), 10*time.Millisecond)
+			opts.SkipUnchangedSources = true
+
+			engine, err := New(opts)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			defer func() { _ = engine.Close() }()
+			if _, err := engine.IngestProviders(context.Background(), "", providers, false); err != nil {
+				t.Fatalf("IngestProviders() error = %v", err)
+			}
+
+			var archive string
+			switch tt.change {
+			case "codex":
+				appendTo(t, codexPath, `{"type":"event_msg","timestamp":"2026-10-01T12:00:03Z","payload":{"type":"agent_message","message":"Codex caught up"}}`+"\n")
+				archive = filepath.Join(opts.HistoryDir, "codex", testCodexSessionID+".md")
+			case "claude":
+				appendTo(t, claudePath, `{"type":"assistant","uuid":"a2","parentUuid":"a1","sessionId":"`+testClaudeSessionID+`","timestamp":"2026-10-01T12:00:02.000Z","message":{"role":"assistant","model":"claude-test","content":[{"type":"text","text":"Claude caught up"}]}}`+"\n")
+				archive = filepath.Join(opts.HistoryDir, "claude", testClaudeSessionID+".md")
+			}
+
+			codex.parsed, claude.parsed = nil, nil
+			codex.caughtUp, claude.caughtUp = make(chan struct{}), make(chan struct{})
+			ctx, cancel := context.WithCancel(context.Background())
+			watchDone := make(chan error, 1)
+			go func() { watchDone <- engine.WatchProviders(ctx, "", providers, false) }()
+
+			for _, provider := range []*parseCountingProvider{codex, claude} {
+				select {
+				case <-provider.caughtUp:
+				case <-time.After(10 * time.Second):
+					t.Fatal("catch-up pass did not finish")
+				}
+			}
+			cancel()
+			if err := <-watchDone; err != nil {
+				t.Fatalf("WatchProviders() error = %v", err)
+			}
+
+			parsed := map[string][]string{"codex": codex.parsed, "claude": claude.parsed}
+			for providerID, sources := range parsed {
+				want := 0
+				if providerID == tt.change {
+					want = 1
+				}
+				if len(sources) != want {
+					t.Errorf("catch-up parsed %s sources %v, want %d", providerID, sources, want)
+				}
+			}
+			if archive != "" {
+				content, err := os.ReadFile(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(content), tt.wantArchive) {
+					t.Errorf("archive %s is missing %q written before the watch started", archive, tt.wantArchive)
+				}
+			}
+		})
+	}
+}
+
+func TestFingerprintScope_LocalZone(t *testing.T) {
+	load := func(name string) *time.Location {
+		t.Helper()
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc
+	}
+	newYork, toronto, tokyo := load("America/New_York"), load("America/Toronto"), load("Asia/Tokyo")
+	utcOpts := Options{HistoryDir: "/history", UseUTC: true}
+	localOpts := Options{HistoryDir: "/history", UseUTC: false}
+
+	tests := []struct {
+		name     string
+		opts     Options
+		a, b     *time.Location
+		wantSame bool
+	}{
+		{name: "UTC rendering ignores the local zone", opts: utcOpts, a: newYork, b: tokyo, wantSame: true},
+		{name: "local rendering re-parses after a zone change", opts: localOpts, a: newYork, b: tokyo, wantSame: false},
+		{name: "zones with the same offset history render alike", opts: localOpts, a: newYork, b: toronto, wantSame: true},
+		{name: "same standard offset without DST differs", opts: localOpts, a: newYork, b: time.FixedZone("EST", -5*60*60), wantSame: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := fingerprintScope(tt.opts, "host", tt.a)
+			b := fingerprintScope(tt.opts, "host", tt.b)
+			if (a == b) != tt.wantSame {
+				t.Errorf("scopes %q and %q: same = %v, want %v", a, b, a == b, tt.wantSame)
+			}
+		})
 	}
 }

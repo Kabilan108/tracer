@@ -387,6 +387,118 @@ func TestClaudeIncremental_RebuildDoesNotRaceRendering(t *testing.T) {
 	renderers.Wait()
 }
 
+// TestClaudeIncremental_RewriteToAnotherSession: a file rewritten in place to
+// hold another session must be emitted as that session, even though its inode
+// is unchanged and it did not shrink.
+func TestClaudeIncremental_RewriteToAnotherSession(t *testing.T) {
+	projectDir := t.TempDir()
+	fixture := newClaudeFixture(t)
+	sessionPath := filepath.Join(projectDir, "session.jsonl")
+
+	before, last := fixture.exchange(testClaudeSession, "", 0, 0)
+	writeFile(t, sessionPath, before)
+	tails := newClaudeTailCache(time.Hour)
+	incrementalClaudeSessions(t, tails, projectDir, sessionPath)
+	// A second, continued read leaves both the tail and the session ID cached.
+	appended, _ := fixture.exchange(testClaudeSession, last, 1, 0)
+	appendFile(t, sessionPath, appended)
+	before += appended
+	assertSameClaudeSessions(t, "before rewrite",
+		incrementalClaudeSessions(t, tails, projectDir, sessionPath), fullClaudeSessions(t, projectDir, testClaudeSession))
+
+	after, _ := fixture.exchange(testOtherSession, "", 2, 2048)
+	if len(after) < len(before) {
+		t.Fatalf("fixture: rewrite must not shrink the file (%d < %d)", len(after), len(before))
+	}
+	writeFile(t, sessionPath, after)
+	assertSameClaudeSessions(t, "after rewrite",
+		incrementalClaudeSessions(t, tails, projectDir, sessionPath), fullClaudeSessions(t, projectDir, testOtherSession))
+}
+
+// TestClaudeIncremental_FinalRecordWithoutNewline: a complete final record
+// whose newline is not written yet is part of a full parse, so it must be in
+// the incremental output, without entering the cache it is read into again
+// once the newline arrives.
+func TestClaudeIncremental_FinalRecordWithoutNewline(t *testing.T) {
+	fixture := newClaudeFixture(t)
+	userLine, userID := fixture.record(testClaudeSession, "user", "",
+		map[string]interface{}{"role": "user", "content": "Start"}, nil)
+	assistantLine, assistantID := fixture.record(testClaudeSession, "assistant", userID,
+		map[string]interface{}{"role": "assistant", "content": []interface{}{map[string]interface{}{"type": "text", "text": "ok"}}}, nil)
+	summaryLine := fixture.line(map[string]interface{}{"type": "summary", "summary": "Attached summary", "leafUuid": assistantID})
+	sidechainLine, _ := fixture.record(testClaudeSession, "user", "",
+		map[string]interface{}{"role": "user", "content": "Subagent"}, map[string]interface{}{"isSidechain": true})
+	laterLine, _ := fixture.record(testClaudeSession, "user", assistantID,
+		map[string]interface{}{"role": "user", "content": "Later"}, nil)
+
+	tests := []struct {
+		name    string
+		head    string // newline-terminated lines already in the file
+		pending string // final line, written without its newline
+	}{
+		{name: "regular record", head: userLine + assistantLine, pending: laterLine},
+		{name: "summary attaching to the previous record", head: userLine + assistantLine, pending: summaryLine},
+		{name: "parentless sidechain record", head: userLine + assistantLine, pending: sidechainLine},
+		{name: "only record in the file", pending: userLine},
+		{name: "half-written record", head: userLine + assistantLine, pending: laterLine[:len(laterLine)/2] + "\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionPath := filepath.Join(t.TempDir(), testClaudeSession+".jsonl")
+			pending := strings.TrimSuffix(tt.pending, "\n")
+			writeFile(t, sessionPath, tt.head+pending)
+			full := func() []JSONLRecord {
+				records, err := NewJSONLParser().parseSessionFile(sessionPath)
+				if err != nil {
+					t.Fatalf("full parse: %v", err)
+				}
+				return records
+			}
+			assertRecords := func(step string, got, want []JSONLRecord) {
+				t.Helper()
+				gotJSON, _ := json.Marshal(got)
+				wantJSON, _ := json.Marshal(want)
+				if string(gotJSON) != string(wantJSON) {
+					t.Errorf("%s: records differ\n got: %s\nwant: %s", step, gotJSON, wantJSON)
+				}
+			}
+
+			tails := newClaudeTailCache(time.Hour)
+			for _, step := range []string{"first read", "re-read without changes"} {
+				got, _, err := tails.readLocked(sessionPath)
+				if err != nil {
+					t.Fatalf("%s: %v", step, err)
+				}
+				assertRecords(step, got, full())
+			}
+
+			// The cache holds only the newline-terminated lines.
+			headPath := filepath.Join(t.TempDir(), "head.jsonl")
+			writeFile(t, headPath, tt.head)
+			headRecords, err := NewJSONLParser().parseSessionFile(headPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range headRecords {
+				headRecords[i].File = sessionPath
+			}
+			tail, _ := tails.files.Get(sessionPath)
+			assertRecords("cached records", tail.parser.records, headRecords)
+
+			appendFile(t, sessionPath, "\n"+laterLine)
+			got, restarted, err := tails.readLocked(sessionPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if restarted {
+				t.Error("completing the pending line restarted the read")
+			}
+			assertRecords("after the newline", got, full())
+		})
+	}
+}
+
 // TestClaudeIncremental_ResumesFileStateAtEveryBoundary checks that summary
 // and sidechain handling carry across reads: splitting a file at any line
 // boundary must yield exactly the records of a single full parse.
@@ -416,11 +528,11 @@ func TestClaudeIncremental_ResumesFileStateAtEveryBoundary(t *testing.T) {
 			writeFile(t, sessionPath, strings.Join(lines[:split], ""))
 
 			tails := newClaudeTailCache(time.Hour)
-			if _, err := tails.readLocked(sessionPath); err != nil {
+			if _, _, err := tails.readLocked(sessionPath); err != nil {
 				t.Fatalf("first read: %v", err)
 			}
 			appendFile(t, sessionPath, strings.Join(lines[split:], ""))
-			got, err := tails.readLocked(sessionPath)
+			got, _, err := tails.readLocked(sessionPath)
 			if err != nil {
 				t.Fatalf("second read: %v", err)
 			}

@@ -88,6 +88,57 @@ func TestLoadCodexSessionMeta(t *testing.T) {
 	}
 }
 
+// TestParseCodexSessionFile: content that is not a session of the project
+// yields no session, but a file that cannot be read is an error, because the
+// engine treats a source that yielded no session as done.
+func TestParseCodexSessionFile(t *testing.T) {
+	meta := func(cwd string, padding int) string {
+		return `{"type":"session_meta","timestamp":"2026-10-01T12:00:00Z","payload":{"id":"019a0000-0000-7000-8000-0000000000aa","timestamp":"2026-10-01T12:00:00Z","cwd":"` +
+			cwd + `","instructions":"` + strings.Repeat("i", padding) + `"}}` + "\n"
+	}
+	userTurn := `{"type":"event_msg","timestamp":"2026-10-01T12:00:01Z","payload":{"type":"user_message","message":"Hello"}}` + "\n"
+
+	tests := []struct {
+		name        string
+		content     string
+		mode        os.FileMode
+		projectPath string
+		wantSession bool
+		wantErr     bool
+	}{
+		{name: "session of the project", content: meta("/tmp/project", 0) + userTurn, mode: 0o644, projectPath: "/tmp/project", wantSession: true},
+		{name: "meta line longer than a scanner token", content: meta("/tmp/project", 128*KB) + userTurn, mode: 0o644, wantSession: true},
+		{name: "session of another project", content: meta("/tmp/other", 0) + userTurn, mode: 0o644, projectPath: "/tmp/project"},
+		{name: "empty file", content: "", mode: 0o644},
+		{name: "first line is not session meta", content: userTurn, mode: 0o644},
+		{name: "first line is corrupt", content: "{corrupt\n" + userTurn, mode: 0o644},
+		{name: "unreadable file", content: meta("/tmp/project", 0) + userTurn, mode: 0o000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.mode&0o400 == 0 && os.Geteuid() == 0 {
+				t.Skip("root reads files regardless of permissions")
+			}
+			sessionPath := filepath.Join(t.TempDir(), "rollout.jsonl")
+			if err := os.WriteFile(sessionPath, []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(sessionPath, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+
+			session, err := parseCodexSessionFile(sessionPath, tt.projectPath, normalizeCodexPath(tt.projectPath), false)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if (session != nil) != tt.wantSession {
+				t.Errorf("session = %v, want session %v", session, tt.wantSession)
+			}
+		})
+	}
+}
+
 // TestProcessSessionRecords was removed because processSessionRecords is not exported
 // The logic is tested indirectly through readSessionRecords and processSessionToAgentChat
 

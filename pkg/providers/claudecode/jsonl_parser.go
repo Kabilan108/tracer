@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -345,6 +347,8 @@ type claudeFileParser struct {
 	// lastRecordData is the Data of the most recent record with a uuid:
 	// summaries attach to it and parentless sidechain records chain to it.
 	lastRecordData map[string]interface{}
+	// lastRecordIndex is the index in records of the record holding lastRecordData.
+	lastRecordIndex int
 	// pendingSummary holds a summary string when it appears before any records in the file.
 	// This happens when the summary is on line 1 - we can't attach it to a previous record
 	// because none exists yet, so we hold it and attach it to the next record we process.
@@ -442,8 +446,24 @@ func (fp *claudeFileParser) consumeLine(line []byte) error {
 	// Track last non-summary record for sidechain processing
 	if data["uuid"] != nil {
 		fp.lastRecordData = data
+		fp.lastRecordIndex = len(fp.records) - 1
 	}
 	return nil
+}
+
+// provisional returns a copy of fp that can consume a line without changing fp.
+// Why: the watcher shows a final record that has no newline yet, but must
+// not cache it, because it reads that line again once the newline arrives.
+// A summary line writes into lastRecordData, so that record's map is cloned.
+func (fp *claudeFileParser) provisional() *claudeFileParser {
+	clone := *fp
+	clone.records = fp.records[:len(fp.records):len(fp.records)]
+	if fp.lastRecordData != nil {
+		clone.records = slices.Clone(fp.records)
+		clone.lastRecordData = maps.Clone(fp.lastRecordData)
+		clone.records[fp.lastRecordIndex].Data = clone.lastRecordData
+	}
+	return &clone
 }
 
 // eliminateDuplicates removes duplicate records by uuid, keeping the earliest by timestamp

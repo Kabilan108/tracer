@@ -36,6 +36,9 @@ type providerIngest struct {
 	projectPath string
 	debugRaw    bool
 	record      func(ProcessOutcome)
+	// catchUp marks the pass a watcher runs after registering its watches:
+	// it parses only sources changed since ingest and reports no progress.
+	catchUp bool
 
 	sourcesReported bool
 	total           int
@@ -50,7 +53,7 @@ type providerIngest struct {
 }
 
 // ingestProvider streams one provider's history through the engine.
-func (e *Engine) ingestProvider(ctx context.Context, providerID string, provider spi.Provider, projectPath string, debugRaw bool, record func(ProcessOutcome)) {
+func (e *Engine) ingestProvider(ctx context.Context, providerID string, provider spi.Provider, projectPath string, debugRaw bool, catchUp bool, record func(ProcessOutcome)) {
 	streamer, ok := provider.(spi.SessionStreamer)
 	if !ok {
 		streamer = sliceStreamer{provider: provider}
@@ -63,6 +66,7 @@ func (e *Engine) ingestProvider(ctx context.Context, providerID string, provider
 		projectPath: projectPath,
 		debugRaw:    debugRaw,
 		record:      record,
+		catchUp:     catchUp,
 	}
 	start := time.Now()
 	err := streamer.StreamAgentChatSessions(ctx, projectPath, debugRaw, spi.SessionVisitor{
@@ -76,14 +80,15 @@ func (e *Engine) ingestProvider(ctx context.Context, providerID string, provider
 		"sources", run.total,
 		"parsed_sources", run.parsedSources,
 		"skipped_sources", run.skippedSources,
-		"skip_unchanged", e.opts.SkipUnchangedSources,
+		"skip_unchanged", run.skipAllowed(),
+		"catch_up", catchUp,
 		"duration", time.Since(start),
 		"error", err)
 	if err == nil || ctx.Err() != nil {
 		return
 	}
 
-	if !run.sourcesReported && e.opts.OnProviderScanComplete != nil {
+	if !run.sourcesReported && !catchUp && e.opts.OnProviderScanComplete != nil {
 		e.opts.OnProviderScanComplete(providerID, 0, err)
 	}
 	record(OutcomeError)
@@ -94,14 +99,27 @@ func (e *Engine) ingestProvider(ctx context.Context, providerID string, provider
 func (r *providerIngest) sources(total int) {
 	r.sourcesReported = true
 	r.total = total
-	if r.engine.opts.OnProviderScanComplete != nil {
+	if !r.catchUp && r.engine.opts.OnProviderScanComplete != nil {
 		r.engine.opts.OnProviderScanComplete(r.providerID, total, nil)
 	}
 }
 
+// skipAllowed reports whether unchanged sources may be skipped in this pass.
+func (r *providerIngest) skipAllowed() bool {
+	// Why catch-up always skips: it looks only for sources that changed after
+	// ingest, which already parsed everything else, debug files included.
+	// Why debugRaw otherwise disables skipping: it asks for debug files of
+	// every session, which only a parse produces.
+	return r.catchUp || (r.engine.opts.SkipUnchangedSources && !r.debugRaw)
+}
+
 func (r *providerIngest) shouldParse(src spi.SessionSource) bool {
 	r.processed++
-	sessionIDs, unchanged := r.engine.sourceUnchanged(r.providerID, r.projectPath, src, r.debugRaw)
+	var sessionIDs []string
+	unchanged := false
+	if r.skipAllowed() {
+		sessionIDs, unchanged = r.engine.sourceUnchanged(r.providerID, r.projectPath, src)
+	}
 	if !unchanged {
 		r.inSource = true
 		r.parsedSources++
@@ -161,9 +179,13 @@ func (r *providerIngest) done(src spi.SessionSource, err error) {
 
 	switch {
 	case err != nil:
-		// Parse failures are logged by the provider; leaving the source
-		// unrecorded makes the next startup retry it.
-		slog.Debug("Engine ingest source failed", "provider", r.providerID, "source", src.Key, "error", err)
+		// Counted like a session that failed to archive, so sync does not
+		// report success; leaving the source unrecorded makes the next
+		// startup retry it.
+		r.record(OutcomeError)
+		r.engine.recordOutcome(OutcomeError)
+		r.reportSession(OutcomeError)
+		slog.Error("Engine ingest source failed", "provider", r.providerID, "source", src.Key, "error", err)
 	case r.failed:
 		// Some sessions were not archived; retry the source next startup.
 	default:
@@ -177,24 +199,22 @@ func (r *providerIngest) done(src spi.SessionSource, err error) {
 }
 
 func (r *providerIngest) reportSession(outcome ProcessOutcome) {
-	if r.engine.opts.OnSessionProcessed != nil {
+	if !r.catchUp && r.engine.opts.OnSessionProcessed != nil {
 		r.engine.opts.OnSessionProcessed(r.providerID, outcome, r.processed, r.total)
 	}
 }
 
 func (r *providerIngest) reportSource() {
-	if r.engine.opts.OnSourceProcessed != nil {
+	if !r.catchUp && r.engine.opts.OnSourceProcessed != nil {
 		r.engine.opts.OnSourceProcessed(r.providerID, r.processed, r.total)
 	}
 }
 
-// sourceUnchanged reports whether src can be skipped: skipping is enabled, the
-// source's files and the fingerprint scope match what was recorded when its
-// sessions were archived, and every archived output still exists.
-func (e *Engine) sourceUnchanged(providerID string, projectPath string, src spi.SessionSource, debugRaw bool) ([]string, bool) {
-	// Why debugRaw disables skipping: it asks for debug files of every session,
-	// which only a parse produces.
-	if !e.opts.SkipUnchangedSources || debugRaw || src.Key == "" {
+// sourceUnchanged reports whether src can be skipped: the source's files and
+// the fingerprint scope match what was recorded when its sessions were
+// archived, and every archived output still exists.
+func (e *Engine) sourceUnchanged(providerID string, projectPath string, src spi.SessionSource) ([]string, bool) {
+	if src.Key == "" {
 		return nil, false
 	}
 
@@ -260,6 +280,60 @@ func (e *Engine) sourceFingerprint(projectPath string, src spi.SessionSource) st
 		writeField(fmt.Sprintf("%d/%d/%d/%d", file.Size, file.ModTime, file.Dev, file.Inode))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// fingerprintScope covers the engine settings, outside the source files, that
+// shape archived output.
+// Why the hostname: it is written into each transcript's frontmatter.
+// Why the local zone only without UTC: timestamps are then rendered with the
+// local UTC offset in effect at each timestamp.
+func fingerprintScope(opts Options, host string, local *time.Location) string {
+	scope := fmt.Sprintf("history=%s utc=%t host=%s scope=%s", opts.HistoryDir, opts.UseUTC, host, opts.SourceScope)
+	if !opts.UseUTC {
+		scope += " zone=" + zoneOffsetsKey(local)
+	}
+	return scope
+}
+
+// zoneOffsetsKey identifies the UTC offsets loc assigns across the years
+// transcripts can carry, which is all that local-time rendering takes from
+// the zone (timestamps are formatted with a numeric offset).
+// Why the offset history rather than the zone name or current offset: the
+// current offset changes at every DST transition, which would re-parse
+// everything twice a year although no rendered timestamp changes, and
+// time.Local reports its name as "Local". Two zones with the same offsets
+// render identically, so switching between them correctly re-parses nothing.
+func zoneOffsetsKey(loc *time.Location) string {
+	from := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	hash := sha256.New()
+	t := from.In(loc)
+	_, prevOffset := t.Zone()
+	fmt.Fprintf(hash, "%d;", prevOffset)
+	for {
+		_, end := t.ZoneBounds()
+		if end.IsZero() || !end.After(t) || !end.Before(until) {
+			break
+		}
+		t = end
+		if _, offset := t.Zone(); offset != prevOffset {
+			fmt.Fprintf(hash, "%d:%d;", t.Unix(), offset)
+			prevOffset = offset
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:16]
+}
+
+// catchUpWatcher runs an engine catch-up pass through a provider's spi.CatchUpWatcher.
+type catchUpWatcher struct {
+	spi.Provider
+	watcher spi.CatchUpWatcher
+	catchUp func()
+}
+
+func (w catchUpWatcher) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return w.watcher.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, w.catchUp, sessionCallback)
 }
 
 // sliceStreamer adapts a provider without spi.SessionStreamer. Each session is

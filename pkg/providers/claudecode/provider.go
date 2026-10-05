@@ -415,13 +415,18 @@ func streamProjectSessions(claudeProjectDir string, workspaceRoot string, debugR
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation
 func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return p.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, nil, sessionCallback)
+}
+
+// WatchAgentWithCatchUp is WatchAgent with a catch-up pass; see spi.CatchUpWatcher.
+func (p *Provider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("WatchAgent: Starting Claude Code activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
 
 	if strings.TrimSpace(projectPath) == "" {
 		slog.Info("WatchAgent: Using global event-driven mode for Claude projects")
-		return watchClaudeProjects(ctx, debugRaw, sessionCallback)
+		return watchClaudeProjects(ctx, debugRaw, catchUp, sessionCallback)
 	}
 
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
@@ -431,7 +436,7 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 	}
 
 	slog.Info("WatchAgent: Project directory found", "directory", claudeProjectDir)
-	return watchClaudeProject(ctx, claudeProjectDir, debugRaw, sessionCallback)
+	return watchClaudeProject(ctx, claudeProjectDir, debugRaw, catchUp, sessionCallback)
 }
 
 // isSyntheticMessage checks if a message is synthetic/internal and should be skipped

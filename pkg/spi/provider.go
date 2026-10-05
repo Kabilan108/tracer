@@ -114,6 +114,19 @@ type SessionStreamer interface {
 	StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor SessionVisitor) error
 }
 
+// CatchUpWatcher is implemented by providers whose watcher can run a catch-up
+// pass between registering its watches and handling its first event.
+// Why: a write made after historical ingest read a source but before the
+// watcher watched it produces no event, so it would never reach the archive.
+// Running catchUp once every existing source is watched closes that gap, and
+// because events arriving meanwhile are handled only after catchUp returns, a
+// catch-up parse never lands after a newer watch parse of the same session.
+type CatchUpWatcher interface {
+	// WatchAgentWithCatchUp behaves like WatchAgent and calls catchUp, when
+	// set, synchronously and exactly once before processing any event.
+	WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*AgentChatSession)) error
+}
+
 // ReportSources calls Sources when set.
 func (v SessionVisitor) ReportSources(total int) {
 	if v.Sources != nil {

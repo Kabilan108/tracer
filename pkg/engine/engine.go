@@ -133,14 +133,13 @@ func New(opts Options) (*Engine, error) {
 		return nil, err
 	}
 
-	// Why the hostname: it is written into each transcript's frontmatter.
 	host, _ := os.Hostname()
 	return &Engine{
 		opts:             opts,
 		state:            state,
 		stats:            sessionpkg.NewStatisticsCollector(opts.StatisticsPath),
 		pending:          make(map[string]*pendingUpdate),
-		fingerprintScope: fmt.Sprintf("history=%s utc=%t host=%s scope=%s", opts.HistoryDir, opts.UseUTC, host, opts.SourceScope),
+		fingerprintScope: fingerprintScope(opts, host, time.Local),
 	}, nil
 }
 
@@ -206,7 +205,7 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			e.ingestProvider(ctx, providerID, provider, projectPath, debugRaw, record)
+			e.ingestProvider(ctx, providerID, provider, projectPath, debugRaw, false, record)
 		}()
 	}
 	wg.Wait()
@@ -217,8 +216,24 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 }
 
 // WatchProviders watches providers and queues incremental updates through debounce processing.
+// Providers that implement spi.CatchUpWatcher re-ingest, once their watches
+// are registered, every source that changed since it was last archived, so
+// writes made between ingest and the watch starting are not lost.
 func (e *Engine) WatchProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool) error {
-	return utils.WatchProviders(ctx, projectPath, providers, debugRaw, func(providerID string, session *spi.AgentChatSession) {
+	watched := make(map[string]spi.Provider, len(providers))
+	for providerID, provider := range providers {
+		watched[providerID] = provider
+		if watcher, ok := provider.(spi.CatchUpWatcher); ok {
+			watched[providerID] = catchUpWatcher{
+				Provider: provider,
+				watcher:  watcher,
+				catchUp: func() {
+					e.ingestProvider(ctx, providerID, provider, projectPath, debugRaw, true, func(ProcessOutcome) {})
+				},
+			}
+		}
+	}
+	return utils.WatchProviders(ctx, projectPath, watched, debugRaw, func(providerID string, session *spi.AgentChatSession) {
 		e.QueueSessionUpdate(providerID, session)
 	})
 }

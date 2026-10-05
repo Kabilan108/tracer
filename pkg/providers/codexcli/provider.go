@@ -286,11 +286,18 @@ func (p *Provider) StreamAgentChatSessions(ctx context.Context, projectPath stri
 
 // parseCodexSessionFile returns the session stored in sessionPath when it belongs to projectPath.
 // Files that are not Codex sessions, or belong to other projects, yield nil without an error.
+// Failing to read the file is an error.
+// Why the distinction: the engine records an unchanged source that yielded no
+// session as done, so treating an unreadable file as "no session" would skip
+// it on every later startup even after it becomes readable.
 func parseCodexSessionFile(sessionPath string, projectPath string, normalizedProjectPath string, debugRaw bool) (*spi.AgentChatSession, error) {
 	meta, err := loadCodexSessionMeta(sessionPath)
-	if err != nil {
-		slog.Debug("parseCodexSessionFile: Failed to load Codex session meta", "path", sessionPath, "error", err)
+	if errors.Is(err, errNotCodexSession) {
+		slog.Debug("parseCodexSessionFile: Not a Codex session", "path", sessionPath, "error", err)
 		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load codex session meta: %w", err)
 	}
 	if !codexSessionMatches(meta, projectPath, normalizedProjectPath) {
 		return nil, nil
@@ -363,6 +370,11 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation (blocks indefinitely)
 func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return p.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, nil, sessionCallback)
+}
+
+// WatchAgentWithCatchUp is WatchAgent with a catch-up pass; see spi.CatchUpWatcher.
+func (p *Provider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("WatchAgent: Starting Codex CLI activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
@@ -375,7 +387,7 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 		sessionCallback(agentChatSession)
 	}
 
-	if err := WatchForCodexSessions(ctx, projectPath, "", debugRaw, wrappedCallback); err != nil {
+	if err := WatchForCodexSessions(ctx, projectPath, debugRaw, catchUp, wrappedCallback); err != nil {
 		slog.Error("WatchAgent: Codex session watcher stopped", "error", err)
 		return fmt.Errorf("watch codex sessions: %w", err)
 	}
@@ -618,7 +630,13 @@ func (r *codexRecordReader) consumeLine(line []byte) error {
 	return nil
 }
 
+// errNotCodexSession marks a file whose content is not a Codex session, as
+// opposed to a file that could not be read.
+var errNotCodexSession = errors.New("not a codex session")
+
 // loadCodexSessionMeta reads the first JSON line from a session file and parses the session metadata.
+// Content that is not session metadata yields an error wrapping errNotCodexSession;
+// open and read failures are returned as they are.
 func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
 	file, err := os.Open(sessionPath)
 	if err != nil {
@@ -628,31 +646,29 @@ func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
 		_ = file.Close()
 	}()
 
-	scanner := bufio.NewScanner(file)
-	if !scanner.Scan() {
-		if scanErr := scanner.Err(); scanErr != nil {
-			return nil, scanErr
-		}
-		return nil, errors.New("codex session meta not found")
+	// Why bufio.Reader and not Scanner: a meta line longer than the Scanner's
+	// token limit would be a read error, making a valid session unreadable.
+	line, err := bufio.NewReader(file).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
-
-	return parseCodexSessionMeta(scanner.Bytes())
+	return parseCodexSessionMeta(line)
 }
 
 // parseCodexSessionMeta parses the first line of a session file as session metadata.
 func parseCodexSessionMeta(line []byte) (*codexSessionMeta, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return nil, errors.New("codex session meta is empty")
+		return nil, fmt.Errorf("%w: session meta is empty", errNotCodexSession)
 	}
 
 	var meta codexSessionMeta
 	if err := json.Unmarshal(line, &meta); err != nil {
-		return nil, fmt.Errorf("failed to parse codex session meta: %w", err)
+		return nil, fmt.Errorf("%w: failed to parse session meta: %v", errNotCodexSession, err)
 	}
 
 	if meta.Type != "session_meta" {
-		return nil, fmt.Errorf("unexpected codex session record type: %s", meta.Type)
+		return nil, fmt.Errorf("%w: unexpected record type: %s", errNotCodexSession, meta.Type)
 	}
 
 	return &meta, nil
