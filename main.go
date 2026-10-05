@@ -212,6 +212,20 @@ func (t *syncProgressTracker) onSessionProcessed(providerID string, outcome engi
 	}
 }
 
+func (t *syncProgressTracker) onSourceProcessed(providerID string, processed int, total int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, ok := t.providers[providerID]
+	if !ok {
+		return
+	}
+	state.Processed = processed
+	if total > 0 {
+		state.Total = total
+	}
+}
+
 func (t *syncProgressTracker) startRendering(period time.Duration) func() {
 	t.render(false)
 
@@ -420,7 +434,20 @@ func engineOptionsFromOutputConfig(config *utils.OutputPathConfig, useUTC bool, 
 		Debounce:             debounce,
 		PathBuilder:          archivePathBuilder(config),
 		ShouldProcessSession: shouldProcessSession,
+		SourceScope:          ingestSourceScope(),
 	}
+}
+
+// ingestSourceScope describes the config that decides which sessions are
+// archived, so editing exclusions makes the next watch startup re-parse
+// sources instead of trusting fingerprints recorded under the old rules.
+func ingestSourceScope() string {
+	if loadedConfig == nil {
+		return ""
+	}
+	return fmt.Sprintf("exclude_projects=%q exclude_path_globs=%q",
+		loadedConfig.Ingest.ExcludeProjects,
+		loadedConfig.Ingest.ExcludePathGlobs)
 }
 
 func sortedProviderIDs(providers map[string]spi.Provider) []string {
@@ -621,6 +648,7 @@ func createSyncCommand() *cobra.Command {
 				opts.OnProviderScanStart = tracker.onProviderScanStart
 				opts.OnProviderScanComplete = tracker.onProviderScanComplete
 				opts.OnSessionProcessed = tracker.onSessionProcessed
+				opts.OnSourceProcessed = tracker.onSourceProcessed
 				stopProgress = tracker.startRendering(1 * time.Second)
 			}
 

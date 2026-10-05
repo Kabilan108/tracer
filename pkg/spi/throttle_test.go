@@ -182,60 +182,115 @@ func TestFileThrottle_StopWaitsForRunningAndIgnoresLaterTriggers(t *testing.T) {
 	}
 }
 
-func TestFileThrottle_StopDrainsAcceptedChanges(t *testing.T) {
+func TestFileThrottle_DrainsAcceptedChanges(t *testing.T) {
+	drains := []struct {
+		name  string
+		drain func(*FileThrottle)
+	}{
+		{name: "Stop", drain: (*FileThrottle).Stop},
+		{name: "Flush", drain: (*FileThrottle).Flush},
+	}
 	tests := []struct {
 		name          string
-		triggerDuring bool // trigger again while the first run is in flight, before Stop
+		triggerDuring bool // trigger again while the first run is in flight, before draining
 		wantRuns      int32
 	}{
 		{name: "scheduled run executes without waiting out its delay", wantRuns: 1},
 		{name: "change during an in-flight run gets its follow-up", triggerDuring: true, wantRuns: 2},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var runs atomic.Int32
-			started := make(chan struct{}, 2)
-			release := make(chan struct{})
-			// A delay far beyond the test's runtime proves Stop does not wait
-			// for any timer.
-			throttle := NewFileThrottle(time.Hour, 0, 1, func(string) {
-				runs.Add(1)
-				started <- struct{}{}
-				<-release
-			})
+	for _, d := range drains {
+		for _, tt := range tests {
+			t.Run(d.name+"/"+tt.name, func(t *testing.T) {
+				var runs atomic.Int32
+				started := make(chan struct{}, 2)
+				release := make(chan struct{})
+				// A delay far beyond the test's runtime proves draining does
+				// not wait for any timer.
+				throttle := NewFileThrottle(time.Hour, 0, 1, func(string) {
+					runs.Add(1)
+					started <- struct{}{}
+					<-release
+				})
+				defer throttle.Stop()
 
-			throttle.Trigger("a")
-			stopped := make(chan struct{})
-			if tt.triggerDuring {
-				// Start the first run without Stop by firing its timer early.
-				throttle.mu.Lock()
-				throttle.entries["a"].timer.Reset(0)
-				throttle.mu.Unlock()
-				<-started
 				throttle.Trigger("a")
-				go func() {
-					throttle.Stop()
-					close(stopped)
-				}()
-			} else {
-				go func() {
-					throttle.Stop()
-					close(stopped)
-				}()
-				<-started
-			}
-			close(release)
+				drained := make(chan struct{})
+				if tt.triggerDuring {
+					// Start the first run without draining by firing its timer early.
+					throttle.mu.Lock()
+					throttle.entries["a"].timer.Reset(0)
+					throttle.mu.Unlock()
+					<-started
+					throttle.Trigger("a")
+					go func() {
+						d.drain(throttle)
+						close(drained)
+					}()
+				} else {
+					go func() {
+						d.drain(throttle)
+						close(drained)
+					}()
+					<-started
+				}
+				close(release)
 
-			select {
-			case <-stopped:
-			case <-time.After(5 * time.Second):
-				t.Fatal("Stop did not return")
-			}
-			if got := runs.Load(); got != tt.wantRuns {
-				t.Errorf("runs = %d, want %d", got, tt.wantRuns)
-			}
-		})
+				select {
+				case <-drained:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("%s did not return", d.name)
+				}
+				if got := runs.Load(); got != tt.wantRuns {
+					t.Errorf("runs = %d, want %d", got, tt.wantRuns)
+				}
+			})
+		}
+	}
+}
+
+func TestFileThrottle_FlushKeepsThrottling(t *testing.T) {
+	var runs atomic.Int32
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	throttle := NewFileThrottle(time.Hour, 0, 1, func(string) {
+		runs.Add(1)
+		started <- struct{}{}
+		<-release
+	})
+	defer func() {
+		release <- struct{}{}
+		throttle.Stop()
+	}()
+
+	throttle.Trigger("a")
+	release <- struct{}{}
+	throttle.Flush()
+	<-started
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("runs after Flush = %d, want 1", got)
+	}
+
+	// After Flush, a change during a run waits out the delay again instead
+	// of running right away as it does while draining.
+	throttle.Trigger("a")
+	throttle.mu.Lock()
+	throttle.entries["a"].timer.Reset(0)
+	throttle.mu.Unlock()
+	<-started
+	throttle.Trigger("a")
+	release <- struct{}{}
+	waitFor(t, 5*time.Second, func() bool {
+		throttle.mu.Lock()
+		defer throttle.mu.Unlock()
+		return !throttle.entries["a"].running
+	})
+
+	throttle.mu.Lock()
+	scheduled := throttle.entries["a"].timer != nil
+	throttle.mu.Unlock()
+	if got := runs.Load(); got != 2 || !scheduled {
+		t.Errorf("runs = %d, follow-up scheduled = %t; want 2 runs and a scheduled follow-up", got, scheduled)
 	}
 }
 

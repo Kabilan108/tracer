@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
+
+// newFSWatcher creates the watchers' fsnotify watchers.
+// Why a variable: tests replace it to drop events and inject errors, which a
+// real event queue overflow does but cannot be made to do deterministically.
+var newFSWatcher = fsnotify.NewWatcher
 
 func ensureClaudeDirWatch(claudeDir string, projectsDir string, addWatch func(string) error, watchProjectsRoot func()) {
 	if err := addWatch(claudeDir); err != nil {
@@ -22,7 +28,9 @@ func ensureClaudeDirWatch(claudeDir string, projectsDir string, addWatch func(st
 	}
 }
 
-func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+// catchUp, when set, runs once after every existing project directory is
+// watched and before the first event is handled (see spi.CatchUpWatcher).
+func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get user home directory: %w", err)
@@ -31,7 +39,7 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	claudeDir := filepath.Join(homeDir, ".claude")
 	projectsDir := filepath.Join(claudeDir, "projects")
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := newFSWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create Claude watcher: %w", err)
 	}
@@ -48,16 +56,10 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	})
 	defer throttle.Stop()
 
-	watchedDirs := make(map[string]bool)
+	watches := spi.NewDirWatches(watcher)
 	addWatch := func(dir string) error {
-		if watchedDirs[dir] {
-			return nil
-		}
-		if err := watcher.Add(dir); err != nil {
-			return err
-		}
-		watchedDirs[dir] = true
-		return nil
+		_, err := watches.Add(dir)
+		return err
 	}
 
 	watchProjectDir := func(projectDir string) {
@@ -85,11 +87,28 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	if err := addWatch(homeDir); err != nil {
 		return fmt.Errorf("failed to watch home directory: %w", err)
 	}
-	if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
-		ensureClaudeDirWatch(claudeDir, projectsDir, addWatch, watchProjectsRoot)
+	// Already watched directories are skipped, so this also picks up
+	// directories whose creation event was lost.
+	watchExisting := func() {
+		if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
+			ensureClaudeDirWatch(claudeDir, projectsDir, addWatch, watchProjectsRoot)
+		}
+		if info, err := os.Stat(projectsDir); err == nil && info.IsDir() {
+			watchProjectsRoot()
+		}
 	}
-	if info, err := os.Stat(projectsDir); err == nil && info.IsDir() {
-		watchProjectsRoot()
+	watchExisting()
+	// Recovery from an overflow adds every directory again, because any of
+	// them may have been replaced unseen.
+	rewatchAll := func() {
+		watches.Reset()
+		if err := addWatch(homeDir); err != nil {
+			slog.Warn("watchClaudeProjects: failed to watch home directory", "directory", homeDir, "error", err)
+		}
+		watchExisting()
+	}
+	if catchUp != nil {
+		catchUp()
 	}
 
 	for {
@@ -122,17 +141,27 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 				throttle.Trigger(event.Name)
 			}
+			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				claudeTails.forget(event.Name)
+			}
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				watches.Forget(event.Name)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
+			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
+				spi.RecoverFromOverflow("claude", throttle, rewatchAll, catchUp)
+				continue
 			}
 			slog.Warn("watchClaudeProjects: watcher error", "error", err)
 		}
 	}
 }
 
-func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	watcher, err := fsnotify.NewWatcher()
+func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
+	watcher, err := newFSWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create Claude project watcher: %w", err)
 	}
@@ -156,6 +185,38 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 			return fmt.Errorf("failed to watch Claude project parent directory: %w", err)
 		}
 	}
+	if catchUp != nil {
+		catchUp()
+	}
+	watchProjectDir := func() bool {
+		if info, err := os.Stat(claudeProjectDir); err != nil || !info.IsDir() {
+			return false
+		}
+		if err := watcher.Add(claudeProjectDir); err != nil {
+			slog.Warn("watchClaudeProject: failed to watch project directory", "directory", claudeProjectDir, "error", err)
+			return false
+		}
+		projectDirWatched = true
+		return true
+	}
+	// rewatch watches the project directory if it exists, or else its parent,
+	// so that its creation produces an event. It runs when the directory is
+	// removed or renamed, and after an overflow, when it may have been
+	// created, or replaced at the same path, while the events were lost.
+	// Adding a directory already watched does nothing (see spi.DirWatches.Reset).
+	rewatch := func() {
+		if watchProjectDir() {
+			return
+		}
+		projectDirWatched = false
+		if err := watcher.Add(parentDir); err != nil {
+			slog.Warn("watchClaudeProject: failed to watch project parent directory", "directory", parentDir, "error", err)
+			return
+		}
+		// Checked again because the directory may have been created before
+		// its parent was watched, which produced no event.
+		watchProjectDir()
+	}
 
 	for {
 		select {
@@ -173,13 +234,24 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 				projectDirWatched = true
 				continue
 			}
+			if strings.EqualFold(event.Name, claudeProjectDir) && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				rewatch()
+				continue
+			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
 				throttle.Trigger(event.Name)
 			}
+			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				claudeTails.forget(event.Name)
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
+			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
+				spi.RecoverFromOverflow("claude", throttle, rewatch, catchUp)
+				continue
 			}
 			slog.Warn("watchClaudeProject: watcher error", "error", err)
 		}
@@ -195,6 +267,10 @@ func newClaudeThrottle(run func(key string)) *spi.FileThrottle {
 	return spi.NewSessionFileThrottle(1, run)
 }
 
+// emitClaudeSessions parses Claude sessions and calls sessionCallback for each.
+// With a changedFile, only the session that file belongs to is emitted, and it
+// is rebuilt incrementally from cached records (see claudeTailCache).
+// Without one, every session in the project directory is parsed from scratch.
 func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession), changedFile ...string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -202,41 +278,28 @@ func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback 
 		}
 	}()
 
-	parser := NewJSONLParser()
-	targetSessionUUID := ""
-
+	var agentSessions []*spi.AgentChatSession
 	if len(changedFile) > 0 && changedFile[0] != "" {
-		sessionID, err := extractSessionIDFromFile(changedFile[0])
-		if err != nil || sessionID == "" {
+		sessions, err := claudeTails.agentSessionsForFile(claudeProjectDir, changedFile[0], debugRaw)
+		if err != nil {
+			slog.Warn("emitClaudeSessions: failed to parse changed session", "file", changedFile[0], "error", err)
 			return
 		}
-		targetSessionUUID = sessionID
-	}
-
-	var parseErr error
-	if targetSessionUUID != "" {
-		parseErr = parser.ParseProjectSessionsForSession(claudeProjectDir, true, targetSessionUUID)
+		agentSessions = sessions
 	} else {
-		parseErr = parser.ParseProjectSessions(claudeProjectDir, true)
+		parser := NewJSONLParser()
+		if err := parser.ParseProjectSessions(claudeProjectDir, true); err != nil {
+			slog.Warn("emitClaudeSessions: failed to parse project sessions", "directory", claudeProjectDir, "error", err)
+			return
+		}
+		for _, session := range parser.Sessions {
+			if agentSession := convertToAgentChatSession(session, "", debugRaw); agentSession != nil {
+				agentSessions = append(agentSessions, agentSession)
+			}
+		}
 	}
-	if parseErr != nil {
-		slog.Warn("emitClaudeSessions: failed to parse project sessions", "directory", claudeProjectDir, "error", parseErr)
-		return
-	}
 
-	for _, session := range parser.Sessions {
-		if len(session.Records) == 0 {
-			continue
-		}
-		if targetSessionUUID != "" && session.SessionUuid != targetSessionUUID {
-			continue
-		}
-
-		agentSession := convertToAgentChatSession(session, "", debugRaw)
-		if agentSession == nil {
-			continue
-		}
-
+	for _, agentSession := range agentSessions {
 		// Delivered synchronously so snapshots reach the engine in the order
 		// they were parsed; the callback only queues the update.
 		func() {

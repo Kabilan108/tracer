@@ -26,8 +26,14 @@ func WatchAgents(ctx context.Context, projectPath string, debugRaw bool, session
 
 // WatchProviders starts watchers for the given providers concurrently.
 // Calls sessionCallback when any provider detects activity.
-// Runs until context is cancelled or all watchers stop.
+// Runs until context is cancelled, a watcher fails, or all watchers stop.
 // Context cancellation (Ctrl+C) is treated as a clean exit, not an error.
+//
+// A watcher error stops every other watcher and is returned. Why: a daemon
+// left running with one provider's watcher dead stops archiving that provider
+// silently, while exiting lets a supervisor such as systemd restart it whole.
+// The exception is spi.ErrNothingToWatch, a provider with nothing on this
+// machine to watch; the other watchers keep running.
 //
 // Parameters:
 //   - ctx: Context for cancellation and timeout control
@@ -40,6 +46,10 @@ func WatchAgents(ctx context.Context, projectPath string, debugRaw bool, session
 // The callback should not block as it may delay other provider notifications.
 func WatchProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool, sessionCallback func(providerID string, session *spi.AgentChatSession)) error {
 	slog.Info("WatchProviders: Starting multi-provider watch", "projectPath", projectPath, "providerCount", len(providers), "debugRaw", debugRaw)
+
+	parentCtx := ctx
+	ctx, stopAll := context.WithCancel(parentCtx)
+	defer stopAll()
 
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(providers))
@@ -69,17 +79,20 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 			}
 
 			err := provider.WatchAgent(ctx, projectPath, debugRaw, wrappedCallback)
-			if err != nil {
-				// Context cancellation is expected when user presses Ctrl+C, not an error
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					slog.Info("WatchProviders: Provider watcher stopped", "provider", provider.Name())
-					errChan <- nil
-				} else {
-					slog.Error("WatchProviders: Provider watcher failed", "provider", provider.Name(), "error", err)
-					errChan <- fmt.Errorf("%s: %w", provider.Name(), err)
-				}
-			} else {
+			switch {
+			case err == nil:
 				errChan <- nil
+			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+				// Expected on Ctrl+C, or when another watcher failed
+				slog.Info("WatchProviders: Provider watcher stopped", "provider", provider.Name())
+				errChan <- nil
+			case errors.Is(err, spi.ErrNothingToWatch):
+				slog.Warn("WatchProviders: Provider has nothing to watch", "provider", provider.Name(), "error", err)
+				errChan <- fmt.Errorf("%s: %w", provider.Name(), err)
+			default:
+				slog.Error("WatchProviders: Provider watcher failed; stopping all watchers", "provider", provider.Name(), "error", err)
+				stopAll()
+				errChan <- fmt.Errorf("%s: %w", provider.Name(), err)
 			}
 		}()
 	}
@@ -96,7 +109,7 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 		}
 	}
 
-	if ctx.Err() != nil {
+	if parentCtx.Err() != nil {
 		return nil
 	}
 	if len(errs) > 0 {

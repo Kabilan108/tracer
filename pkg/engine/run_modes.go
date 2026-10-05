@@ -25,7 +25,14 @@ func RunIngest(ctx context.Context, opts Options, projectPath string, providers 
 }
 
 // RunDaemon executes an initial ingest, then watches for incremental updates until ctx is canceled.
+//
+// Unlike RunIngest, the initial ingest skips sources unchanged since they were
+// archived. Why: the watcher restarts automatically (service restarts, crash
+// loops, logins), and re-parsing the full history each time is what made
+// startup expensive. `tracer sync` keeps parsing everything, so it remains the
+// explicit way to rebuild or repair the archive.
 func RunDaemon(ctx context.Context, opts Options, projectPath string, providers map[string]spi.Provider, debugRaw bool) (Summary, error) {
+	opts.SkipUnchangedSources = true
 	engine, err := New(opts)
 	if err != nil {
 		return Summary{}, err

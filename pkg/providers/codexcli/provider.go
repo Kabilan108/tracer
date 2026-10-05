@@ -2,6 +2,7 @@ package codexcli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -223,55 +224,119 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 
 // GetAgentChatSessions retrieves chat sessions for the given project path.
 func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
-	// Find all sessions for this project (don't stop on first)
-	sessions, err := findCodexSessions(projectPath, "", false)
+	var result []spi.AgentChatSession
+	total, done := 0, 0
+	err := p.StreamAgentChatSessions(context.Background(), projectPath, debugRaw, spi.SessionVisitor{
+		Sources: func(n int) { total = n },
+		Session: func(_ spi.SessionSource, session *spi.AgentChatSession) {
+			result = append(result, *session)
+		},
+		Done: func(spi.SessionSource, error) {
+			done++
+			if progress != nil {
+				progress(done, total)
+			}
+		},
+	})
 	if err != nil {
-		// If sessions directory doesn't exist, return empty list (not an error)
-		if strings.Contains(err.Error(), "sessions directory not accessible") ||
-			strings.Contains(err.Error(), "sessions root") ||
-			strings.Contains(err.Error(), "home directory") {
-			return []spi.AgentChatSession{}, nil
-		}
 		return nil, fmt.Errorf("failed to find codex sessions: %w", err)
 	}
+	return result, nil
+}
 
-	totalSessions := len(sessions)
+// StreamAgentChatSessions parses one session file at a time, newest first, and reports its session.
+// Each Codex session lives in exactly one rollout file, so the file is the source.
+func (p *Provider) StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor spi.SessionVisitor) error {
+	sessionsRoot, err := codexSessionsDir()
+	if err != nil {
+		// No sessions directory means no sessions, not a failure
+		visitor.ReportSources(0)
+		return nil
+	}
+	sessionPaths, err := codexSessionFiles(sessionsRoot)
+	if err != nil {
+		return err
+	}
+	visitor.ReportSources(len(sessionPaths))
 
-	// Convert to AgentChatSession structs with progress reporting
-	var result []spi.AgentChatSession
-	for i, sessionInfo := range sessions {
-		session, err := processSessionToAgentChat(&sessionInfo, projectPath, debugRaw)
-		if err != nil {
-			slog.Debug("GetAgentChatSessions: Failed to process session",
-				"sessionID", sessionInfo.SessionID,
-				"error", err)
-			// Report progress even for failed sessions
-			if progress != nil {
-				progress(i+1, totalSessions)
-			}
-			continue // Skip sessions we can't process
+	normalizedProjectPath := normalizeCodexPath(projectPath)
+	for _, sessionPath := range sessionPaths {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
-		// Skip empty sessions (processSessionToAgentChat returns nil for empty sessions)
-		if session == nil {
-			slog.Debug("GetAgentChatSessions: Skipping empty session",
-				"sessionID", sessionInfo.SessionID)
-			// Report progress even for empty sessions
-			if progress != nil {
-				progress(i+1, totalSessions)
-			}
+		stat, err := spi.StatFile(sessionPath)
+		src := spi.SessionSource{Key: sessionPath, Files: []spi.FileStat{stat}}
+		if err != nil {
+			visitor.ReportDone(src, err)
+			continue
+		}
+		if !visitor.ParseNeeded(src) {
 			continue
 		}
 
-		result = append(result, *session)
-
-		// Report progress after each session
-		if progress != nil {
-			progress(i+1, totalSessions)
+		session, err := parseCodexSessionFile(sessionPath, projectPath, normalizedProjectPath, debugRaw)
+		if session != nil {
+			visitor.ReportSession(src, session)
 		}
+		visitor.ReportDone(src, err)
+	}
+	return nil
+}
+
+// parseCodexSessionFile returns the session stored in sessionPath when it belongs to projectPath.
+// Files that are not Codex sessions, or belong to other projects, yield nil without an error.
+// Failing to read the file is an error.
+// Why the distinction: the engine records an unchanged source that yielded no
+// session as done, so treating an unreadable file as "no session" would skip
+// it on every later startup even after it becomes readable.
+func parseCodexSessionFile(sessionPath string, projectPath string, normalizedProjectPath string, debugRaw bool) (*spi.AgentChatSession, error) {
+	meta, err := loadCodexSessionMeta(sessionPath)
+	if errors.Is(err, errNotCodexSession) {
+		slog.Debug("parseCodexSessionFile: Not a Codex session", "path", sessionPath, "error", err)
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load codex session meta: %w", err)
+	}
+	if !codexSessionMatches(meta, projectPath, normalizedProjectPath) {
+		return nil, nil
 	}
 
-	return result, nil
+	sessionInfo := &codexSessionInfo{
+		SessionID:   strings.TrimSpace(meta.Payload.ID),
+		SessionPath: sessionPath,
+		Meta:        meta,
+	}
+	session, err := processSessionToAgentChat(sessionInfo, projectPath, debugRaw)
+	if err != nil {
+		slog.Debug("parseCodexSessionFile: Failed to process session",
+			"sessionID", sessionInfo.SessionID,
+			"error", err)
+		return nil, err
+	}
+	if session == nil {
+		slog.Debug("parseCodexSessionFile: Skipping empty session", "sessionID", sessionInfo.SessionID)
+	}
+	return session, nil
+}
+
+// codexSessionMatches reports whether a session's working directory belongs to projectPath.
+// An empty projectPath means global mode: every session with a working directory matches.
+func codexSessionMatches(meta *codexSessionMeta, projectPath string, normalizedProjectPath string) bool {
+	normalizedCWD := normalizeCodexPath(meta.Payload.CWD)
+	if normalizedCWD == "" {
+		slog.Debug("codexSessionMatches: Session meta missing cwd", "sessionID", strings.TrimSpace(meta.Payload.ID))
+		return false
+	}
+
+	if strings.TrimSpace(projectPath) == "" {
+		return true
+	}
+	if normalizedProjectPath != "" {
+		return normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath)
+	}
+	return normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath)
 }
 
 // GetAgentChatSession retrieves one Codex CLI chat session by ID.
@@ -305,6 +370,11 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation (blocks indefinitely)
 func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return p.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, nil, sessionCallback)
+}
+
+// WatchAgentWithCatchUp is WatchAgent with a catch-up pass; see spi.CatchUpWatcher.
+func (p *Provider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("WatchAgent: Starting Codex CLI activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
@@ -317,7 +387,7 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 		sessionCallback(agentChatSession)
 	}
 
-	if err := WatchForCodexSessions(ctx, projectPath, "", debugRaw, wrappedCallback); err != nil {
+	if err := WatchForCodexSessions(ctx, projectPath, debugRaw, catchUp, wrappedCallback); err != nil {
 		slog.Error("WatchAgent: Codex session watcher stopped", "error", err)
 		return fmt.Errorf("watch codex sessions: %w", err)
 	}
@@ -338,46 +408,95 @@ func findCodexSessions(projectPath string, targetSessionID string, stopOnFirst b
 		slog.Debug("findCodexSessions: Unable to normalize project path", "projectPath", projectPath)
 	}
 
+	sessionsRoot, err := codexSessionsDir()
+	if err != nil {
+		return nil, err
+	}
+	sessionPaths, err := codexSessionFiles(sessionsRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	var sessions []codexSessionInfo
+	for _, sessionPath := range sessionPaths {
+		meta, err := loadCodexSessionMeta(sessionPath)
+		if err != nil {
+			slog.Debug("findCodexSessions: Failed to load Codex session meta", "path", sessionPath, "error", err)
+			continue
+		}
+		if !codexSessionMatches(meta, projectPath, normalizedProjectPath) {
+			continue
+		}
+
+		sessionID := strings.TrimSpace(meta.Payload.ID)
+		// If we're searching for a specific session, skip sessions that don't match
+		if targetSessionID != "" && sessionID != targetSessionID {
+			continue
+		}
+
+		slog.Debug("findCodexSessions: Codex CLI session matched project",
+			"sessionID", sessionID,
+			"sessionPath", sessionPath)
+
+		sessions = append(sessions, codexSessionInfo{
+			SessionID:   sessionID,
+			SessionPath: sessionPath,
+			Meta:        meta,
+		})
+
+		// Short-circuit logic:
+		// 1. If we have a target sessionID and this matches, we're done
+		// 2. If stopOnFirst is true (and no target sessionID), return first match
+		// 3. Otherwise, continue collecting all matching sessions
+		if targetSessionID != "" || stopOnFirst {
+			return sessions, nil
+		}
+	}
+
+	return sessions, nil
+}
+
+// codexSessionsDir returns the Codex sessions root, failing with the
+// "sessions directory not accessible" / "sessions root" errors callers recognize.
+func codexSessionsDir() (string, error) {
 	homeDir, err := osUserHomeDir()
 	if err != nil {
-		slog.Debug("findCodexSessions: Failed to resolve user home directory", "error", err)
-		return nil, fmt.Errorf("failed to determine home directory: %w", err)
+		slog.Debug("codexSessionsDir: Failed to resolve user home directory", "error", err)
+		return "", fmt.Errorf("failed to determine home directory: %w", err)
 	}
 
 	sessionsRoot := codexSessionsRoot(homeDir)
 	rootInfo, err := os.Stat(sessionsRoot)
 	if err != nil {
-		if os.IsNotExist(err) {
-			slog.Debug("findCodexSessions: Codex sessions directory not found", "path", sessionsRoot)
-		} else {
-			slog.Debug("findCodexSessions: Failed to stat Codex sessions directory", "path", sessionsRoot, "error", err)
-		}
-		return nil, fmt.Errorf("sessions directory not accessible: %w", err)
+		slog.Debug("codexSessionsDir: Codex sessions directory not accessible", "path", sessionsRoot, "error", err)
+		return "", fmt.Errorf("sessions directory not accessible: %w", err)
 	}
-
 	if !rootInfo.IsDir() {
-		slog.Debug("findCodexSessions: Codex sessions root is not a directory", "path", sessionsRoot)
-		return nil, fmt.Errorf("sessions root is not a directory: %s", sessionsRoot)
+		slog.Debug("codexSessionsDir: Codex sessions root is not a directory", "path", sessionsRoot)
+		return "", fmt.Errorf("sessions root is not a directory: %s", sessionsRoot)
 	}
+	return sessionsRoot, nil
+}
 
+// codexSessionFiles lists session files under the YYYY/MM/DD tree of sessionsRoot,
+// newest first: years, months, days and files each in descending name order.
+// Unreadable subdirectories are skipped.
+func codexSessionFiles(sessionsRoot string) ([]string, error) {
 	yearEntries, err := readDirSortedDesc(sessionsRoot)
 	if err != nil {
-		slog.Debug("findCodexSessions: Failed to read Codex sessions root", "path", sessionsRoot, "error", err)
+		slog.Debug("codexSessionFiles: Failed to read Codex sessions root", "path", sessionsRoot, "error", err)
 		return nil, fmt.Errorf("failed to read sessions root: %w", err)
 	}
 
-	var sessions []codexSessionInfo
-
-	// Traverse year/month/day directory structure
+	var sessionPaths []string
 	for _, yearEntry := range yearEntries {
 		if !yearEntry.IsDir() {
 			continue
 		}
-
 		yearPath := filepath.Join(sessionsRoot, yearEntry.Name())
 		monthEntries, err := readDirSortedDesc(yearPath)
 		if err != nil {
-			slog.Debug("findCodexSessions: Failed to read Codex year directory", "path", yearPath, "error", err)
+			slog.Debug("codexSessionFiles: Failed to read Codex year directory", "path", yearPath, "error", err)
 			continue
 		}
 
@@ -385,11 +504,10 @@ func findCodexSessions(projectPath string, targetSessionID string, stopOnFirst b
 			if !monthEntry.IsDir() {
 				continue
 			}
-
 			monthPath := filepath.Join(yearPath, monthEntry.Name())
 			dayEntries, err := readDirSortedDesc(monthPath)
 			if err != nil {
-				slog.Debug("findCodexSessions: Failed to read Codex month directory", "path", monthPath, "error", err)
+				slog.Debug("codexSessionFiles: Failed to read Codex month directory", "path", monthPath, "error", err)
 				continue
 			}
 
@@ -397,82 +515,23 @@ func findCodexSessions(projectPath string, targetSessionID string, stopOnFirst b
 				if !dayEntry.IsDir() {
 					continue
 				}
-
 				dayPath := filepath.Join(monthPath, dayEntry.Name())
 				sessionEntries, err := readDirSortedDesc(dayPath)
 				if err != nil {
-					slog.Debug("findCodexSessions: Failed to read Codex day directory", "path", dayPath, "error", err)
+					slog.Debug("codexSessionFiles: Failed to read Codex day directory", "path", dayPath, "error", err)
 					continue
 				}
 
 				for _, sessionEntry := range sessionEntries {
-					if sessionEntry.IsDir() {
+					if sessionEntry.IsDir() || filepath.Ext(sessionEntry.Name()) != ".jsonl" {
 						continue
 					}
-					if filepath.Ext(sessionEntry.Name()) != ".jsonl" {
-						continue
-					}
-
-					sessionPath := filepath.Join(dayPath, sessionEntry.Name())
-					meta, err := loadCodexSessionMeta(sessionPath)
-					if err != nil {
-						slog.Debug("findCodexSessions: Failed to load Codex session meta", "path", sessionPath, "error", err)
-						continue
-					}
-
-					sessionID := strings.TrimSpace(meta.Payload.ID)
-					normalizedCWD := normalizeCodexPath(meta.Payload.CWD)
-					if normalizedCWD == "" {
-						slog.Debug("findCodexSessions: Session meta missing cwd", "sessionID", sessionID, "path", sessionPath)
-						continue
-					}
-
-					// Empty projectPath means global mode: include every session.
-					matched := strings.TrimSpace(projectPath) == ""
-					if !matched {
-						if normalizedProjectPath != "" {
-							matched = normalizedCWD == normalizedProjectPath || strings.EqualFold(normalizedCWD, normalizedProjectPath)
-						} else {
-							matched = normalizedCWD == projectPath || strings.EqualFold(normalizedCWD, projectPath)
-						}
-					}
-
-					if matched {
-						// If we're searching for a specific session, skip sessions that don't match
-						if targetSessionID != "" && sessionID != targetSessionID {
-							continue
-						}
-
-						slog.Debug("findCodexSessions: Codex CLI session matched project",
-							"sessionID", sessionID,
-							"sessionPath", sessionPath)
-
-						sessions = append(sessions, codexSessionInfo{
-							SessionID:   sessionID,
-							SessionPath: sessionPath,
-							Meta:        meta,
-						})
-
-						// Short-circuit logic:
-						// 1. If we have a target sessionID and this matches, we're done
-						if targetSessionID != "" && sessionID == targetSessionID {
-							slog.Debug("findCodexSessions: Found target session, stopping search", "sessionID", targetSessionID)
-							return sessions, nil
-						}
-
-						// 2. If stopOnFirst is true (and no target sessionID), return first match
-						if targetSessionID == "" && stopOnFirst {
-							return sessions, nil
-						}
-
-						// 3. Otherwise, continue collecting all matching sessions
-					}
+					sessionPaths = append(sessionPaths, filepath.Join(dayPath, sessionEntry.Name()))
 				}
 			}
 		}
 	}
-
-	return sessions, nil
+	return sessionPaths, nil
 }
 
 // readSessionRecords reads and parses all JSONL lines from a Codex CLI session file.
@@ -485,95 +544,108 @@ func readSessionRecords(sessionPath string) ([]map[string]interface{}, error) {
 		_ = file.Close()
 	}()
 
-	var records []map[string]interface{}
+	recordReader := codexRecordReader{sessionPath: sessionPath}
 
 	// Use bufio.Reader instead of Scanner to handle arbitrarily large lines
 	// Scanner has a token size limit (even with custom buffer), but Reader does not
 	reader := bufio.NewReader(file)
 
-	lineNumber := 0
 	for {
-		// Read line using ReadString which has no size limit
-		line, err := reader.ReadString('\n')
-		line = strings.TrimSuffix(line, "\n")
+		// Read line using ReadBytes which has no size limit
+		line, err := reader.ReadBytes('\n')
 
 		// EOF is expected at end of file, other errors are genuine failures
 		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("error reading line %d: %w", lineNumber+1, err)
+			return nil, fmt.Errorf("error reading line %d: %w", recordReader.lineNumber+1, err)
 		}
-
-		// Determine if we're at end of file and if we have content to process
 		atEOF := err == io.EOF
-		hasContent := len(line) > 0
-
-		// Increment line number for every line read (including empty lines) to match text editor line numbers
-		if hasContent || !atEOF {
-			lineNumber++
+		if atEOF && len(line) == 0 {
+			break
 		}
 
-		// If no content, either skip empty line or exit at EOF
-		if !hasContent {
-			if atEOF {
-				break // Reached end of file with no content
-			}
-			continue // Empty line in middle of file, skip it
+		if err := recordReader.consumeLine(bytes.TrimSuffix(line, []byte("\n"))); err != nil {
+			return nil, err
 		}
-
-		// Sanity check to prevent OOM from pathological files
-		if len(line) > maxReasonableLineSize {
-			slog.Warn("line exceeds reasonable size limit",
-				"lineNumber", lineNumber,
-				"sizeMB", len(line)/MB,
-				"limitMB", maxReasonableLineSize/MB,
-				"file", filepath.Base(sessionPath))
-			return nil, fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
-				lineNumber, maxReasonableLineSize/MB)
-		}
-
-		// Log when processing unusually large lines (helps debug performance issues)
-		if len(line) > 10*MB {
-			slog.Debug("processing large JSONL line",
-				"lineNumber", lineNumber,
-				"sizeMB", len(line)/MB,
-				"file", filepath.Base(sessionPath))
-		}
-
-		// Trim whitespace and skip empty lines
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if atEOF {
-				break
-			}
-			continue
-		}
-
-		// Parse JSON
-		var record map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			// Log warning and skip corrupted lines rather than failing entire parse
-			slog.Warn("Skipping corrupted JSONL line",
-				"file", filepath.Base(sessionPath),
-				"line", lineNumber,
-				"error", err)
-			if atEOF {
-				break
-			}
-			continue
-		}
-
-		records = append(records, record)
-
-		// After processing record, check if we're done
 		if atEOF {
 			break
 		}
 	}
 
-	return records, nil
+	return recordReader.records, nil
 }
 
+// codexRecordReader decodes Codex session lines one at a time.
+// Why a separate type: the watcher resumes a file where it last stopped and
+// must decode appended lines with exactly the rules a full read applies.
+type codexRecordReader struct {
+	sessionPath string
+	lineNumber  int
+	records     []map[string]interface{}
+}
+
+// consumeLine decodes one line, without its trailing newline.
+// Every line counts toward the line number, including empty ones, to match text editor line numbers.
+func (r *codexRecordReader) consumeLine(line []byte) error {
+	r.lineNumber++
+	if len(line) == 0 {
+		return nil
+	}
+
+	// Sanity check to prevent OOM from pathological files
+	if len(line) > maxReasonableLineSize {
+		slog.Warn("line exceeds reasonable size limit",
+			"lineNumber", r.lineNumber,
+			"sizeMB", len(line)/MB,
+			"limitMB", maxReasonableLineSize/MB,
+			"file", filepath.Base(r.sessionPath))
+		return fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
+			r.lineNumber, maxReasonableLineSize/MB)
+	}
+
+	// Log when processing unusually large lines (helps debug performance issues)
+	if len(line) > 10*MB {
+		slog.Debug("processing large JSONL line",
+			"lineNumber", r.lineNumber,
+			"sizeMB", len(line)/MB,
+			"file", filepath.Base(r.sessionPath))
+	}
+
+	// Trim whitespace and skip empty lines
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return nil
+	}
+
+	var record map[string]interface{}
+	if err := json.Unmarshal(line, &record); err != nil {
+		// Log warning and skip corrupted lines rather than failing entire parse
+		slog.Warn("Skipping corrupted JSONL line",
+			"file", filepath.Base(r.sessionPath),
+			"line", r.lineNumber,
+			"error", err)
+		return nil
+	}
+
+	r.records = append(r.records, record)
+	return nil
+}
+
+// errNotCodexSession marks a file whose content is not a Codex session, as
+// opposed to a file that could not be read.
+var errNotCodexSession = errors.New("not a codex session")
+
+// errLineTooLong marks a line over the per-record size limit.
+var errLineTooLong = errors.New("line exceeds reasonable size limit")
+
 // loadCodexSessionMeta reads the first JSON line from a session file and parses the session metadata.
+// Content that is not session metadata yields an error wrapping errNotCodexSession;
+// open and read failures, and a first line over maxReasonableLineSize, are
+// errors of the source, like a record a full read refuses.
 func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
+	return readCodexSessionMeta(sessionPath, maxReasonableLineSize)
+}
+
+func readCodexSessionMeta(sessionPath string, lineLimit int) (*codexSessionMeta, error) {
 	file, err := os.Open(sessionPath)
 	if err != nil {
 		return nil, err
@@ -582,26 +654,47 @@ func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
 		_ = file.Close()
 	}()
 
-	scanner := bufio.NewScanner(file)
-	if !scanner.Scan() {
-		if scanErr := scanner.Err(); scanErr != nil {
-			return nil, scanErr
-		}
-		return nil, errors.New("codex session meta not found")
+	line, err := readLineLimited(bufio.NewReader(file), lineLimit)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
+	return parseCodexSessionMeta(line)
+}
 
-	line := strings.TrimSpace(scanner.Text())
-	if line == "" {
-		return nil, errors.New("codex session meta is empty")
+// readLineLimited reads up to and including the next newline, failing with
+// errLineTooLong once the line, without its newline, exceeds limit bytes.
+// Why not ReadBytes: it buffers the whole line before the size can be checked,
+// so one huge first line in a file that is not a session at all would be held
+// in memory just to be rejected. Why not Scanner: its token limit is far below
+// the size of valid meta lines.
+func readLineLimited(reader *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(bytes.TrimSuffix(line, []byte("\n"))) > limit {
+			return nil, fmt.Errorf("%w of %d bytes", errLineTooLong, limit)
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
+	}
+}
+
+// parseCodexSessionMeta parses the first line of a session file as session metadata.
+func parseCodexSessionMeta(line []byte) (*codexSessionMeta, error) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return nil, fmt.Errorf("%w: session meta is empty", errNotCodexSession)
 	}
 
 	var meta codexSessionMeta
-	if err := json.Unmarshal([]byte(line), &meta); err != nil {
-		return nil, fmt.Errorf("failed to parse codex session meta: %w", err)
+	if err := json.Unmarshal(line, &meta); err != nil {
+		return nil, fmt.Errorf("%w: failed to parse session meta: %v", errNotCodexSession, err)
 	}
 
 	if meta.Type != "session_meta" {
-		return nil, fmt.Errorf("unexpected codex session record type: %s", meta.Type)
+		return nil, fmt.Errorf("%w: unexpected record type: %s", errNotCodexSession, meta.Type)
 	}
 
 	return &meta, nil
@@ -617,6 +710,12 @@ func processSessionToAgentChat(sessionInfo *codexSessionInfo, workspaceRoot stri
 		return nil, fmt.Errorf("failed to read session data: %w", err)
 	}
 
+	return agentChatFromRecords(sessionInfo, records, workspaceRoot, debugRaw)
+}
+
+// agentChatFromRecords builds an AgentChatSession from decoded session records.
+// Returns nil if there are no records.
+func agentChatFromRecords(sessionInfo *codexSessionInfo, records []map[string]interface{}, workspaceRoot string, debugRaw bool) (*spi.AgentChatSession, error) {
 	// Skip empty sessions
 	if len(records) == 0 {
 		return nil, nil

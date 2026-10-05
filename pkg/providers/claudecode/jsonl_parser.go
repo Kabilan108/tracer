@@ -2,13 +2,16 @@ package claudecode
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -146,6 +149,18 @@ func (p *JSONLParser) parseProjectSessionsInternal(projectPath string, targetSes
 	scanDuration := time.Since(scanStartTime)
 	slog.Info("ParseProjectSessions: File scanning completed", "duration", formatDuration(scanDuration), "records", len(allRecords))
 
+	p.assembleSessions(allRecords)
+
+	// Log total parsing time
+	totalDuration := time.Since(parseStartTime)
+	slog.Info("ParseProjectSessions: Completed parsing", "sessions", len(p.Sessions), "duration", formatDuration(totalDuration))
+	return nil
+}
+
+// assembleSessions turns parsed records into sessions:
+// eliminate duplicate uuids, build parent/child DAGs, merge DAGs that share a
+// session ID (resumed sessions), and flatten each DAG ordered by timestamp.
+func (p *JSONLParser) assembleSessions(allRecords []JSONLRecord) {
 	// Step 3: Eliminate duplicates by uuid (keep earliest by timestamp)
 	dedupStartTime := time.Now()
 	slog.Debug("ParseProjectSessions: Eliminating duplicates", "records", len(allRecords))
@@ -221,16 +236,10 @@ func (p *JSONLParser) parseProjectSessionsInternal(projectPath string, targetSes
 	p.Sessions = sessions
 	flattenDuration := time.Since(flattenStartTime)
 	slog.Debug("ParseProjectSessions: Flattening completed", "duration", formatDuration(flattenDuration))
-
-	// Log total parsing time
-	totalDuration := time.Since(parseStartTime)
-	slog.Info("ParseProjectSessions: Completed parsing", "sessions", len(p.Sessions), "duration", formatDuration(totalDuration))
 	slog.Debug("ParseProjectSessions: Performance breakdown",
-		"scan", formatDuration(scanDuration),
 		"dedup", formatDuration(dedupDuration),
 		"dag", formatDuration(dagDuration),
 		"flatten", formatDuration(flattenDuration))
-	return nil
 }
 
 // extractSessionIDFromFile reads a JSONL file and returns the first sessionId found.
@@ -291,15 +300,6 @@ func (p *JSONLParser) ParseSingleSession(projectPath string, sessionUuid string)
 func (p *JSONLParser) parseSessionFile(filePath string) ([]JSONLRecord, error) {
 	slog.Info("Parsing session file", "file", filePath)
 
-	// Clean debug directory for jsonl-burst mode only
-	// (tracer-burst cleaning happens later during markdown generation)
-	if GetJsonlBurst() {
-		uuid := ExtractUUIDFromFilename(filePath)
-		if err := CleanDebugDirectory(uuid); err != nil {
-			slog.Warn("Failed to clean debug directory", "error", err)
-		}
-	}
-
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
@@ -309,133 +309,161 @@ func (p *JSONLParser) parseSessionFile(filePath string) ([]JSONLRecord, error) {
 	// Use bufio.Reader instead of Scanner to handle arbitrarily large lines
 	// Scanner has a token size limit (even with custom buffer), but Reader does not
 	reader := bufio.NewReader(file)
-
-	lineNumber := 0
-	records := []JSONLRecord{}
-	var lastNonSummaryRecord *JSONLRecord
-	// pendingSummary holds a summary string when it appears before any records in the file.
-	// This happens when the summary is on line 1 - we can't attach it to a previous record
-	// because none exists yet, so we hold it and attach it to the next record we process.
-	var pendingSummary string
+	fileParser := newClaudeFileParser(filePath)
 
 	for {
-		// Read line using ReadString which has no size limit
-		line, err := reader.ReadString('\n')
-		line = strings.TrimSuffix(line, "\n")
+		// Read line using ReadBytes which has no size limit
+		line, err := reader.ReadBytes('\n')
 
 		// EOF is expected at end of file, other errors are genuine failures
 		if err != nil && err != io.EOF {
-			return nil, fmt.Errorf("error reading line %d: %w", lineNumber+1, err)
+			return nil, fmt.Errorf("error reading line %d: %w", fileParser.lineNumber+1, err)
 		}
-
-		// Determine if we're at end of file and if we have content to process
 		atEOF := err == io.EOF
-		hasContent := len(line) > 0
-
-		// Increment line number for every line read (including empty lines) to match text editor line numbers
-		if hasContent || !atEOF {
-			lineNumber++
+		if atEOF && len(line) == 0 {
+			break
 		}
 
-		// If no content, either skip empty line or exit at EOF
-		if !hasContent {
-			if atEOF {
-				break // Reached end of file with no content
-			}
-			continue // Empty line in middle of file, skip it
+		if err := fileParser.consumeLine(bytes.TrimSuffix(line, []byte("\n"))); err != nil {
+			return nil, err
 		}
-
-		// Sanity check to prevent OOM from pathological files
-		if len(line) > maxReasonableLineSize {
-			slog.Warn("line exceeds reasonable size limit",
-				"lineNumber", lineNumber,
-				"sizeMB", len(line)/MB,
-				"limitMB", maxReasonableLineSize/MB,
-				"file", filepath.Base(filePath))
-			return nil, fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
-				lineNumber, maxReasonableLineSize/MB)
-		}
-
-		// Log when processing unusually large lines (helps debug performance issues)
-		if len(line) > 10*MB {
-			slog.Debug("processing large JSONL line",
-				"lineNumber", lineNumber,
-				"sizeMB", len(line)/MB,
-				"file", filepath.Base(filePath))
-		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &data); err != nil {
-			// Log warning and skip corrupted lines rather than failing entire parse
-			slog.Warn("Skipping corrupted JSONL line",
-				"file", filepath.Base(filePath),
-				"line", lineNumber,
-				"error", err)
-			if atEOF {
-				break
-			}
-			continue
-		}
-
-		// Write debug JSON if jsonl-burst mode is enabled
-		_ = WriteDebugJSON(filePath, lineNumber, data) // Debug feature; errors don't affect parsing
-
-		// Check if this is a summary line
-		if data["type"] == "summary" {
-			if len(records) > 0 && lastNonSummaryRecord != nil {
-				// Add summary to the last non-summary record
-				lastNonSummaryRecord.Data["summary"] = data
-			} else {
-				// No previous record exists (summary is on line 1), so store it for the next record
-				if summaryText, ok := data["summary"].(string); ok {
-					pendingSummary = summaryText
-				}
-			}
-			// After processing summary, check if we're done
-			if atEOF {
-				break
-			}
-			continue // Don't add summary as a separate record
-		}
-
-		// Handle sidechain parentUuid update
-		if isSidechain, ok := data["isSidechain"].(bool); ok && isSidechain {
-			if data["parentUuid"] == nil && lastNonSummaryRecord != nil {
-				// Update parentUuid to the uuid of the prior record
-				if uuid, ok := lastNonSummaryRecord.Data["uuid"].(string); ok {
-					data["parentUuid"] = uuid
-				}
-			}
-		}
-
-		// If we have a pending summary from line 1, attach it to this first record
-		if pendingSummary != "" {
-			data["summary"] = map[string]interface{}{
-				"summary": pendingSummary,
-			}
-			pendingSummary = "" // Clear it so we don't attach to multiple records
-		}
-
-		record := JSONLRecord{
-			Data: data,
-			File: filePath,
-			Line: lineNumber,
-		}
-
-		records = append(records, record)
-
-		// Track last non-summary record for sidechain processing
-		if data["uuid"] != nil {
-			lastNonSummaryRecord = &record
-		}
-
-		// After processing record, check if we're done
 		if atEOF {
 			break
 		}
 	}
 
-	return records, nil
+	return fileParser.records, nil
+}
+
+// claudeFileParser carries the per-file state that summary and sidechain
+// handling needs from one line to the next.
+// Why a separate type: the watcher resumes parsing a file at the byte where it
+// last stopped, and must apply exactly the rules a full parse would, so both
+// paths feed lines through the same consumeLine.
+type claudeFileParser struct {
+	filePath   string
+	lineNumber int
+	records    []JSONLRecord
+	// lastRecordData is the Data of the most recent record with a uuid:
+	// summaries attach to it and parentless sidechain records chain to it.
+	lastRecordData map[string]interface{}
+	// lastRecordIndex is the index in records of the record holding lastRecordData.
+	lastRecordIndex int
+	// pendingSummary holds a summary string when it appears before any records in the file.
+	// This happens when the summary is on line 1 - we can't attach it to a previous record
+	// because none exists yet, so we hold it and attach it to the next record we process.
+	pendingSummary string
+}
+
+func newClaudeFileParser(filePath string) *claudeFileParser {
+	// Clean debug directory for jsonl-burst mode only
+	// (tracer-burst cleaning happens later during markdown generation)
+	if GetJsonlBurst() {
+		uuid := ExtractUUIDFromFilename(filePath)
+		if err := CleanDebugDirectory(uuid); err != nil {
+			slog.Warn("Failed to clean debug directory", "error", err)
+		}
+	}
+	return &claudeFileParser{filePath: filePath}
+}
+
+// consumeLine applies one line of the file, without its trailing newline.
+// Every line counts toward the line number, including empty ones, to match text editor line numbers.
+func (fp *claudeFileParser) consumeLine(line []byte) error {
+	fp.lineNumber++
+	if len(line) == 0 {
+		return nil
+	}
+
+	// Sanity check to prevent OOM from pathological files
+	if len(line) > maxReasonableLineSize {
+		slog.Warn("line exceeds reasonable size limit",
+			"lineNumber", fp.lineNumber,
+			"sizeMB", len(line)/MB,
+			"limitMB", maxReasonableLineSize/MB,
+			"file", filepath.Base(fp.filePath))
+		return fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
+			fp.lineNumber, maxReasonableLineSize/MB)
+	}
+
+	// Log when processing unusually large lines (helps debug performance issues)
+	if len(line) > 10*MB {
+		slog.Debug("processing large JSONL line",
+			"lineNumber", fp.lineNumber,
+			"sizeMB", len(line)/MB,
+			"file", filepath.Base(fp.filePath))
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(line, &data); err != nil {
+		// Log warning and skip corrupted lines rather than failing entire parse
+		slog.Warn("Skipping corrupted JSONL line",
+			"file", filepath.Base(fp.filePath),
+			"line", fp.lineNumber,
+			"error", err)
+		return nil
+	}
+
+	// Write debug JSON if jsonl-burst mode is enabled
+	_ = WriteDebugJSON(fp.filePath, fp.lineNumber, data) // Debug feature; errors don't affect parsing
+
+	// Check if this is a summary line
+	if data["type"] == "summary" {
+		if fp.lastRecordData != nil {
+			// Add summary to the last non-summary record
+			fp.lastRecordData["summary"] = data
+		} else if summaryText, ok := data["summary"].(string); ok {
+			// No previous record exists (summary is on line 1), so store it for the next record
+			fp.pendingSummary = summaryText
+		}
+		return nil // Don't add summary as a separate record
+	}
+
+	// Handle sidechain parentUuid update
+	if isSidechain, ok := data["isSidechain"].(bool); ok && isSidechain {
+		if data["parentUuid"] == nil && fp.lastRecordData != nil {
+			// Update parentUuid to the uuid of the prior record
+			if uuid, ok := fp.lastRecordData["uuid"].(string); ok {
+				data["parentUuid"] = uuid
+			}
+		}
+	}
+
+	// If we have a pending summary from line 1, attach it to this first record
+	if fp.pendingSummary != "" {
+		data["summary"] = map[string]interface{}{
+			"summary": fp.pendingSummary,
+		}
+		fp.pendingSummary = "" // Clear it so we don't attach to multiple records
+	}
+
+	fp.records = append(fp.records, JSONLRecord{
+		Data: data,
+		File: fp.filePath,
+		Line: fp.lineNumber,
+	})
+
+	// Track last non-summary record for sidechain processing
+	if data["uuid"] != nil {
+		fp.lastRecordData = data
+		fp.lastRecordIndex = len(fp.records) - 1
+	}
+	return nil
+}
+
+// provisional returns a copy of fp that can consume a line without changing fp.
+// Why: the watcher shows a final record that has no newline yet, but must
+// not cache it, because it reads that line again once the newline arrives.
+// A summary line writes into lastRecordData, so that record's map is cloned.
+func (fp *claudeFileParser) provisional() *claudeFileParser {
+	clone := *fp
+	clone.records = fp.records[:len(fp.records):len(fp.records)]
+	if fp.lastRecordData != nil {
+		clone.records = slices.Clone(fp.records)
+		clone.lastRecordData = maps.Clone(fp.lastRecordData)
+		clone.records[fp.lastRecordIndex].Data = clone.lastRecordData
+	}
+	return &clone
 }
 
 // eliminateDuplicates removes duplicate records by uuid, keeping the earliest by timestamp
@@ -546,6 +574,15 @@ func (p *JSONLParser) buildDAGs(records []JSONLRecord) [][]JSONLRecord {
 		}
 	}
 
+	// Why an index: finding each node's children by scanning every record made
+	// DAG building quadratic, which dominated re-parsing large sessions.
+	childrenByParent := make(map[string][]JSONLRecord)
+	for _, record := range recordByUuid {
+		if parentUuid, ok := record.Data["parentUuid"].(string); ok {
+			childrenByParent[parentUuid] = append(childrenByParent[parentUuid], record)
+		}
+	}
+
 	// Find all root nodes (parentUuid == null)
 	roots := []JSONLRecord{}
 	for _, record := range records {
@@ -557,7 +594,7 @@ func (p *JSONLParser) buildDAGs(records []JSONLRecord) [][]JSONLRecord {
 	// Build a DAG for each root
 	dags := [][]JSONLRecord{}
 	for _, root := range roots {
-		dag := p.buildDAGFromRoot(root, recordByUuid)
+		dag := p.buildDAGFromRoot(root, childrenByParent)
 		if len(dag) > 0 {
 			dags = append(dags, dag)
 		}
@@ -567,7 +604,7 @@ func (p *JSONLParser) buildDAGs(records []JSONLRecord) [][]JSONLRecord {
 }
 
 // buildDAGFromRoot builds a DAG starting from a root node
-func (p *JSONLParser) buildDAGFromRoot(root JSONLRecord, recordByUuid map[string]JSONLRecord) []JSONLRecord {
+func (p *JSONLParser) buildDAGFromRoot(root JSONLRecord, childrenByParent map[string][]JSONLRecord) []JSONLRecord {
 	dag := []JSONLRecord{}
 	visited := make(map[string]bool)
 
@@ -581,17 +618,8 @@ func (p *JSONLParser) buildDAGFromRoot(root JSONLRecord, recordByUuid map[string
 		visited[uuid] = true
 		dag = append(dag, node)
 
-		// Find all children and collect them first
-		children := []JSONLRecord{}
-		for _, record := range recordByUuid {
-			parentUuid, ok := record.Data["parentUuid"].(string)
-			if ok && parentUuid == uuid {
-				// Check if this child exists in our map (to handle orphans)
-				if _, exists := recordByUuid[record.Data["uuid"].(string)]; exists {
-					children = append(children, record)
-				}
-			}
-		}
+		// Copy before sorting so traversal never reorders the shared index
+		children := append([]JSONLRecord(nil), childrenByParent[uuid]...)
 
 		// Sort children by timestamp for deterministic traversal order
 		sort.Slice(children, func(i, j int) bool {

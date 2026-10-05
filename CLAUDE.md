@@ -39,6 +39,7 @@ There are two main modes of operation:
 ## Code Conventions
 
 - When adding or changing CLI flags/commands, update the skill text in pkg/cmd/skill.go in the same change (drift-guard test enforces flag existence, not coverage).
+- Bump `engine.SourceFingerprintVersion` in any change that can alter generated markdown (provider parsing, SessionData generation, tool formatting, rendering, archive paths); otherwise `tracer watch` startup keeps serving archives rendered by the old code for unchanged sources.
 - Write only idomatic Go code.
 - Prioritize simplicity and readability over terse or clever code
 - Emphasize DRY code, look for existing code that can be reused, don't just write new code first.

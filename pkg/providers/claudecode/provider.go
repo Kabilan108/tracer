@@ -253,28 +253,103 @@ func (p *Provider) DetectAgent(projectPath string, helpOutput bool) bool {
 
 // GetAgentChatSessions retrieves all chat sessions for the given project path
 func (p *Provider) GetAgentChatSessions(projectPath string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
-	if strings.TrimSpace(projectPath) == "" {
-		projectDirs, err := ListClaudeCodeProjectDirs()
-		if err != nil {
+	projectDirs, workspaceRoot, err := claudeProjectDirs(projectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	all := make([]spi.AgentChatSession, 0)
+	collect := func(session *spi.AgentChatSession) {
+		all = append(all, *session)
+	}
+	if workspaceRoot != "" {
+		if err := streamProjectSessions(projectDirs[0], workspaceRoot, debugRaw, progress, collect); err != nil {
 			return nil, err
-		}
-		all := make([]spi.AgentChatSession, 0)
-		for _, projectDir := range projectDirs {
-			sessions, err := parseProjectSessions(projectDir, "", debugRaw, nil)
-			if err != nil {
-				slog.Warn("GetAgentChatSessions: failed to parse Claude project", "projectDir", projectDir, "error", err)
-				continue
-			}
-			all = append(all, sessions...)
 		}
 		return all, nil
 	}
 
+	for _, projectDir := range projectDirs {
+		if err := streamProjectSessions(projectDir, "", debugRaw, nil, collect); err != nil {
+			slog.Warn("GetAgentChatSessions: failed to parse Claude project", "projectDir", projectDir, "error", err)
+		}
+	}
+	return all, nil
+}
+
+// StreamAgentChatSessions parses one Claude project directory at a time and reports its sessions.
+// Why a project directory is the source: sessions are assembled across every
+// file in the directory (resumed sessions, sidechains, duplicate records), so
+// a file's content can change the output of sessions stored in other files.
+func (p *Provider) StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor spi.SessionVisitor) error {
+	projectDirs, workspaceRoot, err := claudeProjectDirs(projectPath)
+	if err != nil {
+		return err
+	}
+	visitor.ReportSources(len(projectDirs))
+
+	for _, projectDir := range projectDirs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		src, err := claudeProjectSource(projectDir)
+		if err != nil {
+			visitor.ReportDone(src, err)
+			continue
+		}
+		if !visitor.ParseNeeded(src) {
+			continue
+		}
+
+		err = streamProjectSessions(projectDir, workspaceRoot, debugRaw, nil, func(session *spi.AgentChatSession) {
+			visitor.ReportSession(src, session)
+		})
+		if err != nil {
+			slog.Warn("StreamAgentChatSessions: failed to parse Claude project", "projectDir", projectDir, "error", err)
+		}
+		visitor.ReportDone(src, err)
+	}
+	return nil
+}
+
+// claudeProjectDirs resolves the Claude project directories to read for projectPath.
+// An empty projectPath means every project; the returned workspace root is then empty.
+func claudeProjectDirs(projectPath string) ([]string, string, error) {
+	if strings.TrimSpace(projectPath) == "" {
+		dirs, err := ListClaudeCodeProjectDirs()
+		return dirs, "", err
+	}
+
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return parseProjectSessions(claudeProjectDir, projectPath, debugRaw, progress)
+	return []string{claudeProjectDir}, projectPath, nil
+}
+
+// claudeProjectSource stats every session file in a project directory, matching
+// the files ParseProjectSessions reads.
+func claudeProjectSource(projectDir string) (spi.SessionSource, error) {
+	src := spi.SessionSource{Key: projectDir}
+	err := filepath.Walk(projectDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		stat, err := spi.StatFile(path)
+		if err != nil {
+			return err
+		}
+		src.Files = append(src.Files, stat)
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return src, fmt.Errorf("failed to scan project directory %s: %w", projectDir, err)
+	}
+	return src, nil
 }
 
 // GetAgentChatSession retrieves one Claude Code chat session by ID.
@@ -284,19 +359,9 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 		return nil, nil
 	}
 
-	projectDirs := []string{}
-	if strings.TrimSpace(projectPath) == "" {
-		dirs, err := ListClaudeCodeProjectDirs()
-		if err != nil {
-			return nil, err
-		}
-		projectDirs = dirs
-	} else {
-		claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
-		if err != nil {
-			return nil, err
-		}
-		projectDirs = []string{claudeProjectDir}
+	projectDirs, _, err := claudeProjectDirs(projectPath)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, projectDir := range projectDirs {
@@ -323,40 +388,45 @@ func (p *Provider) GetAgentChatSession(projectPath string, sessionID string, deb
 	return nil, nil
 }
 
-func parseProjectSessions(claudeProjectDir string, workspaceRoot string, debugRaw bool, progress spi.ProgressCallback) ([]spi.AgentChatSession, error) {
+// streamProjectSessions parses one Claude project directory and passes its
+// sessions to emit one at a time, so callers need not hold them all.
+func streamProjectSessions(claudeProjectDir string, workspaceRoot string, debugRaw bool, progress spi.ProgressCallback, emit func(*spi.AgentChatSession)) error {
 	if _, err := os.Stat(claudeProjectDir); os.IsNotExist(err) {
-		return []spi.AgentChatSession{}, nil
+		return nil
 	}
 
 	parser := NewJSONLParser()
 	if err := parser.ParseProjectSessionsWithProgress(claudeProjectDir, progress); err != nil {
-		return nil, err
+		return err
 	}
 
-	result := make([]spi.AgentChatSession, 0, len(parser.Sessions))
 	for _, session := range parser.Sessions {
 		if len(session.Records) == 0 {
 			continue
 		}
-		chatSession := processSession(session, workspaceRoot, debugRaw)
-		if chatSession != nil {
-			result = append(result, *chatSession)
+		if chatSession := processSession(session, workspaceRoot, debugRaw); chatSession != nil {
+			emit(chatSession)
 		}
 	}
-	return result, nil
+	return nil
 }
 
 // WatchAgent watches for Claude Code agent activity and calls the callback with AgentChatSession
 // Does NOT execute the agent - only watches for existing activity
 // Runs until error or context cancellation
 func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+	return p.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, nil, sessionCallback)
+}
+
+// WatchAgentWithCatchUp is WatchAgent with a catch-up pass; see spi.CatchUpWatcher.
+func (p *Provider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
 	slog.Info("WatchAgent: Starting Claude Code activity monitoring",
 		"projectPath", projectPath,
 		"debugRaw", debugRaw)
 
 	if strings.TrimSpace(projectPath) == "" {
 		slog.Info("WatchAgent: Using global event-driven mode for Claude projects")
-		return watchClaudeProjects(ctx, debugRaw, sessionCallback)
+		return watchClaudeProjects(ctx, debugRaw, catchUp, sessionCallback)
 	}
 
 	claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
@@ -366,7 +436,7 @@ func (p *Provider) WatchAgent(ctx context.Context, projectPath string, debugRaw 
 	}
 
 	slog.Info("WatchAgent: Project directory found", "directory", claudeProjectDir)
-	return watchClaudeProject(ctx, claudeProjectDir, debugRaw, sessionCallback)
+	return watchClaudeProject(ctx, claudeProjectDir, debugRaw, catchUp, sessionCallback)
 }
 
 // isSyntheticMessage checks if a message is synthetic/internal and should be skipped
@@ -430,19 +500,9 @@ func FileSlugFromRootRecord(session Session) string {
 // ListAgentChatSessions retrieves lightweight session metadata without full parsing
 // This is much faster than GetAgentChatSessions as it only reads minimal data from each session
 func (p *Provider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetadata, error) {
-	projectDirs := []string{}
-	if strings.TrimSpace(projectPath) == "" {
-		dirs, err := ListClaudeCodeProjectDirs()
-		if err != nil {
-			return nil, err
-		}
-		projectDirs = dirs
-	} else {
-		claudeProjectDir, err := GetClaudeCodeProjectDir(projectPath)
-		if err != nil {
-			return nil, err
-		}
-		projectDirs = []string{claudeProjectDir}
+	projectDirs, _, err := claudeProjectDirs(projectPath)
+	if err != nil {
+		return nil, err
 	}
 
 	var sessionFiles []string

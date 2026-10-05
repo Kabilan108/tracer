@@ -1,11 +1,21 @@
 package codexcli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 func TestLoadCodexSessionMeta(t *testing.T) {
@@ -83,6 +93,102 @@ func TestLoadCodexSessionMeta(t *testing.T) {
 				if meta.Payload.CWD != tt.wantCWD {
 					t.Errorf("loadCodexSessionMeta() CWD = %q, want %q", meta.Payload.CWD, tt.wantCWD)
 				}
+			}
+		})
+	}
+}
+
+// TestParseCodexSessionFile: content that is not a session of the project
+// yields no session, but a file that cannot be read is an error, because the
+// engine treats a source that yielded no session as done.
+func TestParseCodexSessionFile(t *testing.T) {
+	meta := func(cwd string, padding int) string {
+		return `{"type":"session_meta","timestamp":"2026-10-01T12:00:00Z","payload":{"id":"019a0000-0000-7000-8000-0000000000aa","timestamp":"2026-10-01T12:00:00Z","cwd":"` +
+			cwd + `","instructions":"` + strings.Repeat("i", padding) + `"}}` + "\n"
+	}
+	userTurn := `{"type":"event_msg","timestamp":"2026-10-01T12:00:01Z","payload":{"type":"user_message","message":"Hello"}}` + "\n"
+
+	tests := []struct {
+		name        string
+		content     string
+		mode        os.FileMode
+		projectPath string
+		wantSession bool
+		wantErr     bool
+	}{
+		{name: "session of the project", content: meta("/tmp/project", 0) + userTurn, mode: 0o644, projectPath: "/tmp/project", wantSession: true},
+		{name: "meta line longer than a scanner token", content: meta("/tmp/project", 128*KB) + userTurn, mode: 0o644, wantSession: true},
+		{name: "session of another project", content: meta("/tmp/other", 0) + userTurn, mode: 0o644, projectPath: "/tmp/project"},
+		{name: "empty file", content: "", mode: 0o644},
+		{name: "first line is not session meta", content: userTurn, mode: 0o644},
+		{name: "first line is corrupt", content: "{corrupt\n" + userTurn, mode: 0o644},
+		{name: "unreadable file", content: meta("/tmp/project", 0) + userTurn, mode: 0o000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.mode&0o400 == 0 && os.Geteuid() == 0 {
+				t.Skip("root reads files regardless of permissions")
+			}
+			sessionPath := filepath.Join(t.TempDir(), "rollout.jsonl")
+			if err := os.WriteFile(sessionPath, []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(sessionPath, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+
+			session, err := parseCodexSessionFile(sessionPath, tt.projectPath, normalizeCodexPath(tt.projectPath), false)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if (session != nil) != tt.wantSession {
+				t.Errorf("session = %v, want session %v", session, tt.wantSession)
+			}
+		})
+	}
+}
+
+func TestReadCodexSessionMeta_LineLimit(t *testing.T) {
+	const limit = 64 * KB
+	metaOfLength := func(length int) string {
+		prefix := `{"type":"session_meta","payload":{"id":"019a0000-0000-7000-8000-0000000000bb","cwd":"/tmp/project","instructions":"`
+		suffix := `"}}`
+		return prefix + strings.Repeat("i", length-len(prefix)-len(suffix)) + suffix
+	}
+
+	tests := []struct {
+		name        string
+		firstLine   string
+		wantTooLong bool
+	}{
+		{name: "meta line at the limit", firstLine: metaOfLength(limit)},
+		{name: "meta line over the limit", firstLine: metaOfLength(limit + 1), wantTooLong: true},
+		{name: "large line that is not JSON", firstLine: strings.Repeat("x", 4*MB), wantTooLong: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionPath := filepath.Join(t.TempDir(), "rollout.jsonl")
+			content := tt.firstLine + "\n" + `{"type":"event_msg","payload":{"type":"user_message","message":"Hello"}}` + "\n"
+			if err := os.WriteFile(sessionPath, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			meta, err := readCodexSessionMeta(sessionPath, limit)
+			if got := errors.Is(err, errLineTooLong); got != tt.wantTooLong {
+				t.Fatalf("error = %v, want errLineTooLong %t", err, tt.wantTooLong)
+			}
+			if !tt.wantTooLong {
+				if err != nil || meta == nil {
+					t.Fatalf("meta = %v, error = %v, want meta", meta, err)
+				}
+				return
+			}
+			// A source error, retried by the engine, rather than a file that
+			// is not a session, which the engine records as done.
+			if errors.Is(err, errNotCodexSession) {
+				t.Errorf("error = %v, must not mark the file as not a session", err)
 			}
 		})
 	}
@@ -954,5 +1060,290 @@ func TestProviderGetAgentChatSession(t *testing.T) {
 	}
 	if missing != nil {
 		t.Fatalf("GetAgentChatSession() missing = %+v, want nil", missing)
+	}
+}
+
+// lossyWatcher stands in for an inotify queue that overflows: it forwards the
+// real watcher's events to the watcher loop unless dropping is set, and the
+// test then reports the overflow through the watcher's Errors channel.
+type lossyWatcher struct {
+	watcher  *fsnotify.Watcher
+	dropping atomic.Bool
+	// read receives the name of every event once it was dropped or handed
+	// to the watcher loop.
+	read chan string
+}
+
+func installLossyWatcher(t *testing.T) <-chan *lossyWatcher {
+	t.Helper()
+	created := make(chan *lossyWatcher, 1)
+	stop := make(chan struct{})
+	original := newFSWatcher
+	newFSWatcher = func() (*fsnotify.Watcher, error) {
+		watcher, err := original()
+		if err != nil {
+			return nil, err
+		}
+		lossy := &lossyWatcher{watcher: watcher, read: make(chan string, 4096)}
+		events := watcher.Events
+		proxy := make(chan fsnotify.Event)
+		watcher.Events = proxy
+		go func() {
+			for event := range events {
+				if !lossy.dropping.Load() {
+					select {
+					case proxy <- event:
+					case <-stop:
+						return
+					}
+				}
+				select {
+				case lossy.read <- event.Name:
+				default:
+				}
+			}
+		}()
+		created <- lossy
+		return watcher, nil
+	}
+	t.Cleanup(func() {
+		newFSWatcher = original
+		close(stop)
+	})
+	return created
+}
+
+// waitRead waits until an event for name was dropped or handed to the loop.
+func (l *lossyWatcher) waitRead(t *testing.T, name string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case got := <-l.read:
+			if got == name {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("no event for %s", name)
+		}
+	}
+}
+
+// sessionLog records delivered sessions as JSON, to search for content.
+type sessionLog struct {
+	mu       sync.Mutex
+	sessions []string
+}
+
+func (l *sessionLog) add(t *testing.T, session *spi.AgentChatSession) {
+	data, err := json.Marshal(session)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sessions = append(l.sessions, string(data))
+}
+
+func (l *sessionLog) contains(text string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, session := range l.sessions {
+		if strings.Contains(session, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestCodexWatcher_RecoversFromEventOverflow(t *testing.T) {
+	const otherSessionID = "019a0000-0000-7000-8000-000000000002"
+	sessionsRoot := filepath.Join(t.TempDir(), "sessions")
+	monthDir := filepath.Join(sessionsRoot, "2026", "10")
+	existingPath := filepath.Join(monthDir, "05", "rollout-a.jsonl")
+	// The new session's day directory, like the session, appears while
+	// events are lost, so it is watched only if recovery registers it.
+	createdPath := filepath.Join(monthDir, "06", "rollout-b.jsonl")
+	if err := os.MkdirAll(filepath.Dir(existingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCodexFixture(t, existingPath, 1, 0)
+	lossyCreated := installLossyWatcher(t)
+
+	var watched, caughtUp sessionLog
+	var catchUps atomic.Int32
+	appendDeliveredBeforeRescan := make(chan bool, 1)
+	// Stands in for the engine's catch-up: a full parse of every rollout.
+	catchUp := func() {
+		if catchUps.Add(1) == 2 {
+			appendDeliveredBeforeRescan <- watched.contains("Please run step 1")
+		}
+		err := filepath.WalkDir(sessionsRoot, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || filepath.Ext(path) != ".jsonl" {
+				return err
+			}
+			session, err := parseCodexSessionFile(path, "", "", false)
+			if session != nil {
+				caughtUp.add(t, session)
+			}
+			return err
+		})
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- startCodexSessionWatcher(ctx, "", sessionsRoot, false, catchUp, func(session *spi.AgentChatSession) {
+			watched.add(t, session)
+		})
+	}()
+	lossy := <-lossyCreated
+	waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+	// A change handled just before the overflow: its run is still waiting
+	// out the throttle delay when the rescan starts.
+	appendToFile(t, existingPath, codexExchangeLines(t, 1, 0))
+	lossy.waitRead(t, existingPath)
+
+	lossy.dropping.Store(true)
+	if err := os.MkdirAll(filepath.Dir(createdPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(createdPath, []byte(codexMetaLine(t, otherSessionID)+codexExchangeLines(t, 0, 0)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(monthDir, "marker")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lossy.waitRead(t, marker)
+	lossy.dropping.Store(false)
+	lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+
+	waitUntil(t, "rescan after the overflow", func() bool { return caughtUp.contains(otherSessionID) })
+	if !<-appendDeliveredBeforeRescan {
+		t.Error("a run scheduled before the overflow was not delivered before the rescan")
+	}
+
+	appendToFile(t, createdPath, codexExchangeLines(t, 2, 0))
+	waitUntil(t, "a watched write to the session created during the overflow", func() bool {
+		return watched.contains("Please run step 2")
+	})
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("watcher returned %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not stop")
+	}
+}
+
+// TestCodexWatcher_ReplacedDirectoryIsWatchedAgain: a watch is on a
+// directory, not its path, so a day directory deleted and created again at
+// the same path must be watched again, whether its events arrive or were lost
+// to an overflow, or writes to it would never be archived.
+func TestCodexWatcher_ReplacedDirectoryIsWatchedAgain(t *testing.T) {
+	const otherSessionID = "019a0000-0000-7000-8000-000000000002"
+	tests := []struct {
+		name     string
+		overflow bool
+	}{
+		{name: "events delivered"},
+		{name: "events lost to an overflow", overflow: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionsRoot := filepath.Join(t.TempDir(), "sessions")
+			monthDir := filepath.Join(sessionsRoot, "2026", "10")
+			dayDir := filepath.Join(monthDir, "05")
+			if err := os.MkdirAll(dayDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeCodexFixture(t, filepath.Join(dayDir, "rollout-a.jsonl"), 1, 0)
+			lossyCreated := installLossyWatcher(t)
+
+			var watched sessionLog
+			var catchUps atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- startCodexSessionWatcher(ctx, "", sessionsRoot, false, func() { catchUps.Add(1) }, func(session *spi.AgentChatSession) {
+					watched.add(t, session)
+				})
+			}()
+			lossy := <-lossyCreated
+			waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+			lossy.dropping.Store(tt.overflow)
+			if err := os.RemoveAll(dayDir); err != nil {
+				t.Fatal(err)
+			}
+			// Once the removal's event was read, fsnotify has dropped the
+			// old watch, so a watch on the path can only be a new one.
+			lossy.waitRead(t, dayDir)
+			if err := os.Mkdir(dayDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.overflow {
+				marker := filepath.Join(monthDir, "marker")
+				if err := os.WriteFile(marker, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				lossy.waitRead(t, marker)
+				lossy.dropping.Store(false)
+				lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+				waitUntil(t, "overflow recovery", func() bool { return catchUps.Load() == 2 })
+			}
+			waitUntil(t, "a watch on the replaced day directory", func() bool {
+				return slices.Contains(lossy.watcher.WatchList(), dayDir)
+			})
+
+			createdPath := filepath.Join(dayDir, "rollout-b.jsonl")
+			if err := os.WriteFile(createdPath, []byte(codexMetaLine(t, otherSessionID)+codexExchangeLines(t, 2, 0)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			waitUntil(t, "a watched write to the replaced day directory", func() bool {
+				return watched.contains("Please run step 2")
+			})
+
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("watcher returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not stop")
+			}
+		})
+	}
+}
+
+func TestCodexWatcher_MissingSessionsRootIsNothingToWatch(t *testing.T) {
+	sessionsRoot := filepath.Join(t.TempDir(), "sessions")
+	err := startCodexSessionWatcher(context.Background(), "", sessionsRoot, false, nil, func(*spi.AgentChatSession) {})
+	if !errors.Is(err, spi.ErrNothingToWatch) {
+		t.Errorf("error = %v, want spi.ErrNothingToWatch", err)
 	}
 }

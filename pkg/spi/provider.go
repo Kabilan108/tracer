@@ -2,7 +2,14 @@ package spi
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"maps"
+	"path/filepath"
+	"strings"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
 
@@ -81,4 +88,163 @@ type Provider interface {
 	// sessionCallback: called with AgentChatSession on each update (provider should not block on callback)
 	// The implementation should handle its own file watching and session tracking
 	WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*AgentChatSession)) error
+}
+
+// SessionSource is the smallest set of files a provider parses as a whole.
+// Sessions parsed from a source depend only on the files listed in it, so an
+// unchanged source yields unchanged sessions.
+type SessionSource struct {
+	Key   string     // Stable identifier, e.g. a session file or project directory path
+	Files []FileStat // Every file the source's sessions are parsed from, stat'ed before parsing
+}
+
+// SessionVisitor receives sessions from SessionStreamer one source at a time.
+// Callbacks are invoked sequentially from the streaming goroutine.
+type SessionVisitor struct {
+	// Sources is called once, before any source is parsed, with the number of sources found.
+	Sources func(total int)
+	// ShouldParse reports whether src must be parsed. Returning false skips it without reading its files.
+	ShouldParse func(src SessionSource) bool
+	// Session receives each session parsed from src.
+	Session func(src SessionSource, session *AgentChatSession)
+	// Done is called after the last session of a parsed src, with the parse error if any.
+	Done func(src SessionSource, err error)
+}
+
+// SessionStreamer is implemented by providers that can stream historical sessions
+// instead of returning them all at once from GetAgentChatSessions.
+// Why: holding every parsed session of a provider in one slice made peak memory
+// scale with the whole history; streaming bounds it by the largest source.
+type SessionStreamer interface {
+	// StreamAgentChatSessions parses sources for projectPath (empty = all projects) and
+	// reports them to visitor. It stops between sources when ctx is cancelled.
+	StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor SessionVisitor) error
+}
+
+// CatchUpWatcher is implemented by providers whose watcher can run a catch-up
+// pass between registering its watches and handling its first event.
+// Why: a write made after historical ingest read a source but before the
+// watcher watched it produces no event, so it would never reach the archive.
+// Running catchUp once every existing source is watched closes that gap, and
+// because events arriving meanwhile are handled only after catchUp returns, a
+// catch-up parse never lands after a newer watch parse of the same session.
+type CatchUpWatcher interface {
+	// WatchAgentWithCatchUp behaves like WatchAgent and calls catchUp, when
+	// set, synchronously once before processing any event, and again through
+	// RecoverFromOverflow whenever the watcher's event queue overflows.
+	WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*AgentChatSession)) error
+}
+
+// ErrNothingToWatch is returned, wrapped, by a provider watcher when the
+// provider has no session data on this machine, such as a missing sessions
+// directory.
+// Why a sentinel: any other watcher error stops every provider's watcher, so
+// that a supervisor restarts the whole service instead of leaving it running
+// with one provider dead. A machine that uses only one of the agents must
+// still be able to watch that one.
+var ErrNothingToWatch = errors.New("nothing to watch")
+
+// RecoverFromOverflow brings a watcher whose event queue overflowed back in
+// step with its sources, without stopping it.
+//
+// Why: the kernel dropped events, so files written and directories created
+// in the meantime are unknown to the watcher, and a session whose last write
+// fell in that window would stay unarchived until it is written again.
+// rewatch registers every directory that should be watched, before the
+// rescan, so any later write produces an event: directories that appeared,
+// and directories replaced at the same path, whose watch ended with the
+// directory it was on (see DirWatches.Reset). The throttle is flushed so
+// that no run scheduled before the overflow delivers its snapshot after the
+// rescan's.
+// catchUp then parses every source changed since it was last archived, as at
+// startup, and events that queue up meanwhile are handled after it returns,
+// so their parses land after the rescan's, as at startup.
+//
+// It must be called from the goroutine that handles the watcher's events.
+func RecoverFromOverflow(watcher string, throttle *FileThrottle, rewatch func(), catchUp func()) {
+	started := time.Now()
+	rewatch()
+	throttle.Flush()
+	catchUp()
+	slog.Warn("Watcher rescanned sources after its event queue overflowed",
+		"watcher", watcher,
+		"reason", "events were dropped, so changes made meanwhile may have had no event",
+		"duration", time.Since(started))
+}
+
+// DirWatches adds directories to an fsnotify watcher once each, remembering
+// which ones it added. It is not safe for concurrent use; call it from the
+// goroutine that handles the watcher's events.
+type DirWatches struct {
+	watcher *fsnotify.Watcher
+	added   map[string]bool
+}
+
+// NewDirWatches returns an empty DirWatches for watcher.
+func NewDirWatches(watcher *fsnotify.Watcher) *DirWatches {
+	return &DirWatches{watcher: watcher, added: make(map[string]bool)}
+}
+
+// Add watches dir unless it was already added, and reports whether it added it.
+// Why skip: watchers walk their whole tree again whenever a directory
+// appears, and re-adding every directory each time would be wasted work.
+func (d *DirWatches) Add(dir string) (bool, error) {
+	if d.added[dir] {
+		return false, nil
+	}
+	if err := d.watcher.Add(dir); err != nil {
+		return false, err
+	}
+	d.added[dir] = true
+	return true, nil
+}
+
+// Forget drops path and every directory under it, so they are added again.
+// Call it when path is removed or renamed.
+// Why: a watch is on the directory, not its path. Once it is removed or
+// moved away, a directory created at the same path gets no watch unless it
+// is added again, and directories under a moved one keep watching their
+// moved copies.
+func (d *DirWatches) Forget(path string) {
+	prefix := path + string(filepath.Separator)
+	maps.DeleteFunc(d.added, func(dir string, _ bool) bool {
+		return dir == path || strings.HasPrefix(dir, prefix)
+	})
+}
+
+// Reset forgets every directory, so the next walk adds each one again.
+// Call it after the event queue overflowed.
+// Why: the events that tell of a directory's removal can be among those
+// dropped, and then Forget never ran for it. fsnotify's own WatchList is no
+// better, because it too only learns of a removal from those events.
+// Adding a path again watches whatever directory is there now, and does
+// nothing to a watch that is still live.
+func (d *DirWatches) Reset() {
+	clear(d.added)
+}
+
+// ReportSources calls Sources when set.
+func (v SessionVisitor) ReportSources(total int) {
+	if v.Sources != nil {
+		v.Sources(total)
+	}
+}
+
+// ParseNeeded calls ShouldParse when set; without it every source is parsed.
+func (v SessionVisitor) ParseNeeded(src SessionSource) bool {
+	return v.ShouldParse == nil || v.ShouldParse(src)
+}
+
+// ReportSession calls Session when set.
+func (v SessionVisitor) ReportSession(src SessionSource, session *AgentChatSession) {
+	if v.Session != nil {
+		v.Session(src, session)
+	}
+}
+
+// ReportDone calls Done when set.
+func (v SessionVisitor) ReportDone(src SessionSource, err error) {
+	if v.Done != nil {
+		v.Done(src, err)
+	}
 }

@@ -1,10 +1,20 @@
 package claudecode
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 // TestFilterWarmupMessages tests warmup message filtering
@@ -503,5 +513,317 @@ func TestProviderGetAgentChatSession(t *testing.T) {
 	}
 	if missing != nil {
 		t.Fatalf("GetAgentChatSession() missing = %+v, want nil", missing)
+	}
+}
+
+// lossyWatcher stands in for an inotify queue that overflows: it forwards the
+// real watcher's events to the watcher loop unless dropping is set, and the
+// test then reports the overflow through the watcher's Errors channel.
+type lossyWatcher struct {
+	watcher  *fsnotify.Watcher
+	dropping atomic.Bool
+	// read receives the name of every event once it was dropped or handed
+	// to the watcher loop.
+	read chan string
+}
+
+func installLossyWatcher(t *testing.T) <-chan *lossyWatcher {
+	t.Helper()
+	created := make(chan *lossyWatcher, 1)
+	stop := make(chan struct{})
+	original := newFSWatcher
+	newFSWatcher = func() (*fsnotify.Watcher, error) {
+		watcher, err := original()
+		if err != nil {
+			return nil, err
+		}
+		lossy := &lossyWatcher{watcher: watcher, read: make(chan string, 4096)}
+		events := watcher.Events
+		proxy := make(chan fsnotify.Event)
+		watcher.Events = proxy
+		go func() {
+			for event := range events {
+				if !lossy.dropping.Load() {
+					select {
+					case proxy <- event:
+					case <-stop:
+						return
+					}
+				}
+				select {
+				case lossy.read <- event.Name:
+				default:
+				}
+			}
+		}()
+		created <- lossy
+		return watcher, nil
+	}
+	t.Cleanup(func() {
+		newFSWatcher = original
+		close(stop)
+	})
+	return created
+}
+
+// waitRead waits until an event for name was dropped or handed to the loop.
+func (l *lossyWatcher) waitRead(t *testing.T, name string) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case got := <-l.read:
+			if got == name {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("no event for %s", name)
+		}
+	}
+}
+
+// sessionLog records delivered sessions as JSON, to search for content.
+type sessionLog struct {
+	mu       sync.Mutex
+	sessions []string
+}
+
+func (l *sessionLog) add(t *testing.T, session *spi.AgentChatSession) {
+	data, err := json.Marshal(session)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sessions = append(l.sessions, string(data))
+}
+
+func (l *sessionLog) contains(text string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, session := range l.sessions {
+		if strings.Contains(session, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestClaudeWatchers_RecoverFromEventOverflow(t *testing.T) {
+	type watchFunc func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error
+	tests := []struct {
+		name  string
+		watch watchFunc
+		// newProject puts the session created during the overflow in a new
+		// project directory, which is watched only if recovery registers it.
+		newProject bool
+	}{
+		{
+			name: "all projects",
+			watch: func(ctx context.Context, _ string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+				return watchClaudeProjects(ctx, false, catchUp, callback)
+			},
+			newProject: true,
+		},
+		{
+			name: "one project",
+			watch: func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+				return watchClaudeProject(ctx, projectDir, false, catchUp, callback)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			projectsDir := filepath.Join(home, ".claude", "projects")
+			projectDir := filepath.Join(projectsDir, "-tmp-claude-overflow")
+			existingPath := filepath.Join(projectDir, testClaudeSession+".jsonl")
+			createdDir := projectDir
+			if tt.newProject {
+				createdDir = filepath.Join(projectsDir, "-tmp-claude-overflow-new")
+			}
+			createdPath := filepath.Join(createdDir, testOtherSession+".jsonl")
+
+			fixture := newClaudeFixture(t)
+			lines, lastExisting := fixture.exchange(testClaudeSession, "", 0, 0)
+			writeFile(t, existingPath, lines)
+			lossyCreated := installLossyWatcher(t)
+
+			var watched, caughtUp sessionLog
+			var catchUps atomic.Int32
+			appendDeliveredBeforeRescan := make(chan bool, 1)
+			// Stands in for the engine's catch-up: a full parse of every project.
+			catchUp := func() {
+				if catchUps.Add(1) == 2 {
+					appendDeliveredBeforeRescan <- watched.contains("Please do step 1")
+				}
+				entries, err := os.ReadDir(projectsDir)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				for _, entry := range entries {
+					if entry.IsDir() {
+						emitClaudeSessions(filepath.Join(projectsDir, entry.Name()), false, func(session *spi.AgentChatSession) {
+							caughtUp.add(t, session)
+						})
+					}
+				}
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- tt.watch(ctx, projectDir, catchUp, func(session *spi.AgentChatSession) {
+					watched.add(t, session)
+				})
+			}()
+			lossy := <-lossyCreated
+			waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+			// A change handled just before the overflow: its run is still
+			// waiting out the throttle delay when the rescan starts.
+			lines, _ = fixture.exchange(testClaudeSession, lastExisting, 1, 0)
+			appendFile(t, existingPath, lines)
+			lossy.waitRead(t, existingPath)
+
+			lossy.dropping.Store(true)
+			lines, lastCreated := fixture.exchange(testOtherSession, "", 2, 0)
+			writeFile(t, createdPath, lines)
+			marker := filepath.Join(projectDir, "marker")
+			writeFile(t, marker, "")
+			lossy.waitRead(t, marker)
+			lossy.dropping.Store(false)
+			lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+
+			waitUntil(t, "rescan after the overflow", func() bool { return caughtUp.contains("Please do step 2") })
+			if !<-appendDeliveredBeforeRescan {
+				t.Error("a run scheduled before the overflow was not delivered before the rescan")
+			}
+
+			lines, _ = fixture.exchange(testOtherSession, lastCreated, 3, 0)
+			appendFile(t, createdPath, lines)
+			waitUntil(t, "a watched write to the session created during the overflow", func() bool {
+				return watched.contains("Please do step 3")
+			})
+
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("watcher returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not stop")
+			}
+		})
+	}
+}
+
+// TestClaudeWatchers_ReplacedDirectoryIsWatchedAgain: a watch is on a
+// directory, not its path, so a project directory deleted and created again
+// at the same path must be watched again, whether its events arrive or were
+// lost to an overflow, or writes to it would never be archived.
+func TestClaudeWatchers_ReplacedDirectoryIsWatchedAgain(t *testing.T) {
+	type watchFunc func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error
+	watchAll := func(ctx context.Context, _ string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+		return watchClaudeProjects(ctx, false, catchUp, callback)
+	}
+	watchOne := func(ctx context.Context, projectDir string, catchUp func(), callback func(*spi.AgentChatSession)) error {
+		return watchClaudeProject(ctx, projectDir, false, catchUp, callback)
+	}
+	tests := []struct {
+		name  string
+		watch watchFunc
+		// projectsWatched is set when the projects directory is watched, so
+		// the project directory's creation produces an event.
+		projectsWatched bool
+		overflow        bool
+	}{
+		{name: "all projects, events delivered", watch: watchAll, projectsWatched: true},
+		{name: "all projects, events lost to an overflow", watch: watchAll, projectsWatched: true, overflow: true},
+		{name: "one project, events delivered", watch: watchOne},
+		{name: "one project, events lost to an overflow", watch: watchOne, overflow: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			projectsDir := filepath.Join(home, ".claude", "projects")
+			projectDir := filepath.Join(projectsDir, "-tmp-claude-replaced")
+			fixture := newClaudeFixture(t)
+			lines, _ := fixture.exchange(testClaudeSession, "", 0, 0)
+			writeFile(t, filepath.Join(projectDir, testClaudeSession+".jsonl"), lines)
+			lossyCreated := installLossyWatcher(t)
+
+			var watched sessionLog
+			var catchUps atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- tt.watch(ctx, projectDir, func() { catchUps.Add(1) }, func(session *spi.AgentChatSession) {
+					watched.add(t, session)
+				})
+			}()
+			lossy := <-lossyCreated
+			waitUntil(t, "startup catch-up", func() bool { return catchUps.Load() == 1 })
+
+			lossy.dropping.Store(tt.overflow)
+			if err := os.RemoveAll(projectDir); err != nil {
+				t.Fatal(err)
+			}
+			// Once the removal's event was read, fsnotify has dropped the
+			// old watch, so a watch on the path can only be a new one.
+			lossy.waitRead(t, projectDir)
+			if err := os.Mkdir(projectDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.overflow {
+				if tt.projectsWatched {
+					marker := filepath.Join(projectsDir, "marker")
+					writeFile(t, marker, "")
+					lossy.waitRead(t, marker)
+				}
+				lossy.dropping.Store(false)
+				lossy.watcher.Errors <- fsnotify.ErrEventOverflow
+				waitUntil(t, "overflow recovery", func() bool { return catchUps.Load() == 2 })
+			}
+			waitUntil(t, "a watch on the replaced project directory", func() bool {
+				return slices.Contains(lossy.watcher.WatchList(), projectDir)
+			})
+
+			lines, _ = fixture.exchange(testOtherSession, "", 2, 0)
+			writeFile(t, filepath.Join(projectDir, testOtherSession+".jsonl"), lines)
+			waitUntil(t, "a watched write to the replaced project directory", func() bool {
+				return watched.contains("Please do step 2")
+			})
+
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("watcher returned %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("watcher did not stop")
+			}
+		})
 	}
 }
