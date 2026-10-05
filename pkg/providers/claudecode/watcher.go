@@ -37,8 +37,14 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 	}
 	defer func() { _ = watcher.Close() }()
 
-	throttle := spi.NewSessionFileThrottle(func(path string) {
-		emitClaudeSessions(filepath.Dir(path), debugRaw, sessionCallback, path)
+	// Keys are session files, or project directories that appeared and need a
+	// full scan.
+	throttle := newClaudeThrottle(func(key string) {
+		if strings.HasSuffix(key, ".jsonl") {
+			emitClaudeSessions(filepath.Dir(key), debugRaw, sessionCallback, key)
+			return
+		}
+		emitClaudeSessions(key, debugRaw, sessionCallback)
 	})
 	defer throttle.Stop()
 
@@ -107,7 +113,7 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 				if filepath.Dir(event.Name) == projectsDir {
 					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 						watchProjectDir(event.Name)
-						emitClaudeSessions(event.Name, debugRaw, sessionCallback)
+						throttle.Trigger(event.Name)
 						continue
 					}
 				}
@@ -132,7 +138,7 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 	}
 	defer func() { _ = watcher.Close() }()
 
-	throttle := spi.NewSessionFileThrottle(func(path string) {
+	throttle := newClaudeThrottle(func(path string) {
 		emitClaudeSessions(claudeProjectDir, debugRaw, sessionCallback, path)
 	})
 	defer throttle.Stop()
@@ -180,6 +186,15 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 	}
 }
 
+// newClaudeThrottle serializes Claude parses. One session can span several
+// files and every parse reads all of them, so two concurrent runs triggered by
+// different files of the same session could deliver an older snapshot after a
+// newer one. Running one at a time, with callbacks delivered synchronously,
+// keeps snapshots in the order their files were read.
+func newClaudeThrottle(run func(key string)) *spi.FileThrottle {
+	return spi.NewSessionFileThrottle(1, run)
+}
+
 func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession), changedFile ...string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -222,14 +237,15 @@ func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback 
 			continue
 		}
 
-		sessionCopy := *agentSession
-		go func() {
+		// Delivered synchronously so snapshots reach the engine in the order
+		// they were parsed; the callback only queues the update.
+		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("emitClaudeSessions: callback panicked", "panic", r)
 				}
 			}()
-			sessionCallback(&sessionCopy)
+			sessionCallback(agentSession)
 		}()
 	}
 }

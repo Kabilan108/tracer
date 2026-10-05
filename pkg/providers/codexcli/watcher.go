@@ -109,7 +109,9 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		}
 	}()
 
-	throttle := spi.NewSessionFileThrottle(func(path string) {
+	// Each Codex rollout file is exactly one session, so parses of different
+	// files never race over the same archive entry and can run two at a time.
+	throttle := spi.NewSessionFileThrottle(2, func(path string) {
 		ScanCodexSessions(projectPath, filepath.Dir(path), &path, debugRaw, sessionCallback)
 	})
 	// Stop runs before the watcher closes so no parse outlives this function.
@@ -430,15 +432,16 @@ func processCodexSessionFile(sessionPath string, projectPath string, normalizedP
 	}
 
 	slog.Info("processCodexSessionFile: Calling callback for session", "sessionID", agentSession.SessionID)
-	// Call the callback in a goroutine to avoid blocking
-	go func(s *spi.AgentChatSession) {
+	// Delivered synchronously so a file's snapshots reach the engine in the
+	// order they were parsed; the callback only queues the update.
+	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("processCodexSessionFile: Callback panicked", "panic", r)
 			}
 		}()
-		callback(s)
-	}(agentSession)
+		callback(agentSession)
+	}()
 
 	return nil
 }

@@ -182,16 +182,54 @@ func TestFileThrottle_StopWaitsForRunningAndIgnoresLaterTriggers(t *testing.T) {
 	}
 }
 
-func TestFileThrottle_StopCancelsPendingTimer(t *testing.T) {
-	var ran atomic.Bool
-	throttle := NewFileThrottle(100*time.Millisecond, 0, 1, func(string) { ran.Store(true) })
+func TestFileThrottle_StopDrainsAcceptedChanges(t *testing.T) {
+	tests := []struct {
+		name        string
+		triggerMore bool // trigger again while the first run is in flight
+		wantRuns    int32
+	}{
+		{name: "scheduled run executes without waiting out its delay", wantRuns: 1},
+		{name: "change during an in-flight run gets its follow-up", triggerMore: true, wantRuns: 2},
+	}
 
-	throttle.Trigger("a")
-	throttle.Stop()
-	time.Sleep(150 * time.Millisecond)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var runs atomic.Int32
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			// A delay far beyond the test's runtime proves Stop does not wait
+			// for the timer.
+			throttle := NewFileThrottle(time.Hour, 0, 1, func(string) {
+				runs.Add(1)
+				started <- struct{}{}
+				<-release
+			})
 
-	if ran.Load() {
-		t.Error("scheduled run executed after Stop")
+			throttle.Trigger("a")
+			stopped := make(chan struct{})
+			go func() {
+				throttle.Stop()
+				close(stopped)
+			}()
+			<-started
+			if tt.triggerMore {
+				// Stop has begun, so mark the in-flight run dirty directly the
+				// way a late fsnotify event would have before Stop.
+				throttle.mu.Lock()
+				throttle.entries["a"].dirty = true
+				throttle.mu.Unlock()
+			}
+			close(release)
+
+			select {
+			case <-stopped:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Stop did not return")
+			}
+			if got := runs.Load(); got != tt.wantRuns {
+				t.Errorf("runs = %d, want %d", got, tt.wantRuns)
+			}
+		})
 	}
 }
 

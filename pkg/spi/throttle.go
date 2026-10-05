@@ -7,7 +7,10 @@ import (
 )
 
 // FileThrottle coalesces bursts of change events per key (normally a session
-// file path) into trailing-edge runs executed off the caller's goroutine.
+// file path) into one run per window, executed off the caller's goroutine. The
+// first change schedules a run after the key's delay; later changes before it
+// fires join that run, so latency is bounded by the delay even under a steady
+// stream of writes.
 //
 // Why: agents append to transcripts many times per second, and each run of a
 // provider parser re-reads the whole file. Running the parser once per
@@ -26,21 +29,18 @@ type FileThrottle struct {
 	pending sync.WaitGroup
 }
 
-// Session watchers share these settings. One second keeps archives close to
-// live while absorbing the many small appends of a single agent turn. A cost
-// factor of four caps a continuously growing file at roughly a fifth of one
-// core. Two concurrent runs let a small session update while a large one is
-// being parsed, without holding several large parses in memory at once.
+// One second keeps archives close to live while absorbing the many small
+// appends of a single agent turn. A cost factor of four caps a continuously
+// growing file at roughly a fifth of one core.
 const (
-	sessionWatchMinDelay      = time.Second
-	sessionWatchCostFactor    = 4
-	sessionWatchMaxConcurrent = 2
+	sessionWatchMinDelay   = time.Second
+	sessionWatchCostFactor = 4
 )
 
 // NewSessionFileThrottle returns the throttle provider watchers use to process
-// changed session files.
-func NewSessionFileThrottle(run func(path string)) *FileThrottle {
-	return NewFileThrottle(sessionWatchMinDelay, sessionWatchCostFactor, sessionWatchMaxConcurrent, run)
+// changed session files, running at most maxConcurrent parses at once.
+func NewSessionFileThrottle(maxConcurrent int, run func(path string)) *FileThrottle {
+	return NewFileThrottle(sessionWatchMinDelay, sessionWatchCostFactor, maxConcurrent, run)
 }
 
 type throttleEntry struct {
@@ -92,15 +92,21 @@ func (t *FileThrottle) Trigger(key string) {
 	}
 }
 
-// Stop cancels scheduled runs and waits for in-flight runs to return, so no
-// run starts or finishes after Stop returns.
+// Stop stops accepting changes, then processes every change already accepted
+// without waiting out its delay, and returns once all runs have finished.
+//
+// Why drain instead of cancel: a watcher stops on Ctrl+C or service shutdown,
+// and the last write of a session usually lands moments before that. Dropping
+// scheduled runs would leave the archive stale until the next ingest. The
+// drain is bounded: at most one run per changed key, plus one follow-up for a
+// key that changed during its in-flight run.
 func (t *FileThrottle) Stop() {
 	t.mu.Lock()
 	t.stopped = true
-	for _, entry := range t.entries {
+	for key, entry := range t.entries {
+		// A false Stop means the timer already fired and its run is under way.
 		if entry.timer != nil && entry.timer.Stop() {
-			entry.timer = nil
-			t.pending.Done()
+			go t.fire(key)
 		}
 	}
 	t.mu.Unlock()
@@ -114,37 +120,45 @@ func (t *FileThrottle) scheduleLocked(key string, entry *throttleEntry) {
 	entry.timer = time.AfterFunc(delay, func() { t.fire(key) })
 }
 
+// fire runs a scheduled key. Each call balances one pending.Add made when the
+// run was scheduled.
 func (t *FileThrottle) fire(key string) {
 	defer t.pending.Done()
 
 	t.mu.Lock()
 	entry := t.entries[key]
 	entry.timer = nil
-	if t.stopped {
-		t.mu.Unlock()
-		return
-	}
 	entry.running = true
 	t.mu.Unlock()
 
-	t.slots <- struct{}{}
-	started := time.Now()
-	t.runRecovered(key)
-	elapsed := time.Since(started)
-	<-t.slots
+	for again := true; again; {
+		elapsed := t.runInSlot(key)
 
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	entry.running = false
-	entry.lastDuration = elapsed
+		t.mu.Lock()
+		entry.lastDuration = elapsed
+		if entry.dirty && !t.stopped {
+			t.scheduleLocked(key, entry)
+		}
+		// While stopping, a change that landed during the run is processed
+		// right away so Stop's caller sees it before shutting down.
+		again = entry.dirty && t.stopped
+		entry.dirty = false
+		entry.running = again
+		t.mu.Unlock()
+	}
 	// Idle entries are kept: a file written every few seconds would otherwise
 	// lose its last duration between bursts and fall back to minDelay. Each
-	// entry is a few dozen bytes and there is one per session file ever
-	// changed while watching, so the map stays small.
-	if entry.dirty && !t.stopped {
-		entry.dirty = false
-		t.scheduleLocked(key, entry)
-	}
+	// entry is a few dozen bytes and there is one per session file changed
+	// while watching, so the map stays small.
+}
+
+func (t *FileThrottle) runInSlot(key string) time.Duration {
+	t.slots <- struct{}{}
+	defer func() { <-t.slots }()
+
+	started := time.Now()
+	t.runRecovered(key)
+	return time.Since(started)
 }
 
 // runRecovered isolates the throttle's bookkeeping from a panicking run, which
