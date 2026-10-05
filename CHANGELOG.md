@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Codex transcripts now include the user's prompts and the agent's replies and reasoning summaries. Codex has written these as `item_completed` items since at least September 2025, and tracer only read the older `user_message`, `agent_message` and `agent_reasoning` events, so archived Codex sessions held tool calls only, titled by their start time. The older events are still read, and a file holding both forms renders each turn once. The first `tracer watch` start after upgrading re-renders every Codex session.
+- `tracer watch` archives Codex sessions as they change again. It skipped any session without a `user_message` event, which was every current one, so Codex sessions only reached the archive on the next start.
+
+### Added
+
+- Codex subagent runs record the session that started them as `parent_session_id` in the frontmatter, and are titled after their agent (`Subagent: /root/build_review`, `Subagent: guardian`) because their prompts are written by another agent and often encrypted. Messages between agents render as incoming messages showing their routing header; Codex encrypts most payloads, which render as `[encrypted]`. They do not count as user turns.
+
 ### Changed
 
 - `tracer watch` batches write events per transcript and parses off the event loop, at most once per second and less often for transcripts that are slow to parse. Previously every write event re-parsed the whole file, so a growing 100 MB transcript cost about a CPU-second per append (#14).

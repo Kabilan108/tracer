@@ -24,7 +24,7 @@ import (
 // formatting, markdown or frontmatter rendering, or archive paths. The next
 // watch startup then re-parses every source once. `tracer sync` never skips,
 // so it remains the way to rebuild the archive if a bump was missed.
-const SourceFingerprintVersion = 1
+const SourceFingerprintVersion = 2
 
 // providerIngest tracks one provider's streaming ingest. Visitor callbacks
 // arrive sequentially from the provider's goroutine, so its fields need no lock;

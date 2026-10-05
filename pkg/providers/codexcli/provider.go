@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/tracer-ai/tracer-cli/pkg/log"
+	"github.com/tracer-ai/tracer-cli/pkg/session"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
@@ -724,23 +725,22 @@ func agentChatFromRecords(sessionInfo *codexSessionInfo, records []map[string]in
 	// Get timestamp from metadata
 	timestamp := sessionInfo.Meta.Timestamp
 
-	// Generate slug from first user message
-	firstUserMessage := findFirstUserMessage(records)
-	slug := spi.GenerateFilenameFromUserMessage(firstUserMessage)
-	if slug == "" {
-		slog.Debug("processSessionToAgentChat: No user message for slug yet",
-			"sessionID", sessionInfo.SessionID)
-	} else {
-		slog.Debug("processSessionToAgentChat: Generated slug from user message",
-			"sessionID", sessionInfo.SessionID,
-			"slug", slug)
-	}
-
 	// Generate SessionData from records
 	sessionData, err := GenerateAgentSession(records, workspaceRoot)
 	if err != nil {
 		slog.Error("Failed to generate SessionData", "sessionId", sessionInfo.SessionID, "error", err)
 		return nil, fmt.Errorf("failed to generate SessionData: %w", err)
+	}
+
+	// Generate slug from the subagent's name or the first user message
+	slug := sessionSlug(sessionData.SubagentName, findFirstUserMessage(records))
+	if slug == "" {
+		slog.Debug("processSessionToAgentChat: No user message for slug yet",
+			"sessionID", sessionInfo.SessionID)
+	} else {
+		slog.Debug("processSessionToAgentChat: Generated slug",
+			"sessionID", sessionInfo.SessionID,
+			"slug", slug)
 	}
 
 	// Write provider-specific debug files if requested
@@ -807,38 +807,25 @@ func writeDebugRawFiles(sessionID string, records []map[string]interface{}) erro
 // Returns empty string if no user message is found.
 func findFirstUserMessage(records []map[string]interface{}) string {
 	for _, record := range records {
-		// Get record type
-		recordType, ok := record["type"].(string)
-		if !ok || recordType != "event_msg" {
-			continue
+		if text := codexRecordText(record); text.kind == codexTextUser {
+			slog.Debug("findFirstUserMessage: Found first user message",
+				"message", text.text[:min(len(text.text), 100)])
+			return text.text
 		}
-
-		// Get payload
-		payload, ok := record["payload"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Check if this is a user message
-		payloadType, ok := payload["type"].(string)
-		if !ok || payloadType != "user_message" {
-			continue
-		}
-
-		// Extract the message content
-		message, ok := payload["message"].(string)
-		if !ok || message == "" {
-			continue
-		}
-
-		// Found the first user message
-		slog.Debug("findFirstUserMessage: Found first user message",
-			"message", message[:min(len(message), 100)])
-		return message
 	}
 
 	slog.Debug("findFirstUserMessage: No user message found in session")
 	return ""
+}
+
+// sessionSlug derives a session's filename slug. Subagent runs are named
+// after their agent, like their titles, because their prompts are written by
+// another agent or encrypted.
+func sessionSlug(subagentName, firstUserMessage string) string {
+	if subagentName != "" {
+		return spi.GenerateFilenameFromUserMessage(session.SubagentTitle(subagentName))
+	}
+	return spi.GenerateFilenameFromUserMessage(firstUserMessage)
 }
 
 // ListAgentChatSessions retrieves lightweight session metadata without full parsing
@@ -881,7 +868,7 @@ func (p *Provider) ListAgentChatSessions(projectPath string) ([]spi.SessionMetad
 }
 
 // extractCodexSessionMetadata reads minimal data from a Codex CLI session to extract metadata
-// Returns nil if the session is empty or has no user messages
+// Returns nil if the session is empty, or has no user messages and is not a subagent run
 func extractCodexSessionMetadata(sessionInfo *codexSessionInfo) (*spi.SessionMetadata, error) {
 	file, err := os.Open(sessionInfo.SessionPath)
 	if err != nil {
@@ -892,10 +879,12 @@ func extractCodexSessionMetadata(sessionInfo *codexSessionInfo) (*spi.SessionMet
 	}()
 
 	reader := bufio.NewReader(file)
-	var firstUserMessage string
+	var firstUserMessage, subagentName string
 	lineNum := 0
 
-	// Read records until we find a user message or reach EOF.
+	// Read records until we find a user message, learn from the session
+	// metadata that this is a subagent run (named after its agent instead),
+	// or reach EOF.
 	// Why: ReadString can return data AND io.EOF on the last line (no trailing newline),
 	// so we always process the line first, then check for EOF once at the bottom.
 	for {
@@ -915,33 +904,32 @@ func extractCodexSessionMetadata(sessionInfo *codexSessionInfo) (*spi.SessionMet
 					"file", filepath.Base(sessionInfo.SessionPath),
 					"line", lineNum,
 					"error", jsonErr)
-			} else if recordType, ok := record["type"].(string); ok && recordType == "event_msg" {
-				if payload, ok := record["payload"].(map[string]interface{}); ok {
-					if payloadType, ok := payload["type"].(string); ok && payloadType == "user_message" {
-						if message, ok := payload["message"].(string); ok && message != "" {
-							firstUserMessage = message
-						}
-					}
-				}
+			} else if recordType, _ := record["type"].(string); recordType == "session_meta" {
+				payload, _ := record["payload"].(map[string]interface{})
+				_, subagentName = subagentInfo(payload)
+			} else if text := codexRecordText(record); text.kind == codexTextUser {
+				firstUserMessage = text.text
 			}
 		}
 
 		// Single exit: found what we need, or reached end of file
-		if firstUserMessage != "" || readErr == io.EOF {
+		if firstUserMessage != "" || subagentName != "" || readErr == io.EOF {
 			break
 		}
 	}
 
 	// If no user message found, session is empty
-	if firstUserMessage == "" {
+	if firstUserMessage == "" && subagentName == "" {
 		return nil, nil
 	}
 
-	// Generate slug from first user message
-	slug := spi.GenerateFilenameFromUserMessage(firstUserMessage)
+	slug := sessionSlug(subagentName, firstUserMessage)
 
-	// Generate human-readable name from first user message
+	// Generate human-readable name from the agent's or the first user message
 	name := spi.GenerateReadableName(firstUserMessage)
+	if subagentName != "" {
+		name = session.SubagentTitle(subagentName)
+	}
 
 	return &spi.SessionMetadata{
 		SessionID:     sessionInfo.SessionID,

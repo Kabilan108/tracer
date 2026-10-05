@@ -1347,3 +1347,93 @@ func TestCodexWatcher_MissingSessionsRootIsNothingToWatch(t *testing.T) {
 		t.Errorf("error = %v, want spi.ErrNothingToWatch", err)
 	}
 }
+
+func TestCodexSessionNaming(t *testing.T) {
+	tests := []struct {
+		name     string
+		lines    []string
+		wantSlug string
+		// wantName is the listing name; empty means the listing skips the session.
+		wantName string
+	}{
+		{
+			name: "named by the first prompt in item form",
+			lines: []string{
+				`{"type":"session_meta","timestamp":"2026-10-01T10:00:00Z","payload":{"id":"s1","timestamp":"2026-10-01T10:00:00Z","cwd":"/work","source":"vscode"}}`,
+				`{"type":"response_item","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>ctx</environment_context>"}]}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:02Z","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Fix the flaky test"}]}}}`,
+			},
+			wantSlug: "fix-the-flaky-test",
+			wantName: "Fix the flaky test",
+		},
+		{
+			name: "named by the first prompt in legacy form",
+			lines: []string{
+				`{"type":"session_meta","timestamp":"2026-10-01T10:00:00Z","payload":{"id":"s1","timestamp":"2026-10-01T10:00:00Z","cwd":"/work"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"user_message","message":"Fix the flaky test"}}`,
+			},
+			wantSlug: "fix-the-flaky-test",
+			wantName: "Fix the flaky test",
+		},
+		{
+			name: "subagent named by its agent even with a prompt",
+			lines: []string{
+				`{"type":"session_meta","timestamp":"2026-10-01T10:00:00Z","payload":{"id":"s2","timestamp":"2026-10-01T10:00:00Z","cwd":"/work","parent_thread_id":"p2","source":{"subagent":{"other":"guardian"}}}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"The following is the Codex agent history"}]}}}`,
+			},
+			wantSlug: "subagent-guardian",
+			wantName: "Subagent: guardian",
+		},
+		{
+			name: "subagent without a prompt",
+			lines: []string{
+				`{"type":"session_meta","timestamp":"2026-10-01T10:00:00Z","payload":{"id":"s3","timestamp":"2026-10-01T10:00:00Z","cwd":"/work","source":{"subagent":{"thread_spawn":{"parent_thread_id":"p1","agent_path":"/root/build_review"}}}}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"Reviewing."}]}}}`,
+			},
+			wantSlug: "subagent-root-build-review",
+			wantName: "Subagent: /root/build_review",
+		},
+		{
+			name: "session without a prompt yet",
+			lines: []string{
+				`{"type":"session_meta","timestamp":"2026-10-01T10:00:00Z","payload":{"id":"s4","timestamp":"2026-10-01T10:00:00Z","cwd":"/work","source":"cli"}}`,
+				`{"type":"event_msg","timestamp":"2026-10-01T10:00:01Z","payload":{"type":"task_started"}}`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rollout.jsonl")
+			if err := os.WriteFile(path, []byte(strings.Join(tt.lines, "\n")+"\n"), 0o644); err != nil {
+				t.Fatalf("write session: %v", err)
+			}
+			meta, err := loadCodexSessionMeta(path)
+			if err != nil {
+				t.Fatalf("loadCodexSessionMeta() error = %v", err)
+			}
+			info := &codexSessionInfo{SessionID: meta.Payload.ID, SessionPath: path, Meta: meta}
+
+			chat, err := processSessionToAgentChat(info, "", false)
+			if err != nil {
+				t.Fatalf("processSessionToAgentChat() error = %v", err)
+			}
+			if chat.Slug != tt.wantSlug {
+				t.Errorf("session slug = %q, want %q", chat.Slug, tt.wantSlug)
+			}
+
+			listed, err := extractCodexSessionMetadata(info)
+			if err != nil {
+				t.Fatalf("extractCodexSessionMetadata() error = %v", err)
+			}
+			switch {
+			case tt.wantName == "" && listed != nil:
+				t.Errorf("listing = %+v, want the session skipped", listed)
+			case tt.wantName != "" && listed == nil:
+				t.Errorf("listing skipped the session, want name %q", tt.wantName)
+			case listed != nil && (listed.Name != tt.wantName || listed.Slug != tt.wantSlug):
+				t.Errorf("listing name, slug = %q, %q; want %q, %q", listed.Name, listed.Slug, tt.wantName, tt.wantSlug)
+			}
+		})
+	}
+}
