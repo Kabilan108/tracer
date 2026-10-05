@@ -76,7 +76,9 @@ The watcher batches rapid writes to a transcript and archives it at most about o
 
 `tracer watch` first ingests history, then follows provider session files as they grow. On startup it skips any session source (a Codex rollout file, or a Claude project directory) whose files are unchanged since its sessions were archived and whose archived Markdown still exists. The fingerprints live in the runtime state database next to the archive dedupe state. After its file watches are registered, the watcher runs the same check again and parses whatever changed while ingest ran. While watching, it reads only the bytes appended to a session file since its previous read, keeping decoded records in memory for files written to within the last 10 minutes. `tracer sync` always re-parses every source, so it is the command to run when you want the archive fully regenerated.
 
-`tracer get` reads the finished archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude` / `-p codex` to limit lookup to one provider.
+`tracer get` reads the finished archive for the requested session and prints the Markdown transcript to stdout. Use `tracer get <session-id> -P` to print only the archived Markdown path, or `tracer get <session-id> -p claude-code` / `-p codex-cli` to limit lookup to one provider.
+
+`--provider` on `get` and `list` matches the `provider` frontmatter value (`claude-code` or `codex-cli`). Those values differ from the archive directory names (`claude/`, `codex/`) and from the `sync`/`watch` provider IDs (`claude`, `codex`). When a `--provider` value matches no archived session, `list` prints a hint on stderr naming the provider values in the archive, so `--json` output stays a valid array. `get` puts the same hint in its not-found error.
 
 Tool-output filtering is applied to the archived Markdown only when it is read; reads never modify the archive. `--tool-output=full` is the byte-identical default, `--tool-output=none` keeps each tool tag and summary as a stub, and `--tool-output=truncate:N` keeps the first `N` output lines per tool call with an 8 KiB hard cap. `--turns=user,agent` removes tool-use and thinking blocks entirely.
 
@@ -107,7 +109,7 @@ session_id: 019...
 title: Add archive-backed session listing
 host: jacurutu
 cwd: /home/kabilan/dotfiles
-provider: codex
+provider: codex-cli
 models:
   - gpt-5.6
 started: 2026-07-13T10:00:00Z

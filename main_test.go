@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -457,6 +458,9 @@ func TestMetadataMatches(t *testing.T) {
 	}{
 		{name: "all filters", metadata: metadata, flags: listFlags{provider: "codex", project: "dotfiles", outcome: "done"}, tags: []string{"gold"}, want: true},
 		{name: "provider mismatch", metadata: metadata, flags: listFlags{provider: "claude"}, want: false},
+		{name: "provider filter whitespace", metadata: metadata, flags: listFlags{provider: " Codex "}, want: true},
+		{name: "provider frontmatter whitespace", metadata: sessionpkg.Metadata{Provider: " codex "}, flags: listFlags{provider: "codex"}, want: true},
+		{name: "whitespace-only provider filter", metadata: metadata, flags: listFlags{provider: "  "}, want: true},
 		{name: "project path match", metadata: metadata, flags: listFlags{project: "kabilan/dot"}, want: true},
 		{name: "single positive", metadata: metadata, tags: []string{"gold"}, want: true},
 		{name: "single negative", metadata: metadata, tags: []string{"!gold"}, want: false},
@@ -1111,6 +1115,147 @@ func TestGetCommandSelectsUnknownProviderCaseInsensitively(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "future provider copy") {
 		t.Fatalf("get command did not select unknown provider archive: %s", stdout)
+	}
+}
+
+func TestProviderFilterHint(t *testing.T) {
+	archived := []string{"claude-code", "codex-cli"}
+	tests := []struct {
+		name      string
+		filter    string
+		providers []string
+		want      string
+	}{
+		{name: "no filter", filter: "", providers: archived, want: ""},
+		{name: "empty archive", filter: "codex", providers: nil, want: ""},
+		{name: "present provider", filter: "codex-cli", providers: archived, want: ""},
+		{name: "present provider case and space insensitive", filter: " Codex-CLI ", providers: archived, want: ""},
+		{name: "directory name", filter: "codex", providers: archived, want: `no archived sessions have provider "codex"; archived providers: claude-code, codex-cli`},
+		{name: "trimmed in message", filter: " claude ", providers: archived, want: `no archived sessions have provider "claude"; archived providers: claude-code, codex-cli`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerFilterHint(tt.filter, tt.providers); got != tt.want {
+				t.Errorf("providerFilterHint(%q) = %q, want %q", tt.filter, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestArchivedProviderIDs(t *testing.T) {
+	sessions := []sessionpkg.Metadata{
+		{Provider: "codex-cli"},
+		{Provider: "Claude-Code"},
+		{Provider: " codex-cli "},
+		{Provider: ""},
+	}
+	got := archivedProviderIDs(sessions)
+	want := []string{"claude-code", "codex-cli"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("archivedProviderIDs() = %v, want %v", got, want)
+	}
+}
+
+// TestListCommand_ProviderHint checks that a --provider value no archived
+// session carries explains itself on stderr while stdout stays valid output.
+func TestListCommand_ProviderHint(t *testing.T) {
+	tempDir := t.TempDir()
+	archiveRoot := filepath.Join(tempDir, "archive")
+	emptyRoot := filepath.Join(tempDir, "empty")
+	writeArchivedGetSession(t, archiveRoot, "claude-code", "project", "claude-session", "body\n")
+	writeArchivedGetSession(t, archiveRoot, "codex-cli", "project", "codex-session", "body\n")
+	paddedRoot := filepath.Join(tempDir, "padded")
+	writeArchivedGetSession(t, paddedRoot, `" codex-cli "`, "project", "padded-session", "body\n")
+	const wantHint = `hint: no archived sessions have provider "codex"; archived providers: claude-code, codex-cli`
+
+	tests := []struct {
+		name       string
+		root       string
+		args       []string
+		silent     bool
+		wantStdout string
+		// wantSession replaces the exact stdout check for results whose JSON
+		// includes temp-dir paths.
+		wantSession string
+		wantStderr  string
+	}{
+		{name: "directory name with json", root: archiveRoot, args: []string{"--json", "--provider", "codex"}, wantStdout: "[]\n", wantStderr: wantHint + "\n"},
+		{name: "directory name with table", root: archiveRoot, args: []string{"--no-pager", "--provider", "codex"}, wantStdout: "No archived sessions found.\n", wantStderr: wantHint + "\n"},
+		{name: "silent suppresses hint", root: archiveRoot, args: []string{"--json", "--provider", "codex"}, silent: true, wantStdout: "[]\n", wantStderr: ""},
+		{name: "valid provider emptied by another filter", root: archiveRoot, args: []string{"--json", "--provider", "codex-cli", "--project", "missing"}, wantStdout: "[]\n", wantStderr: ""},
+		{name: "no provider filter", root: archiveRoot, args: []string{"--json", "--project", "missing"}, wantStdout: "[]\n", wantStderr: ""},
+		{name: "empty archive", root: emptyRoot, args: []string{"--json", "--provider", "codex"}, wantStdout: "[]\n", wantStderr: ""},
+		{name: "padded provider filter matches", root: archiveRoot, args: []string{"--json", "--provider", " codex-cli "}, wantSession: "codex-session", wantStderr: ""},
+		{name: "padded frontmatter provider matches", root: paddedRoot, args: []string{"--json", "--provider", "codex-cli"}, wantSession: "padded-session", wantStderr: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withGetCommandGlobals(t, tt.root, filepath.Join(tempDir, "debug"), nil)
+			previousSilent := silent
+			t.Cleanup(func() { silent = previousSilent })
+			silent = tt.silent
+
+			var stderr bytes.Buffer
+			cmd := createListCommand()
+			cmd.SetErr(&stderr)
+			cmd.SetArgs(tt.args)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if err != nil {
+				t.Fatalf("list command error = %v", err)
+			}
+			switch {
+			case tt.wantSession != "":
+				if !strings.Contains(stdout, `"session_id": "`+tt.wantSession+`"`) {
+					t.Errorf("stdout = %q, want session %q", stdout, tt.wantSession)
+				}
+			case stdout != tt.wantStdout:
+				t.Errorf("stdout = %q, want %q", stdout, tt.wantStdout)
+			}
+			if stderr.String() != tt.wantStderr {
+				t.Errorf("stderr = %q, want %q", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}
+
+func TestGetCommand_ProviderHint(t *testing.T) {
+	tempDir := t.TempDir()
+	archiveRoot := filepath.Join(tempDir, "archive")
+	emptyRoot := filepath.Join(tempDir, "empty")
+	writeArchivedGetSession(t, archiveRoot, "codex-cli", "project", "codex-session", "body\n")
+	writeArchivedGetSession(t, archiveRoot, "claude-code", "project", "claude-session", "body\n")
+	const syncAdvice = "run 'tracer sync'"
+
+	tests := []struct {
+		name        string
+		root        string
+		args        []string
+		wantContain string
+		wantAbsent  string
+	}{
+		{name: "directory name", root: archiveRoot, args: []string{"codex-session", "--provider", "codex"}, wantContain: `session "codex-session" not found: no archived sessions have provider "codex"; archived providers: claude-code, codex-cli`, wantAbsent: syncAdvice},
+		{name: "valid provider without the session", root: archiveRoot, args: []string{"codex-session", "--provider", "claude-code"}, wantContain: syncAdvice, wantAbsent: "archived providers"},
+		{name: "missing session without filter", root: archiveRoot, args: []string{"missing-session"}, wantContain: syncAdvice, wantAbsent: "archived providers"},
+		{name: "empty archive", root: emptyRoot, args: []string{"codex-session", "-p", "codex"}, wantContain: syncAdvice, wantAbsent: "archived providers"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withGetCommandGlobals(t, tt.root, filepath.Join(tempDir, "debug"), nil)
+			cmd := createGetCommand()
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			cmd.SetArgs(tt.args)
+			stdout, err := captureStdout(t, cmd.Execute)
+			if err == nil {
+				t.Fatalf("expected get to fail, stdout = %q", stdout)
+			}
+			if !strings.Contains(err.Error(), tt.wantContain) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantContain)
+			}
+			if strings.Contains(err.Error(), tt.wantAbsent) {
+				t.Errorf("error = %q, want it to omit %q", err, tt.wantAbsent)
+			}
+		})
 	}
 }
 

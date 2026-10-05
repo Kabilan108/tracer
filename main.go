@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -906,11 +907,16 @@ func createGetCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			matches, err := findArchivedGetMatches(roots, sessionID, providerID)
+			matches, archivedProviders, err := findArchivedGetMatches(roots, sessionID, providerID)
 			if err != nil {
 				return err
 			}
 			if len(matches) == 0 {
+				// A provider filter that matches no archived session is the more
+				// likely cause than a stale archive, so name the valid values instead.
+				if hint := providerFilterHint(providerID, archivedProviders); hint != "" {
+					return fmt.Errorf("session %q not found: %s", sessionID, hint)
+				}
 				return fmt.Errorf("session %q not found; run 'tracer sync' to refresh the archive from provider data", sessionID)
 			}
 			if len(matches) > 1 {
@@ -956,14 +962,19 @@ func parseGetTurnsFlag(value string) (bool, error) {
 	}
 }
 
-func findArchivedGetMatches(roots []string, sessionID string, providerID string) ([]sessionpkg.Metadata, error) {
+// findArchivedGetMatches also returns every provider value in the scanned
+// archives so an empty result can explain a mistyped --provider without a
+// second scan.
+func findArchivedGetMatches(roots []string, sessionID string, providerID string) ([]sessionpkg.Metadata, []string, error) {
 	matches := make([]sessionpkg.Metadata, 0)
+	scanned := make([]sessionpkg.Metadata, 0)
 	seenProviders := make(map[string]struct{})
 	for _, root := range roots {
 		archives, err := sessionpkg.ScanArchives([]string{root})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		scanned = append(scanned, archives...)
 		for _, archived := range archives {
 			providerKey := strings.ToLower(strings.TrimSpace(archived.Provider))
 			if archived.SessionID != sessionID || (providerID != "" && providerKey != providerID) {
@@ -976,7 +987,43 @@ func findArchivedGetMatches(roots []string, sessionID string, providerID string)
 			matches = append(matches, archived)
 		}
 	}
-	return matches, nil
+	return matches, archivedProviderIDs(scanned), nil
+}
+
+// archivedProviderIDs returns the distinct provider values from archive
+// frontmatter. These are what --provider filters compare against, and they
+// differ from both the archive directory names and the sync/watch provider IDs.
+func archivedProviderIDs(sessions []sessionpkg.Metadata) []string {
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, metadata := range sessions {
+		id := strings.ToLower(strings.TrimSpace(metadata.Provider))
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// providerFilterHint explains an empty result caused by a provider filter that
+// no archived session carries, such as --provider codex when frontmatter says
+// codex-cli. It returns "" when there is no filter, the archive is empty, or
+// the provider is present, because the empty result then has another cause.
+func providerFilterHint(providerFilter string, archivedProviders []string) string {
+	filter := strings.TrimSpace(providerFilter)
+	if filter == "" || len(archivedProviders) == 0 {
+		return ""
+	}
+	if slices.ContainsFunc(archivedProviders, func(id string) bool { return strings.EqualFold(id, filter) }) {
+		return ""
+	}
+	return fmt.Sprintf("no archived sessions have provider %q; archived providers: %s", filter, strings.Join(archivedProviders, ", "))
 }
 
 func createLegacyListCommand() *cobra.Command {
@@ -1258,7 +1305,10 @@ func parseTagFilters(values []string) ([]tagFilter, error) {
 }
 
 func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.Time) bool {
-	if flags.provider != "" && !strings.EqualFold(metadata.Provider, flags.provider) {
+	// Trim both sides as get and providerFilterHint do, so the hint never
+	// vouches for a provider value that this filter would still reject.
+	provider := strings.TrimSpace(flags.provider)
+	if provider != "" && !strings.EqualFold(strings.TrimSpace(metadata.Provider), provider) {
 		return false
 	}
 	if flags.project != "" {
@@ -1359,6 +1409,12 @@ func createListCommand() *cobra.Command {
 			}
 			if flags.limit > 0 && len(filtered) > flags.limit {
 				filtered = filtered[:flags.limit]
+			}
+			// The hint goes to stderr so --json output stays a parseable array.
+			if len(filtered) == 0 && !silent {
+				if hint := providerFilterHint(flags.provider, archivedProviderIDs(sessions)); hint != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "hint: %s\n", hint)
+				}
 			}
 			if flags.json {
 				encoder := json.NewEncoder(os.Stdout)
