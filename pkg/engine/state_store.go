@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,17 @@ type SessionState struct {
 	SessionID   string
 	ContentHash string
 	OutputPath  string
+	UpdatedAt   time.Time
+}
+
+// SourceState records the inputs a provider source was last ingested from and
+// the sessions it produced, so unchanged sources can be skipped on startup.
+type SourceState struct {
+	ProviderID  string
+	SourceKey   string
+	Fingerprint string
+	Version     int
+	SessionIDs  []string
 	UpdatedAt   time.Time
 }
 
@@ -47,6 +59,15 @@ func OpenStateStore(path string) (*StateStore, error) {
 			output_path TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (provider_id, session_id)
+		);
+		CREATE TABLE IF NOT EXISTS source_state (
+			provider_id TEXT NOT NULL,
+			source_key TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			session_ids TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (provider_id, source_key)
 		);
 	`); err != nil {
 		_ = db.Close()
@@ -118,5 +139,72 @@ func (s *StateStore) Upsert(state SessionState) error {
 		return fmt.Errorf("upsert session state: %w", err)
 	}
 
+	return nil
+}
+
+// GetSource returns persisted state for a provider source.
+func (s *StateStore) GetSource(providerID, sourceKey string) (SourceState, bool, error) {
+	state := SourceState{ProviderID: providerID, SourceKey: sourceKey}
+	var sessionIDsRaw string
+	var updatedAtRaw string
+
+	err := s.db.QueryRow(
+		`SELECT fingerprint, version, session_ids, updated_at
+		 FROM source_state
+		 WHERE provider_id = ? AND source_key = ?`,
+		providerID,
+		sourceKey,
+	).Scan(&state.Fingerprint, &state.Version, &sessionIDsRaw, &updatedAtRaw)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return SourceState{}, false, nil
+		}
+		return SourceState{}, false, fmt.Errorf("query source state: %w", err)
+	}
+
+	if err := json.Unmarshal([]byte(sessionIDsRaw), &state.SessionIDs); err != nil {
+		return SourceState{}, false, fmt.Errorf("parse source session ids: %w", err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, updatedAtRaw)
+	if err != nil {
+		return SourceState{}, false, fmt.Errorf("parse source updated_at: %w", err)
+	}
+	state.UpdatedAt = updatedAt
+
+	return state, true, nil
+}
+
+// UpsertSource saves state for a provider source.
+func (s *StateStore) UpsertSource(state SourceState) error {
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	sessionIDs := state.SessionIDs
+	if sessionIDs == nil {
+		sessionIDs = []string{}
+	}
+	sessionIDsRaw, err := json.Marshal(sessionIDs)
+	if err != nil {
+		return fmt.Errorf("encode source session ids: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO source_state (provider_id, source_key, fingerprint, version, session_ids, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(provider_id, source_key) DO UPDATE SET
+		   fingerprint = excluded.fingerprint,
+		   version = excluded.version,
+		   session_ids = excluded.session_ids,
+		   updated_at = excluded.updated_at`,
+		state.ProviderID,
+		state.SourceKey,
+		state.Fingerprint,
+		state.Version,
+		string(sessionIDsRaw),
+		state.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert source state: %w", err)
+	}
 	return nil
 }

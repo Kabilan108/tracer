@@ -53,7 +53,21 @@ type Options struct {
 	ShouldProcessSession   func(providerID string, session *spi.AgentChatSession) bool
 	OnProviderScanStart    func(providerID string)
 	OnProviderScanComplete func(providerID string, totalSessions int, err error)
-	OnSessionProcessed     func(providerID string, outcome ProcessOutcome, processed int, total int)
+	// OnSessionProcessed reports each session outcome during ingest. processed
+	// and total count provider sources (a session file or project directory),
+	// including the one the session came from.
+	OnSessionProcessed func(providerID string, outcome ProcessOutcome, processed int, total int)
+	// OnSourceProcessed reports progress after each source, including sources
+	// that were skipped or produced no sessions.
+	OnSourceProcessed func(providerID string, processed int, total int)
+
+	// SkipUnchangedSources makes ingest skip parsing a source whose files are
+	// unchanged since its sessions were archived and whose output still exists.
+	SkipUnchangedSources bool
+	// SourceScope is mixed into source fingerprints. Set it to any setting
+	// outside the source files that changes which sessions are archived or how
+	// (e.g. project exclusions), so changing the setting re-parses sources.
+	SourceScope string
 }
 
 type pendingUpdate struct {
@@ -82,6 +96,9 @@ type Engine struct {
 
 	summaryMu sync.Mutex
 	summary   Summary
+
+	// fingerprintScope covers the engine settings that shape archived output
+	fingerprintScope string
 }
 
 // New creates a session processing engine backed by a persistent runtime state DB.
@@ -116,11 +133,14 @@ func New(opts Options) (*Engine, error) {
 		return nil, err
 	}
 
+	// Why the hostname: it is written into each transcript's frontmatter.
+	host, _ := os.Hostname()
 	return &Engine{
-		opts:    opts,
-		state:   state,
-		stats:   sessionpkg.NewStatisticsCollector(opts.StatisticsPath),
-		pending: make(map[string]*pendingUpdate),
+		opts:             opts,
+		state:            state,
+		stats:            sessionpkg.NewStatisticsCollector(opts.StatisticsPath),
+		pending:          make(map[string]*pendingUpdate),
+		fingerprintScope: fmt.Sprintf("history=%s utc=%t host=%s scope=%s", opts.HistoryDir, opts.UseUTC, host, opts.SourceScope),
 	}, nil
 }
 
@@ -149,6 +169,8 @@ func (e *Engine) Close() error {
 }
 
 // IngestProviders performs a historical ingest pass across providers.
+// Providers are streamed concurrently, one source at a time, so memory follows
+// the largest source rather than a provider's whole history.
 func (e *Engine) IngestProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool) (Summary, error) {
 	providerIDs := make([]string, 0, len(providers))
 	for providerID := range providers {
@@ -156,95 +178,42 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 	}
 	sort.Strings(providerIDs)
 
+	var summaryMu sync.Mutex
 	runSummary := Summary{}
-
-	type providerResult struct {
-		providerID string
-		sessions   []spi.AgentChatSession
-		err        error
+	record := func(outcome ProcessOutcome) {
+		summaryMu.Lock()
+		defer summaryMu.Unlock()
+		switch outcome {
+		case OutcomeCreated:
+			runSummary.Created++
+		case OutcomeUpdated:
+			runSummary.Updated++
+		case OutcomeSkipped:
+			runSummary.Skipped++
+		case OutcomeError:
+			runSummary.Errors++
+		}
 	}
 
-	results := make(chan providerResult, len(providerIDs))
+	// Why wait for every provider even after cancellation: their callbacks
+	// write through the state store, which the caller closes once this returns.
+	var wg sync.WaitGroup
 	for _, providerID := range providerIDs {
-		providerID := providerID
 		provider := providers[providerID]
 		if e.opts.OnProviderScanStart != nil {
 			e.opts.OnProviderScanStart(providerID)
 		}
+		wg.Add(1)
 		go func() {
-			sessions, err := provider.GetAgentChatSessions(projectPath, debugRaw, nil)
-			results <- providerResult{
-				providerID: providerID,
-				sessions:   sessions,
-				err:        err,
-			}
+			defer wg.Done()
+			e.ingestProvider(ctx, providerID, provider, projectPath, debugRaw, record)
 		}()
 	}
+	wg.Wait()
 
-	received := 0
-	for received < len(providerIDs) {
-		select {
-		case <-ctx.Done():
-			return runSummary, ctx.Err()
-		case result := <-results:
-			received++
-			if e.opts.OnProviderScanComplete != nil {
-				e.opts.OnProviderScanComplete(result.providerID, len(result.sessions), result.err)
-			}
-			if result.err != nil {
-				runSummary.Errors++
-				e.recordOutcome(OutcomeError)
-				slog.Error("Engine ingest failed to list sessions", "provider", result.providerID, "error", result.err)
-				continue
-			}
-
-			processedCount := 0
-			for i := range result.sessions {
-				select {
-				case <-ctx.Done():
-					return runSummary, ctx.Err()
-				default:
-				}
-
-				if !e.shouldProcessSession(result.providerID, &result.sessions[i]) {
-					runSummary.Skipped++
-					e.recordOutcome(OutcomeSkipped)
-					processedCount++
-					if e.opts.OnSessionProcessed != nil {
-						e.opts.OnSessionProcessed(result.providerID, OutcomeSkipped, processedCount, len(result.sessions))
-					}
-					continue
-				}
-
-				outcome, err := e.processSession(result.providerID, &result.sessions[i])
-				if err != nil {
-					runSummary.Errors++
-					e.recordOutcome(OutcomeError)
-					outcome = OutcomeError
-					slog.Error("Engine ingest failed to process session",
-						"provider", result.providerID,
-						"session_id", result.sessions[i].SessionID,
-						"error", err)
-				} else {
-					switch outcome {
-					case OutcomeCreated:
-						runSummary.Created++
-					case OutcomeUpdated:
-						runSummary.Updated++
-					case OutcomeSkipped:
-						runSummary.Skipped++
-					}
-				}
-
-				processedCount++
-				if e.opts.OnSessionProcessed != nil {
-					e.opts.OnSessionProcessed(result.providerID, outcome, processedCount, len(result.sessions))
-				}
-			}
-		}
-	}
-
-	return runSummary, nil
+	summaryMu.Lock()
+	defer summaryMu.Unlock()
+	return runSummary, ctx.Err()
 }
 
 // WatchProviders watches providers and queues incremental updates through debounce processing.
