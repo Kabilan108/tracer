@@ -67,8 +67,10 @@ func ExtractShellPathHints(command, cwd, workspaceRoot string) []string {
 			continue
 		}
 
-		// Split line on shell operators (|, &&, ||, ;) respecting quotes
-		subCommands := splitOnShellOperators(line)
+		// Split line on shell operators (|, &&, ||, ;) respecting quotes.
+		// Tildes are marked first because tokenizing discards the quoting
+		// that decides whether a shell expands them.
+		subCommands := splitOnShellOperators(markExpandableTildes(line))
 
 		for _, sub := range subCommands {
 			sub = strings.TrimSpace(sub)
@@ -85,7 +87,9 @@ func ExtractShellPathHints(command, cwd, workspaceRoot string) []string {
 			// If we found a heredoc marker, enter heredoc mode
 			if heredocEnd != "" {
 				inHeredoc = true
-				heredocMarker = heredocEnd
+				// Why: a shell never expands a heredoc delimiter, and the
+				// body's end line holds the delimiter's literal text.
+				heredocMarker = strings.ReplaceAll(heredocEnd, string(expandableTilde), "~")
 			}
 
 			// Tokenize the remaining command (without redirect parts)
@@ -615,19 +619,95 @@ func readHeredocMarker(runes []rune, i int) string {
 	return marker.String()
 }
 
-// resolvePath expands tildes, resolves relative paths against cwd, and
-// normalizes against workspaceRoot.
+// expandableTilde stands in for a "~" that a shell would expand. It is a
+// Unicode private-use rune, so it does not occur in real commands, and the
+// tokenizers pass it through like any other character.
+const expandableTilde = '\uE000'
+
+// markExpandableTildes replaces each tilde that a shell would expand with
+// expandableTilde, leaving quoted and escaped tildes as plain "~".
+//
+// Why: a shell expands "~" only at the start of a word, and only when no
+// character of the tilde-prefix (up to the first "/") is quoted or escaped.
+// `touch "~bob/x"` and `touch ~"bob"/x` create a literal ./~bob/x. The
+// tokenizers strip quotes, so this has to be decided on the raw line. Quote
+// and escape handling mirrors splitOnShellOperators and SplitCommandLine,
+// which treat a backslash as an escape everywhere, so all three agree on
+// where quoted spans begin and end.
+func markExpandableTildes(line string) string {
+	runes := []rune(line)
+	var out strings.Builder
+	var inQuote rune
+	var escaped bool
+	atWordStart := true
+
+	for i, r := range runes {
+		wordStart := atWordStart
+		atWordStart = false
+
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case inQuote != 0:
+			if r == inQuote {
+				inQuote = 0
+			}
+		case r == '"' || r == '\'':
+			inQuote = r
+		case isShellWordBreak(r):
+			atWordStart = true
+		case r == '~' && wordStart && tildePrefixUnquoted(runes[i+1:]):
+			r = expandableTilde
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// isShellWordBreak reports whether an unquoted rune ends a shell word, so that
+// the next rune starts one. Redirect operators count because `>~/x` writes to
+// the expanded path.
+func isShellWordBreak(r rune) bool {
+	return strings.ContainsRune(" \t\n|&;<>()", r)
+}
+
+// tildePrefixUnquoted reports whether the tilde-prefix that follows a "~" (the
+// login name, up to the first "/" or the end of the word) contains no quote or
+// escape characters.
+func tildePrefixUnquoted(rest []rune) bool {
+	for _, r := range rest {
+		if r == '/' || isShellWordBreak(r) {
+			return true
+		}
+		if r == '"' || r == '\'' || r == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// resolvePath expands a marked tilde, resolves relative paths against cwd,
+// and normalizes against workspaceRoot.
 func resolvePath(raw, cwd, workspaceRoot string) string {
 	if raw == "" {
 		return ""
 	}
 
-	path, err := ExpandTilde(raw)
-	if err != nil {
-		// Why: a shell leaves an unresolvable tilde-prefix such as
-		// "~nosuchuser/x" literal, so the literal path is the one the command
-		// actually wrote to.
-		path = raw
+	// Why only a leading marker expands: markExpandableTildes places markers
+	// only at word starts, and any other marker is restored to the literal
+	// "~" the command contained.
+	literal := strings.ReplaceAll(raw, string(expandableTilde), "~")
+	path := literal
+	if strings.HasPrefix(raw, string(expandableTilde)) {
+		expanded, err := ExpandTilde(literal)
+		// Why the error leaves the path literal: a shell keeps an
+		// unresolvable tilde-prefix such as "~nosuchuser/x" as typed, so
+		// that is the path the command wrote to.
+		if err == nil {
+			path = expanded
+		}
 	}
 
 	// Resolve relative paths against cwd

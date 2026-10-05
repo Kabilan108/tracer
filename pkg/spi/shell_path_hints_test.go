@@ -433,6 +433,71 @@ func TestExtractShellPathHints_TildeExpansion(t *testing.T) {
 			command: "touch a/~/b",
 			want:    []string{"a/~/b"},
 		},
+		{
+			name:    "tilde in the middle of a word is not expanded",
+			command: "touch a~/b",
+			want:    []string{"a~/b"},
+		},
+		{
+			name:    "double-quoted tilde-user is literal",
+			command: `touch "~bob/x"`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "single-quoted tilde-user is literal",
+			command: `touch '~bob/x'`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "escaped tilde is literal",
+			command: `touch \~bob/x`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "quoted login name is literal",
+			command: `touch ~"bob"/x`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "quoted home tilde is literal",
+			command: `touch "~/x"`,
+			want:    []string{"~/x"},
+		},
+		{
+			name:    "quoting after the tilde-prefix still expands",
+			command: `touch ~/"my dir"/x`,
+			want:    []string{"/home/me/my dir/x"},
+		},
+		{
+			name:    "quoted redirect target is literal",
+			command: `echo hi > "~bob/out.log"`,
+			want:    []string{"~bob/out.log"},
+		},
+		{
+			name:    "redirect without a space expands",
+			command: "echo hi >~bob/out.log",
+			want:    []string{"/srv/bob/out.log"},
+		},
+		{
+			name:    "bare tilde-user as cp destination",
+			command: "cp notes.txt ~bob",
+			want:    []string{"/srv/bob"},
+		},
+		{
+			name:    "output flag value expands",
+			command: "go build -o ~/bin/tool .",
+			want:    []string{"/home/me/bin/tool"},
+		},
+		{
+			name:    "attached output flag value is literal",
+			command: "go build -o~/bin/tool .",
+			want:    []string{"~/bin/tool"},
+		},
+		{
+			name:    "heredoc delimiter starting with a tilde still ends the body",
+			command: "cat <<~EOF > ~bob/out\nbody\n~EOF\ntouch ~/after",
+			want:    []string{"/srv/bob/out", "/home/me/after"},
+		},
 	}
 
 	for _, tt := range tests {
