@@ -23,9 +23,9 @@ Tracer archives Claude Code and Codex CLI sessions as Markdown at <root>/<provid
 
 ## Find and read sessions
 
-Use tracer list --json for machine-readable, recency-sorted metadata. Filter with --since (a duration such as 168h or an RFC3339 timestamp), --project, --provider, --outcome, and --limit. Repeat --tag to require every tag; prefix a tag with ! to require its absence and single-quote it, for example --tag '!wiki:compiled'.
+Use tracer list --json for machine-readable, recency-sorted metadata. Filter with --since (a duration such as 168h or an RFC3339 timestamp), --project, --provider, --outcome, and --limit. --provider matches the frontmatter provider value (claude-code or codex-cli), not the archive directory name or the sync/watch provider ID; a value that matches no archived session prints a hint on stderr listing the archived provider values. Repeat --tag to require every tag; prefix a tag with ! to require its absence and single-quote it, for example --tag '!wiki:compiled'.
 
-Use tracer get <session-id> --tool-output=full when exact archived Markdown is required. Use --tool-output=none to retain only tool stubs for maximum token savings, or --tool-output=truncate:N to keep up to the first N output lines per tool call, capped at 8 KiB per call, when some tool context matters. Add --turns=user,agent when only the conversation is needed and tool-use and thinking blocks can be omitted. Use -P/--path to print only the archived Markdown path. Cross-provider session-ID collisions are errors; pass --provider <id> to disambiguate. These reads and read-time filters never modify archive files.
+Use tracer get <session-id> --tool-output=full when exact archived Markdown is required. Use --tool-output=none to retain only tool stubs for maximum token savings, or --tool-output=truncate:N to keep up to the first N output lines per tool call, capped at 8 KiB per call, when some tool context matters. Add --turns=user,agent when only the conversation is needed and tool-use and thinking blocks can be omitted. Use -P/--path to print only the archived Markdown path. Cross-provider session-ID collisions are errors; pass --provider <id> (claude-code or codex-cli) to disambiguate. These reads and read-time filters never modify archive files.
 
 ## Annotate sessions
 

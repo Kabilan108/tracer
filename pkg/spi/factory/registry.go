@@ -106,7 +106,7 @@ func (r *Registry) Get(id string) (spi.Provider, error) {
 		"requested_id", id,
 		"available_providers", availableIDs)
 
-	return nil, fmt.Errorf("provider '%s' not found", id)
+	return nil, fmt.Errorf("provider '%s' not found; available providers: %s", id, strings.Join(availableIDs, ", "))
 }
 
 // GetAll returns all registered providers as a map of ID to Provider
