@@ -2,7 +2,9 @@ package codexcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +16,11 @@ import (
 	"github.com/tracer-ai/tracer-cli/pkg/log"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
+
+// newFSWatcher creates the watcher's fsnotify watcher.
+// Why a variable: tests replace it to drop events and inject errors, which a
+// real event queue overflow does but cannot be made to do deterministically.
+var newFSWatcher = fsnotify.NewWatcher
 
 // WatchForCodexSessions watches for Codex CLI sessions that match the given project path.
 // It watches hierarchically for new sessions, handling date changes across days/months/years.
@@ -66,7 +73,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	slog.Info("startCodexSessionWatcher: Creating hierarchical watcher", "sessionsRoot", sessionsRoot)
 
 	// Create a new watcher
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := newFSWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %v", err)
 	}
@@ -194,15 +201,22 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	if err := addWatch(sessionsRoot); err != nil {
 		log.UserError("Error watching sessions root: %v", err)
 		slog.Error("startCodexSessionWatcher: Failed to watch sessions root", "error", err)
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %w", spi.ErrNothingToWatch, err)
+		}
 		return err
 	}
 
-	entries, err := os.ReadDir(sessionsRoot)
-	if err != nil {
-		slog.Warn("startCodexSessionWatcher: Cannot read sessions root",
-			"directory", sessionsRoot,
-			"error", err)
-	} else {
+	// Registers every existing directory without scanning its files, which
+	// catchUp covers. Already watched directories are skipped.
+	watchExistingTree := func() {
+		entries, err := os.ReadDir(sessionsRoot)
+		if err != nil {
+			slog.Warn("startCodexSessionWatcher: Cannot read sessions root",
+				"directory", sessionsRoot,
+				"error", err)
+			return
+		}
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
@@ -213,6 +227,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 		}
 	}
+	watchExistingTree()
 
 	// Why before the event loop: writes made between historical ingest and the
 	// watches above produced no event. Events that arrive while catchUp runs
@@ -273,6 +288,10 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			if !ok {
 				slog.Info("startCodexSessionWatcher: Watcher errors channel closed")
 				return nil
+			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
+				spi.RecoverFromOverflow("codex", throttle, watchExistingTree, catchUp)
+				continue
 			}
 			log.UserWarn("Watcher error: %v", err)
 			slog.Error("startCodexSessionWatcher: Watcher error", "error", err)

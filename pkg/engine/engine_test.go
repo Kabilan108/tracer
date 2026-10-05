@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -399,45 +401,183 @@ func TestRunDaemon_DebouncesLiveUpdates(t *testing.T) {
 	}
 }
 
-func TestRunDaemon_KeepsWatchingWhenOneProviderFails(t *testing.T) {
+func TestRunDaemon_WatcherFailure(t *testing.T) {
+	errWatchFailed := errors.New("watcher failed")
+	tests := []struct {
+		name            string
+		watchErr        error
+		wantErr         error
+		wantLiveStopped bool
+	}{
+		{
+			// A machine without Codex installed must still archive Claude.
+			name:     "provider with nothing to watch leaves the others running",
+			watchErr: fmt.Errorf("%w: sessions directory not accessible", spi.ErrNothingToWatch),
+		},
+		{
+			name:            "failed watcher stops the others and is returned",
+			watchErr:        errWatchFailed,
+			wantErr:         errWatchFailed,
+			wantLiveStopped: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			opts := newRunModeOptions(tempDir, 25*time.Millisecond)
+
+			failed := make(chan struct{})
+			failingProvider := newTestProvider("Codex CLI")
+			failingProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+				close(failed)
+				return tt.watchErr
+			}
+
+			liveProvider := newTestProvider("Claude Code")
+			liveUpdate := newSession("claude", "Claude Code", "session-live-survives", "daemon-live-survives", "LIVE_PROVIDER_UPDATE")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var liveStopped atomic.Bool
+			liveProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
+				sessionCallback(&liveUpdate)
+				<-failed
+				select {
+				case <-ctx.Done():
+					liveStopped.Store(true)
+				case <-time.After(200 * time.Millisecond):
+					cancel()
+					<-ctx.Done()
+				}
+				return ctx.Err()
+			}
+
+			result := make(chan error, 1)
+			go func() {
+				_, err := RunDaemon(ctx, opts, "/tmp/workspace", map[string]spi.Provider{
+					"codex":  failingProvider,
+					"claude": liveProvider,
+				}, false)
+				result <- err
+			}()
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(5 * time.Second):
+				t.Fatal("RunDaemon did not return")
+			}
+
+			if tt.wantErr == nil && err != nil {
+				t.Errorf("RunDaemon() error = %v, want nil", err)
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("RunDaemon() error = %v, want %v", err, tt.wantErr)
+			}
+			if liveStopped.Load() != tt.wantLiveStopped {
+				t.Errorf("live watcher stopped by the failure = %t, want %t", liveStopped.Load(), tt.wantLiveStopped)
+			}
+
+			// The live provider's queued update is archived either way.
+			outputPath := filepath.Join(tempDir, "history", "claude", "session-live-survives.md")
+			content, readErr := os.ReadFile(outputPath)
+			if readErr != nil {
+				t.Fatalf("read output file: %v", readErr)
+			}
+			if !strings.Contains(string(content), "LIVE_PROVIDER_UPDATE") {
+				t.Fatalf("output markdown missing live provider content")
+			}
+		})
+	}
+}
+
+// blockingCatchUpProvider streams nothing during startup ingest, and its
+// catch-up pass blocks until its context is cancelled.
+type blockingCatchUpProvider struct {
+	*testProvider
+	streams         atomic.Int32
+	catchUpStarted  chan struct{}
+	catchUpReturned chan struct{}
+}
+
+func (p *blockingCatchUpProvider) StreamAgentChatSessions(ctx context.Context, projectPath string, debugRaw bool, visitor spi.SessionVisitor) error {
+	if p.streams.Add(1) == 1 {
+		return nil
+	}
+	close(p.catchUpStarted)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *blockingCatchUpProvider) WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
+	catchUp()
+	close(p.catchUpReturned)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestRunDaemon_WatcherFailureStopsCatchUp(t *testing.T) {
+	errWatchFailed := errors.New("watcher failed")
 	tempDir := t.TempDir()
 	opts := newRunModeOptions(tempDir, 25*time.Millisecond)
 
+	catchingUp := &blockingCatchUpProvider{
+		testProvider:    newTestProvider("Claude Code"),
+		catchUpStarted:  make(chan struct{}),
+		catchUpReturned: make(chan struct{}),
+	}
 	failingProvider := newTestProvider("Codex CLI")
 	failingProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-		return fmt.Errorf("sessions directory not accessible")
+		<-catchingUp.catchUpStarted
+		return errWatchFailed
 	}
 
-	liveProvider := newTestProvider("Claude Code")
-	liveUpdate := newSession("claude", "Claude Code", "session-live-survives", "daemon-live-survives", "LIVE_PROVIDER_UPDATE")
+	result := make(chan error, 1)
+	go func() {
+		_, err := RunDaemon(context.Background(), opts, "/tmp/workspace", map[string]spi.Provider{
+			"codex":  failingProvider,
+			"claude": catchingUp,
+		}, false)
+		result <- err
+	}()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	liveProvider.watchFn = func(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-		sessionCallback(&liveUpdate)
-		cancel()
-		<-ctx.Done()
-		return ctx.Err()
+	select {
+	case err := <-result:
+		if !errors.Is(err, errWatchFailed) {
+			t.Errorf("RunDaemon() error = %v, want %v", err, errWatchFailed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunDaemon did not return while a catch-up pass was in progress")
+	}
+	select {
+	case <-catchingUp.catchUpReturned:
+	default:
+		t.Error("catch-up pass did not return")
+	}
+}
+
+func TestCatchUp_NotOverwrittenByOlderPendingUpdate(t *testing.T) {
+	tempDir := t.TempDir()
+	engine := newEngineForTest(t, tempDir)
+
+	provider := newTestProvider("Codex CLI")
+	older := newSession("codex", "Codex CLI", "session-rescan", "rescan", "OLDER_SNAPSHOT")
+	newer := newSession("codex", "Codex CLI", "session-rescan", "rescan", "NEWER_SNAPSHOT")
+	provider.setSession(newer)
+
+	// A watch parse queued just before an overflow rescan re-reads the file.
+	engine.QueueSessionUpdate("codex", &older)
+	engine.ingestProvider(context.Background(), "codex", provider, "", false, true, func(ProcessOutcome) {})
+	// Close flushes the still pending older snapshot.
+	if err := engine.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 
-	summary, err := RunDaemon(ctx, opts, "/tmp/workspace", map[string]spi.Provider{
-		"codex":  failingProvider,
-		"claude": liveProvider,
-	}, false)
-	if err != nil {
-		t.Fatalf("RunDaemon() error = %v", err)
-	}
-	if summary.Created != 1 || summary.Errors != 0 {
-		t.Fatalf("RunDaemon summary = %+v", summary)
-	}
-
-	outputPath := filepath.Join(tempDir, "history", "claude", "session-live-survives.md")
-	content, err := os.ReadFile(outputPath)
+	content, err := os.ReadFile(filepath.Join(tempDir, "history", "codex", "2026-03-04_00-00-00Z-rescan.md"))
 	if err != nil {
 		t.Fatalf("read output file: %v", err)
 	}
-	if !strings.Contains(string(content), "LIVE_PROVIDER_UPDATE") {
-		t.Fatalf("output markdown missing live provider content")
+	if !strings.Contains(string(content), "NEWER_SNAPSHOT") || strings.Contains(string(content), "OLDER_SNAPSHOT") {
+		t.Errorf("archive holds an older snapshot than the rescan wrote:\n%s", content)
 	}
 }
 

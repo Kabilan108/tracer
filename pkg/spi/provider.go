@@ -2,6 +2,9 @@ package spi
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"time"
 
 	"github.com/tracer-ai/tracer-cli/pkg/spi/schema"
 )
@@ -123,8 +126,43 @@ type SessionStreamer interface {
 // catch-up parse never lands after a newer watch parse of the same session.
 type CatchUpWatcher interface {
 	// WatchAgentWithCatchUp behaves like WatchAgent and calls catchUp, when
-	// set, synchronously and exactly once before processing any event.
+	// set, synchronously once before processing any event, and again through
+	// RecoverFromOverflow whenever the watcher's event queue overflows.
 	WatchAgentWithCatchUp(ctx context.Context, projectPath string, debugRaw bool, catchUp func(), sessionCallback func(*AgentChatSession)) error
+}
+
+// ErrNothingToWatch is returned, wrapped, by a provider watcher when the
+// provider has no session data on this machine, such as a missing sessions
+// directory.
+// Why a sentinel: any other watcher error stops every provider's watcher, so
+// that a supervisor restarts the whole service instead of leaving it running
+// with one provider dead. A machine that uses only one of the agents must
+// still be able to watch that one.
+var ErrNothingToWatch = errors.New("nothing to watch")
+
+// RecoverFromOverflow brings a watcher whose event queue overflowed back in
+// step with its sources, without stopping it.
+//
+// Why: the kernel dropped events, so files written and directories created
+// in the meantime are unknown to the watcher, and a session whose last write
+// fell in that window would stay unarchived until it is written again.
+// rewatch registers directories that appeared, before the rescan, so any
+// later write produces an event. The throttle is flushed so that no run
+// scheduled before the overflow delivers its snapshot after the rescan's.
+// catchUp then parses every source changed since it was last archived, as at
+// startup, and events that queue up meanwhile are handled after it returns,
+// so their parses land after the rescan's, as at startup.
+//
+// It must be called from the goroutine that handles the watcher's events.
+func RecoverFromOverflow(watcher string, throttle *FileThrottle, rewatch func(), catchUp func()) {
+	started := time.Now()
+	rewatch()
+	throttle.Flush()
+	catchUp()
+	slog.Warn("Watcher rescanned sources after its event queue overflowed",
+		"watcher", watcher,
+		"reason", "events were dropped, so changes made meanwhile may have had no event",
+		"duration", time.Since(started))
 }
 
 // ReportSources calls Sources when set.

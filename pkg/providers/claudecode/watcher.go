@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
+
+// newFSWatcher creates the watchers' fsnotify watchers.
+// Why a variable: tests replace it to drop events and inject errors, which a
+// real event queue overflow does but cannot be made to do deterministically.
+var newFSWatcher = fsnotify.NewWatcher
 
 func ensureClaudeDirWatch(claudeDir string, projectsDir string, addWatch func(string) error, watchProjectsRoot func()) {
 	if err := addWatch(claudeDir); err != nil {
@@ -33,7 +39,7 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 	claudeDir := filepath.Join(homeDir, ".claude")
 	projectsDir := filepath.Join(claudeDir, "projects")
 
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := newFSWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create Claude watcher: %w", err)
 	}
@@ -87,12 +93,17 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 	if err := addWatch(homeDir); err != nil {
 		return fmt.Errorf("failed to watch home directory: %w", err)
 	}
-	if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
-		ensureClaudeDirWatch(claudeDir, projectsDir, addWatch, watchProjectsRoot)
+	// Already watched directories are skipped, so this also picks up
+	// directories whose creation event was lost.
+	watchExisting := func() {
+		if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
+			ensureClaudeDirWatch(claudeDir, projectsDir, addWatch, watchProjectsRoot)
+		}
+		if info, err := os.Stat(projectsDir); err == nil && info.IsDir() {
+			watchProjectsRoot()
+		}
 	}
-	if info, err := os.Stat(projectsDir); err == nil && info.IsDir() {
-		watchProjectsRoot()
-	}
+	watchExisting()
 	if catchUp != nil {
 		catchUp()
 	}
@@ -134,13 +145,17 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, catchUp func(), ses
 			if !ok {
 				return nil
 			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
+				spi.RecoverFromOverflow("claude", throttle, watchExisting, catchUp)
+				continue
+			}
 			slog.Warn("watchClaudeProjects: watcher error", "error", err)
 		}
 	}
 }
 
 func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw bool, catchUp func(), sessionCallback func(*spi.AgentChatSession)) error {
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := newFSWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create Claude project watcher: %w", err)
 	}
@@ -166,6 +181,21 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 	}
 	if catchUp != nil {
 		catchUp()
+	}
+	// The project directory may have been created while its creation event
+	// was lost.
+	watchCreatedProjectDir := func() {
+		if projectDirWatched {
+			return
+		}
+		if info, err := os.Stat(claudeProjectDir); err != nil || !info.IsDir() {
+			return
+		}
+		if err := watcher.Add(claudeProjectDir); err != nil {
+			slog.Warn("watchClaudeProject: failed to watch project directory", "directory", claudeProjectDir, "error", err)
+			return
+		}
+		projectDirWatched = true
 	}
 
 	for {
@@ -194,6 +224,10 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
+			}
+			if errors.Is(err, fsnotify.ErrEventOverflow) && catchUp != nil {
+				spi.RecoverFromOverflow("claude", throttle, watchCreatedProjectDir, catchUp)
+				continue
 			}
 			slog.Warn("watchClaudeProject: watcher error", "error", err)
 		}

@@ -26,7 +26,11 @@ type FileThrottle struct {
 	mu      sync.Mutex
 	entries map[string]*throttleEntry
 	stopped bool
-	pending sync.WaitGroup
+	// draining is set while Flush or Stop waits for accepted changes, so a
+	// change that lands during a run is processed right away rather than
+	// after another delay.
+	draining bool
+	pending  sync.WaitGroup
 }
 
 // One second keeps archives close to live while absorbing the many small
@@ -101,8 +105,33 @@ func (t *FileThrottle) Trigger(key string) {
 // drain is bounded: at most one run per changed key, plus one follow-up for a
 // key that changed during its in-flight run.
 func (t *FileThrottle) Stop() {
+	t.drain(true)
+}
+
+// Flush processes every change already accepted without waiting out its
+// delay, and returns once all runs have finished. Unlike Stop, the throttle
+// keeps accepting changes afterwards.
+//
+// Why: a watcher that lost events rescans its sources. A run scheduled before
+// the rescan could read a file before the rescan does and deliver its older
+// snapshot after the rescan's, so the watcher flushes first.
+//
+// Flush must be called from the goroutine that calls Trigger, so that no
+// change is accepted while it waits.
+func (t *FileThrottle) Flush() {
+	t.drain(false)
+
 	t.mu.Lock()
-	t.stopped = true
+	t.draining = t.stopped
+	t.mu.Unlock()
+}
+
+// drain runs every scheduled key now and waits for all runs. With stop set,
+// the throttle stops accepting changes in the same critical section.
+func (t *FileThrottle) drain(stop bool) {
+	t.mu.Lock()
+	t.stopped = t.stopped || stop
+	t.draining = true
 	for key, entry := range t.entries {
 		// A false Stop means the timer already fired and its run is under way.
 		if entry.timer != nil && entry.timer.Stop() {
@@ -136,12 +165,12 @@ func (t *FileThrottle) fire(key string) {
 
 		t.mu.Lock()
 		entry.lastDuration = elapsed
-		if entry.dirty && !t.stopped {
+		if entry.dirty && !t.draining {
 			t.scheduleLocked(key, entry)
 		}
-		// While stopping, a change that landed during the run is processed
-		// right away so Stop's caller sees it before shutting down.
-		again = entry.dirty && t.stopped
+		// While draining, a change that landed during the run is processed
+		// right away so the caller of Stop or Flush sees it before returning.
+		again = entry.dirty && t.draining
 		entry.dirty = false
 		entry.running = again
 		t.mu.Unlock()

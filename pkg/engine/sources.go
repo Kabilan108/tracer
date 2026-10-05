@@ -155,7 +155,15 @@ func (r *providerIngest) session(_ spi.SessionSource, session *spi.AgentChatSess
 		return
 	}
 
-	outcome, err := e.processSession(r.providerID, session)
+	var seq uint64
+	if r.catchUp {
+		// Why: a rescan after an event queue overflow can run while debounced
+		// watch snapshots of the same session are still pending. Numbering this
+		// one after them keeps an older one from overwriting it when its timer
+		// fires.
+		seq = e.stampSnapshot()
+	}
+	outcome, err := e.processSnapshot(r.providerID, session, seq)
 	if err != nil {
 		r.failed = true
 		outcome = OutcomeError
@@ -329,11 +337,13 @@ func zoneOffsetsKey(loc *time.Location) string {
 type catchUpWatcher struct {
 	spi.Provider
 	watcher spi.CatchUpWatcher
-	catchUp func()
+	catchUp func(ctx context.Context)
 }
 
+// Why the watcher's ctx: it is cancelled when another provider's watcher
+// fails, and a catch-up pass in progress must then stop between sources too.
 func (w catchUpWatcher) WatchAgent(ctx context.Context, projectPath string, debugRaw bool, sessionCallback func(*spi.AgentChatSession)) error {
-	return w.watcher.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, w.catchUp, sessionCallback)
+	return w.watcher.WatchAgentWithCatchUp(ctx, projectPath, debugRaw, func() { w.catchUp(ctx) }, sessionCallback)
 }
 
 // sliceStreamer adapts a provider without spi.SessionStreamer. Each session is

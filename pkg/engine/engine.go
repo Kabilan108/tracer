@@ -74,6 +74,7 @@ type pendingUpdate struct {
 	providerID string
 	session    *spi.AgentChatSession
 	timer      *time.Timer
+	seq        uint64
 }
 
 // Engine implements shared historical ingest and incremental watch processing.
@@ -85,6 +86,8 @@ type Engine struct {
 	pendingMu sync.Mutex
 	pending   map[string]*pendingUpdate
 	closed    bool
+	// snapshotSeq numbers watch-time snapshots in the order they are delivered.
+	snapshotSeq uint64
 
 	// inFlight tracks debounce-fired flushes that have claimed their pending
 	// entry but are still processing; Close must wait for them, because
@@ -93,6 +96,12 @@ type Engine struct {
 	inFlight sync.WaitGroup
 
 	processMu sync.Mutex
+	// writtenSeq holds, per provider/session key, the number of the newest
+	// watch-time snapshot written, so an older one is never written over it.
+	// Why: debounced snapshots and catch-up rescans reach processSession on
+	// different goroutines, so they can arrive out of order. The map holds one
+	// entry per session written while watching.
+	writtenSeq map[string]uint64
 
 	summaryMu sync.Mutex
 	summary   Summary
@@ -139,6 +148,7 @@ func New(opts Options) (*Engine, error) {
 		state:            state,
 		stats:            sessionpkg.NewStatisticsCollector(opts.StatisticsPath),
 		pending:          make(map[string]*pendingUpdate),
+		writtenSeq:       make(map[string]uint64),
 		fingerprintScope: fingerprintScope(opts, host, time.Local),
 	}, nil
 }
@@ -218,7 +228,8 @@ func (e *Engine) IngestProviders(ctx context.Context, projectPath string, provid
 // WatchProviders watches providers and queues incremental updates through debounce processing.
 // Providers that implement spi.CatchUpWatcher re-ingest, once their watches
 // are registered, every source that changed since it was last archived, so
-// writes made between ingest and the watch starting are not lost.
+// writes made between ingest and the watch starting are not lost. They re-run
+// the same pass after an event queue overflow.
 func (e *Engine) WatchProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool) error {
 	watched := make(map[string]spi.Provider, len(providers))
 	for providerID, provider := range providers {
@@ -227,7 +238,7 @@ func (e *Engine) WatchProviders(ctx context.Context, projectPath string, provide
 			watched[providerID] = catchUpWatcher{
 				Provider: provider,
 				watcher:  watcher,
-				catchUp: func() {
+				catchUp: func(ctx context.Context) {
 					e.ingestProvider(ctx, providerID, provider, projectPath, debugRaw, true, func(ProcessOutcome) {})
 				},
 			}
@@ -248,7 +259,7 @@ func (e *Engine) QueueSessionUpdate(providerID string, session *spi.AgentChatSes
 	}
 
 	sessionCopy := *session
-	key := providerID + ":" + session.SessionID
+	key := sessionKey(providerID, session.SessionID)
 
 	e.pendingMu.Lock()
 	defer e.pendingMu.Unlock()
@@ -262,6 +273,7 @@ func (e *Engine) QueueSessionUpdate(providerID string, session *spi.AgentChatSes
 			existing.timer.Stop()
 		}
 		existing.session = &sessionCopy
+		existing.seq = e.nextSnapshotSeqLocked()
 		existing.timer = time.AfterFunc(e.opts.Debounce, func() {
 			e.flushPendingKey(key)
 		})
@@ -271,6 +283,7 @@ func (e *Engine) QueueSessionUpdate(providerID string, session *spi.AgentChatSes
 	update := &pendingUpdate{
 		providerID: providerID,
 		session:    &sessionCopy,
+		seq:        e.nextSnapshotSeqLocked(),
 	}
 	update.timer = time.AfterFunc(e.opts.Debounce, func() {
 		e.flushPendingKey(key)
@@ -292,7 +305,7 @@ func (e *Engine) FlushPending() error {
 	e.pendingMu.Unlock()
 
 	for _, update := range pending {
-		if _, err := e.processSession(update.providerID, update.session); err != nil {
+		if _, err := e.processSnapshot(update.providerID, update.session, update.seq); err != nil {
 			e.recordOutcome(OutcomeError)
 			slog.Error("Engine failed to flush pending session",
 				"provider", update.providerID,
@@ -326,7 +339,7 @@ func (e *Engine) flushPendingKey(key string) {
 	}
 	defer e.inFlight.Done()
 
-	if _, err := e.processSession(update.providerID, update.session); err != nil {
+	if _, err := e.processSnapshot(update.providerID, update.session, update.seq); err != nil {
 		e.recordOutcome(OutcomeError)
 		slog.Error("Engine failed to process debounced update",
 			"provider", update.providerID,
@@ -335,7 +348,30 @@ func (e *Engine) flushPendingKey(key string) {
 	}
 }
 
+func sessionKey(providerID string, sessionID string) string {
+	return providerID + ":" + sessionID
+}
+
+// nextSnapshotSeqLocked numbers a watch-time snapshot. Callers hold pendingMu.
+func (e *Engine) nextSnapshotSeqLocked() uint64 {
+	e.snapshotSeq++
+	return e.snapshotSeq
+}
+
+// stampSnapshot numbers a watch-time snapshot written without debouncing.
+func (e *Engine) stampSnapshot() uint64 {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	return e.nextSnapshotSeqLocked()
+}
+
 func (e *Engine) processSession(providerID string, session *spi.AgentChatSession) (ProcessOutcome, error) {
+	return e.processSnapshot(providerID, session, 0)
+}
+
+// processSnapshot writes session unless a newer snapshot of it, by seq, was
+// already written. A zero seq is unordered and always written.
+func (e *Engine) processSnapshot(providerID string, session *spi.AgentChatSession, seq uint64) (ProcessOutcome, error) {
 	if session == nil || session.SessionData == nil {
 		return OutcomeError, fmt.Errorf("session or session data is nil")
 	}
@@ -343,6 +379,23 @@ func (e *Engine) processSession(providerID string, session *spi.AgentChatSession
 	e.processMu.Lock()
 	defer e.processMu.Unlock()
 
+	key := sessionKey(providerID, session.SessionID)
+	if seq != 0 && seq < e.writtenSeq[key] {
+		slog.Debug("Engine dropped a snapshot older than one already written",
+			"provider", providerID,
+			"session_id", session.SessionID)
+		e.recordOutcome(OutcomeSkipped)
+		return OutcomeSkipped, nil
+	}
+	outcome, err := e.processSessionLocked(providerID, session)
+	if err == nil && seq != 0 {
+		e.writtenSeq[key] = seq
+	}
+	return outcome, err
+}
+
+// processSessionLocked renders and writes session. Callers hold processMu.
+func (e *Engine) processSessionLocked(providerID string, session *spi.AgentChatSession) (ProcessOutcome, error) {
 	filePath := e.opts.PathBuilder(providerID, session)
 	if filePath == "" {
 		return OutcomeError, fmt.Errorf("empty output path")

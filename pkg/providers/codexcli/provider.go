@@ -634,10 +634,18 @@ func (r *codexRecordReader) consumeLine(line []byte) error {
 // opposed to a file that could not be read.
 var errNotCodexSession = errors.New("not a codex session")
 
+// errLineTooLong marks a line over the per-record size limit.
+var errLineTooLong = errors.New("line exceeds reasonable size limit")
+
 // loadCodexSessionMeta reads the first JSON line from a session file and parses the session metadata.
 // Content that is not session metadata yields an error wrapping errNotCodexSession;
-// open and read failures are returned as they are.
+// open and read failures, and a first line over maxReasonableLineSize, are
+// errors of the source, like a record a full read refuses.
 func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
+	return readCodexSessionMeta(sessionPath, maxReasonableLineSize)
+}
+
+func readCodexSessionMeta(sessionPath string, lineLimit int) (*codexSessionMeta, error) {
 	file, err := os.Open(sessionPath)
 	if err != nil {
 		return nil, err
@@ -646,13 +654,31 @@ func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
 		_ = file.Close()
 	}()
 
-	// Why bufio.Reader and not Scanner: a meta line longer than the Scanner's
-	// token limit would be a read error, making a valid session unreadable.
-	line, err := bufio.NewReader(file).ReadBytes('\n')
+	line, err := readLineLimited(bufio.NewReader(file), lineLimit)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	return parseCodexSessionMeta(line)
+}
+
+// readLineLimited reads up to and including the next newline, failing with
+// errLineTooLong once the line, without its newline, exceeds limit bytes.
+// Why not ReadBytes: it buffers the whole line before the size can be checked,
+// so one huge first line in a file that is not a session at all would be held
+// in memory just to be rejected. Why not Scanner: its token limit is far below
+// the size of valid meta lines.
+func readLineLimited(reader *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(bytes.TrimSuffix(line, []byte("\n"))) > limit {
+			return nil, fmt.Errorf("%w of %d bytes", errLineTooLong, limit)
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
+		}
+	}
 }
 
 // parseCodexSessionMeta parses the first line of a session file as session metadata.
