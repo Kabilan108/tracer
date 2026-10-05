@@ -109,6 +109,14 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		}
 	}()
 
+	// Each Codex rollout file is exactly one session, so parses of different
+	// files never race over the same archive entry and can run two at a time.
+	throttle := spi.NewSessionFileThrottle(2, func(path string) {
+		ScanCodexSessions(projectPath, filepath.Dir(path), &path, debugRaw, sessionCallback)
+	})
+	// Stop runs before the watcher closes so no parse outlives this function.
+	defer throttle.Stop()
+
 	watchedDirs := make(map[string]bool)
 	var watchedDirsMutex sync.Mutex
 
@@ -128,10 +136,29 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 		return nil
 	}
 
+	// Once the event loop runs, a parse of a file may already be scheduled or
+	// in flight on the throttle. Day directories found from then on are fed
+	// through the throttle file by file, so one file is never parsed by two
+	// runs at once and an older snapshot can never land after a newer one.
+	eventLoopStarted := false
 	scanDayDir := func(dayDir string) {
-		if _, err := os.Stat(dayDir); err == nil {
-			slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir)
+		if _, err := os.Stat(dayDir); err != nil {
+			return
+		}
+		slog.Info("startCodexSessionWatcher: Scanning day directory", "directory", dayDir, "viaThrottle", eventLoopStarted)
+		if !eventLoopStarted {
 			ScanCodexSessions(projectPath, dayDir, nil, debugRaw, sessionCallback)
+			return
+		}
+		entries, err := os.ReadDir(dayDir)
+		if err != nil {
+			slog.Warn("startCodexSessionWatcher: Cannot read day directory", "directory", dayDir, "error", err)
+			return
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && filepath.Ext(entry.Name()) == ".jsonl" {
+				throttle.Trigger(filepath.Join(dayDir, entry.Name()))
+			}
 		}
 	}
 
@@ -223,6 +250,7 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 	}
 
 	scanDayDir(initialDayDir)
+	eventLoopStarted = true
 
 	slog.Info("startCodexSessionWatcher: Now watching for file and directory events")
 	for {
@@ -241,7 +269,6 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 			}
 
 			eventPath := event.Name
-			parentDir := filepath.Dir(eventPath)
 
 			if strings.HasSuffix(eventPath, ".jsonl") {
 				switch {
@@ -249,10 +276,12 @@ func startCodexSessionWatcher(ctx context.Context, projectPath string, sessionsR
 					slog.Info("startCodexSessionWatcher: JSONL file event",
 						"operation", event.Op.String(),
 						"file", eventPath)
-					ScanCodexSessions(projectPath, parentDir, &eventPath, debugRaw, sessionCallback)
+					throttle.Trigger(eventPath)
 				case event.Has(fsnotify.Remove):
+					// Each rollout is its own session, so removing one changes no
+					// other session's archive and needs no rescan. The removed
+					// session's archive is kept.
 					slog.Info("startCodexSessionWatcher: JSONL file removed", "file", eventPath)
-					ScanCodexSessions(projectPath, parentDir, nil, debugRaw, sessionCallback)
 				}
 				continue
 			}
@@ -424,15 +453,16 @@ func processCodexSessionFile(sessionPath string, projectPath string, normalizedP
 	}
 
 	slog.Info("processCodexSessionFile: Calling callback for session", "sessionID", agentSession.SessionID)
-	// Call the callback in a goroutine to avoid blocking
-	go func(s *spi.AgentChatSession) {
+	// Delivered synchronously so a file's snapshots reach the engine in the
+	// order they were parsed; the callback only queues the update.
+	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("processCodexSessionFile: Callback panicked", "panic", r)
 			}
 		}()
-		callback(s)
-	}(agentSession)
+		callback(agentSession)
+	}()
 
 	return nil
 }

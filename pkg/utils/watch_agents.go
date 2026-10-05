@@ -2,9 +2,6 @@ package utils
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,9 +41,6 @@ func WatchAgents(ctx context.Context, projectPath string, debugRaw bool, session
 func WatchProviders(ctx context.Context, projectPath string, providers map[string]spi.Provider, debugRaw bool, sessionCallback func(providerID string, session *spi.AgentChatSession)) error {
 	slog.Info("WatchProviders: Starting multi-provider watch", "projectPath", projectPath, "providerCount", len(providers), "debugRaw", debugRaw)
 
-	var mu sync.Mutex
-	lastFingerprints := make(map[string]string)
-
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(providers))
 
@@ -59,26 +53,13 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 
 			slog.Info("WatchProviders: Starting watcher for provider", "providerID", providerID, "providerName", provider.Name())
 
-			// Wrap the callback to deduplicate and include provider ID
+			// Unchanged sessions are not deduplicated here: the engine compares
+			// a hash of the rendered markdown before writing, and hashing the
+			// whole session on every callback duplicated that work.
 			wrappedCallback := func(session *spi.AgentChatSession) {
 				if session == nil || session.SessionData == nil {
 					return
 				}
-
-				fingerprint := sessionFingerprint(session)
-
-				// Skip if the session content fingerprint hasn't changed.
-				mu.Lock()
-				prev, seen := lastFingerprints[providerID+":"+session.SessionID]
-				if seen && prev == fingerprint {
-					mu.Unlock()
-					slog.Debug("WatchProviders: Skipping duplicate callback",
-						"providerID", providerID,
-						"sessionID", session.SessionID)
-					return
-				}
-				lastFingerprints[providerID+":"+session.SessionID] = fingerprint
-				mu.Unlock()
 
 				slog.Debug("WatchProviders: Provider callback fired",
 					"providerID", providerID,
@@ -122,22 +103,4 @@ func WatchProviders(ctx context.Context, projectPath string, providers map[strin
 		return errors.Join(errs...)
 	}
 	return nil
-}
-
-func sessionFingerprint(session *spi.AgentChatSession) string {
-	if session == nil {
-		return ""
-	}
-
-	content := session.RawData
-	if session.SessionData != nil {
-		if data, err := json.Marshal(session.SessionData); err == nil {
-			content += string(data)
-		} else {
-			content += session.SessionData.UpdatedAt
-		}
-	}
-
-	sum := sha256.Sum256([]byte(content))
-	return hex.EncodeToString(sum[:])
 }

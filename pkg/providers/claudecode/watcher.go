@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,6 +36,17 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 		return fmt.Errorf("failed to create Claude watcher: %w", err)
 	}
 	defer func() { _ = watcher.Close() }()
+
+	// Keys are session files, or project directories that appeared and need a
+	// full scan.
+	throttle := newClaudeThrottle(func(key string) {
+		if strings.HasSuffix(key, ".jsonl") {
+			emitClaudeSessions(filepath.Dir(key), debugRaw, sessionCallback, key)
+			return
+		}
+		emitClaudeSessions(key, debugRaw, sessionCallback)
+	})
+	defer throttle.Stop()
 
 	watchedDirs := make(map[string]bool)
 	addWatch := func(dir string) error {
@@ -103,14 +113,14 @@ func watchClaudeProjects(ctx context.Context, debugRaw bool, sessionCallback fun
 				if filepath.Dir(event.Name) == projectsDir {
 					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 						watchProjectDir(event.Name)
-						emitClaudeSessions(event.Name, debugRaw, sessionCallback)
+						throttle.Trigger(event.Name)
 						continue
 					}
 				}
 			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
-				emitClaudeSessions(filepath.Dir(event.Name), debugRaw, sessionCallback, event.Name)
+				throttle.Trigger(event.Name)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -127,6 +137,11 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 		return fmt.Errorf("failed to create Claude project watcher: %w", err)
 	}
 	defer func() { _ = watcher.Close() }()
+
+	throttle := newClaudeThrottle(func(path string) {
+		emitClaudeSessions(claudeProjectDir, debugRaw, sessionCallback, path)
+	})
+	defer throttle.Stop()
 
 	parentDir := filepath.Dir(claudeProjectDir)
 	projectDirWatched := false
@@ -160,7 +175,7 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 			}
 
 			if strings.HasSuffix(event.Name, ".jsonl") && (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) {
-				emitClaudeSessions(claudeProjectDir, debugRaw, sessionCallback, event.Name)
+				throttle.Trigger(event.Name)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -169,6 +184,15 @@ func watchClaudeProject(ctx context.Context, claudeProjectDir string, debugRaw b
 			slog.Warn("watchClaudeProject: watcher error", "error", err)
 		}
 	}
+}
+
+// newClaudeThrottle serializes Claude parses. One session can span several
+// files and every parse reads all of them, so two concurrent runs triggered by
+// different files of the same session could deliver an older snapshot after a
+// newer one. Running one at a time, with callbacks delivered synchronously,
+// keeps snapshots in the order their files were read.
+func newClaudeThrottle(run func(key string)) *spi.FileThrottle {
+	return spi.NewSessionFileThrottle(1, run)
 }
 
 func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback func(*spi.AgentChatSession), changedFile ...string) {
@@ -213,14 +237,15 @@ func emitClaudeSessions(claudeProjectDir string, debugRaw bool, sessionCallback 
 			continue
 		}
 
-		sessionCopy := *agentSession
-		go func() {
+		// Delivered synchronously so snapshots reach the engine in the order
+		// they were parsed; the callback only queues the update.
+		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Error("emitClaudeSessions: callback panicked", "panic", r)
 				}
 			}()
-			sessionCallback(&sessionCopy)
+			sessionCallback(agentSession)
 		}()
 	}
 }
@@ -260,18 +285,10 @@ func convertToAgentChatSession(session Session, workspaceRoot string, debugRaw b
 		return nil
 	}
 
-	var rawDataBuilder strings.Builder
-	for _, record := range session.Records {
-		jsonBytes, _ := json.Marshal(record.Data)
-		rawDataBuilder.Write(jsonBytes)
-		rawDataBuilder.WriteString("\n")
-	}
-
 	return &spi.AgentChatSession{
 		SessionID:   session.SessionUuid,
 		CreatedAt:   timestamp,
 		Slug:        slug,
 		SessionData: sessionData,
-		RawData:     rawDataBuilder.String(),
 	}
 }

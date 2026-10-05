@@ -55,6 +55,8 @@ tracer sync
 tracer watch
 ```
 
+The watcher batches rapid writes to a transcript and archives it at most about once a second. Large transcripts that take longer to parse are archived less often while they keep growing.
+
 ## Commands
 
 - `tracer sync [provider-id]`

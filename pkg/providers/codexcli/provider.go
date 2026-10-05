@@ -475,19 +475,17 @@ func findCodexSessions(projectPath string, targetSessionID string, stopOnFirst b
 	return sessions, nil
 }
 
-// readSessionRawData reads all JSONL lines from a Codex CLI session file and returns
-// both the parsed records and the raw JSONL content.
-func readSessionRawData(sessionPath string) ([]map[string]interface{}, string, error) {
+// readSessionRecords reads and parses all JSONL lines from a Codex CLI session file.
+func readSessionRecords(sessionPath string) ([]map[string]interface{}, error) {
 	file, err := os.Open(sessionPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to open session file: %w", err)
+		return nil, fmt.Errorf("failed to open session file: %w", err)
 	}
 	defer func() {
 		_ = file.Close()
 	}()
 
 	var records []map[string]interface{}
-	var rawBuilder strings.Builder
 
 	// Use bufio.Reader instead of Scanner to handle arbitrarily large lines
 	// Scanner has a token size limit (even with custom buffer), but Reader does not
@@ -501,7 +499,7 @@ func readSessionRawData(sessionPath string) ([]map[string]interface{}, string, e
 
 		// EOF is expected at end of file, other errors are genuine failures
 		if err != nil && err != io.EOF {
-			return nil, "", fmt.Errorf("error reading line %d: %w", lineNumber+1, err)
+			return nil, fmt.Errorf("error reading line %d: %w", lineNumber+1, err)
 		}
 
 		// Determine if we're at end of file and if we have content to process
@@ -528,7 +526,7 @@ func readSessionRawData(sessionPath string) ([]map[string]interface{}, string, e
 				"sizeMB", len(line)/MB,
 				"limitMB", maxReasonableLineSize/MB,
 				"file", filepath.Base(sessionPath))
-			return nil, "", fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
+			return nil, fmt.Errorf("line %d exceeds reasonable size limit (%d MB): refusing to process potentially malformed file",
 				lineNumber, maxReasonableLineSize/MB)
 		}
 
@@ -548,10 +546,6 @@ func readSessionRawData(sessionPath string) ([]map[string]interface{}, string, e
 			}
 			continue
 		}
-
-		// Add to raw data
-		rawBuilder.WriteString(line)
-		rawBuilder.WriteString("\n")
 
 		// Parse JSON
 		var record map[string]interface{}
@@ -575,7 +569,7 @@ func readSessionRawData(sessionPath string) ([]map[string]interface{}, string, e
 		}
 	}
 
-	return records, rawBuilder.String(), nil
+	return records, nil
 }
 
 // loadCodexSessionMeta reads the first JSON line from a session file and parses the session metadata.
@@ -618,7 +612,7 @@ func loadCodexSessionMeta(sessionPath string) (*codexSessionMeta, error) {
 // the session is empty or cannot be read.
 func processSessionToAgentChat(sessionInfo *codexSessionInfo, workspaceRoot string, debugRaw bool) (*spi.AgentChatSession, error) {
 	// Read the session data
-	records, rawData, err := readSessionRawData(sessionInfo.SessionPath)
+	records, err := readSessionRecords(sessionInfo.SessionPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read session data: %w", err)
 	}
@@ -665,7 +659,6 @@ func processSessionToAgentChat(sessionInfo *codexSessionInfo, workspaceRoot stri
 		CreatedAt:   timestamp,
 		Slug:        slug,
 		SessionData: sessionData,
-		RawData:     rawData,
 	}, nil
 }
 

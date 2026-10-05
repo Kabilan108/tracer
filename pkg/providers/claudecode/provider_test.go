@@ -272,12 +272,11 @@ func TestEnsureClaudeDirWatch_WatchesProjectsIfAlreadyPresent(t *testing.T) {
 // with warmup filtering and debugRaw handling
 func TestConvertToAgentChatSession(t *testing.T) {
 	tests := []struct {
-		name             string
-		session          Session
-		debugRaw         bool
-		expectNil        bool
-		expectMarkdown   string // substring that should appear in markdown
-		expectRawRecords int    // number of records in raw data (includes warmup)
+		name           string
+		session        Session
+		debugRaw       bool
+		expectNil      bool
+		expectMarkdown string // substring that should appear in markdown
 	}{
 		{
 			name: "empty session returns nil",
@@ -369,10 +368,9 @@ func TestConvertToAgentChatSession(t *testing.T) {
 					},
 				},
 			},
-			debugRaw:         false,
-			expectNil:        false,
-			expectMarkdown:   "test message", // Markdown should contain the message text
-			expectRawRecords: 3,              // Raw data should include all 3 records (including warmup)
+			debugRaw:       false,
+			expectNil:      false,
+			expectMarkdown: "test message", // Markdown should contain the message text
 		},
 		{
 			name: "no warmup messages processes all records",
@@ -404,10 +402,9 @@ func TestConvertToAgentChatSession(t *testing.T) {
 					},
 				},
 			},
-			debugRaw:         false,
-			expectNil:        false,
-			expectMarkdown:   "test message",
-			expectRawRecords: 2,
+			debugRaw:       false,
+			expectNil:      false,
+			expectMarkdown: "test message",
 		},
 		{
 			name: "missing timestamp in root record returns nil",
@@ -459,25 +456,6 @@ func TestConvertToAgentChatSession(t *testing.T) {
 				}
 				// Note: Test data may not generate exchanges if messages aren't in proper format
 				// This is expected for simple test data
-			}
-
-			// Verify raw data contains all records (including warmup)
-			if tt.expectRawRecords > 0 {
-				// Count newlines in raw data (each record is one line)
-				lines := strings.Count(result.RawData, "\n")
-				if lines != tt.expectRawRecords {
-					t.Errorf("RawData has %d lines, want %d", lines, tt.expectRawRecords)
-				}
-
-				// Verify raw data contains warmup records if they exist
-				// This ensures we're preserving all records in raw data
-				for _, record := range tt.session.Records {
-					if uuid, ok := record.Data["uuid"].(string); ok {
-						if !strings.Contains(result.RawData, uuid) {
-							t.Errorf("RawData missing record with uuid %q", uuid)
-						}
-					}
-				}
 			}
 
 			// Verify timestamp is set
