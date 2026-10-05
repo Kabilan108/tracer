@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- Transcript writers no longer leave a `<transcript>.md.lock` file beside every archived transcript. `sync`, `watch`, `receive`, `tag`, `untag` and `outcome` now exclude each other by locking the transcript's directory, which creates no files. Writers of different sessions in one project directory briefly wait for each other. The lock only coordinates processes on one host, so do not share one archive directory between hosts over a network filesystem; use `tracer push`. Once every tracer process on a host, including a running `tracer watch`, is upgraded, remove the files earlier releases left with `find <archive-root> <ingest-roots> -name '*.md.lock' -type f -delete` (#10).
+- Tilde paths expand like a shell. `~user` and `~user/x` resolve to that user's home directory instead of `$HOME/user/x`. An unknown user in `archive.additional_roots`, `archive.annotatable_roots`, `archive.root_dir`, `debug_dir` or `receive --dest` is now an error, where tracer used to silently use the wrong directory. Custom provider command paths and shell-command path hints resolve `~user` too, and hints leave quoted or escaped tildes literal, as a shell does. The five separate tilde-expansion copies are now one shared helper (#12).
+
+### Changed
+
+- `tracer list` and `tracer get` explain a `--provider` value that matches no archived session. `list` prints a hint on stderr naming the provider values in the archive, so `--json` output stays a valid array, and `get` adds the same hint to its not-found error. Provider values are `claude-code` and `codex-cli`, not the archive directory names `claude/` and `codex/`. `list --provider` now ignores surrounding whitespace, as `get` already did. `tracer sync` and `tracer watch` list the valid provider IDs (`claude`, `codex`) when given an unknown one (#11).
+
 ## 0.3.0
 
 ### Fixed
