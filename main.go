@@ -1305,7 +1305,10 @@ func parseTagFilters(values []string) ([]tagFilter, error) {
 }
 
 func metadataMatches(metadata sessionpkg.Metadata, flags listFlags, since time.Time) bool {
-	if flags.provider != "" && !strings.EqualFold(metadata.Provider, flags.provider) {
+	// Trim both sides as get and providerFilterHint do, so the hint never
+	// vouches for a provider value that this filter would still reject.
+	provider := strings.TrimSpace(flags.provider)
+	if provider != "" && !strings.EqualFold(strings.TrimSpace(metadata.Provider), provider) {
 		return false
 	}
 	if flags.project != "" {
