@@ -484,17 +484,10 @@ func buildExchangesFromRecords(records []map[string]interface{}, workspaceRoot s
 // does not start a new turn, so the search continues into earlier exchanges
 // until it reaches a prompt from a person.
 func latestAgentMessage(exchanges []Exchange, current *Exchange) *Message {
-	candidates := make([]*Exchange, 0, len(exchanges)+1)
-	if current != nil {
-		candidates = append(candidates, current)
-	}
-	for i := len(exchanges) - 1; i >= 0; i-- {
-		candidates = append(candidates, &exchanges[i])
-	}
-
 	var target *Message
-	for _, exchange := range candidates {
-		turnStarted := false
+	turnStarted := false
+	// searchExchange scans one exchange from its newest message back.
+	searchExchange := func(exchange *Exchange) {
 		for j := len(exchange.Messages) - 1; j >= 0 && target == nil && !turnStarted; j-- {
 			message := &exchange.Messages[j]
 			switch {
@@ -504,9 +497,13 @@ func latestAgentMessage(exchanges []Exchange, current *Exchange) *Message {
 				turnStarted = true
 			}
 		}
-		if target != nil || turnStarted {
-			break
-		}
+	}
+
+	if current != nil {
+		searchExchange(current)
+	}
+	for i := len(exchanges) - 1; i >= 0 && target == nil && !turnStarted; i-- {
+		searchExchange(&exchanges[i])
 	}
 	return target
 }
