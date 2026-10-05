@@ -33,6 +33,10 @@ var ErrSessionNotFound = errors.New("session not found")
 // flock locks belong to an open file description, so two opens of the same
 // directory conflict even within one process. Callers must not take a second
 // transcript lock while holding one.
+//
+// On NFS a directory flock is local to one client. That is enough because
+// each host writes its own archive and transcripts cross hosts only through
+// push and receive.
 func LockTranscript(path string) (func(), error) {
 	dir, err := os.Open(filepath.Dir(path))
 	if err != nil {

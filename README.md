@@ -161,7 +161,7 @@ When a transcript already exists at the destination, Tracer applies the incoming
 
 The receiver rejects unsafe paths, symlinks, links, devices, directories, and other non-regular tar entries. An existing transcript with invalid frontmatter is replaced by the valid incoming transcript. Invalid incoming transcripts and per-file write failures are skipped while the rest of the stream is processed; `receive` then exits nonzero so the sender does not advance its cursor.
 
-Writers of one transcript (`sync`, `watch`, `receive`, `tag`, `untag`, and `outcome`) exclude each other with a `flock` on the transcript's directory, which creates no files. Tracer 0.3.0 and earlier created a `<transcript>.md.lock` file beside every transcript and never removed it. Newer releases neither create nor read those files. Remove them once every Tracer process on the host, including a running `tracer watch`, uses the newer release:
+Writers of one transcript (`sync`, `watch`, `receive`, `tag`, `untag`, and `outcome`) exclude each other with a `flock` on the transcript's directory, which creates no files. The lock only coordinates processes on one host, so do not let two hosts write one archive directory over a network filesystem; use `tracer push` to move transcripts between hosts. Tracer 0.3.0 and earlier created a `<transcript>.md.lock` file beside every transcript and never removed it. Newer releases neither create nor read those files. Remove them once every Tracer process on the host, including a running `tracer watch`, uses the newer release:
 
 ```bash
 find ~/.local/share/tracer/archive /path/to/ingest/root -name '*.md.lock' -type f -delete
