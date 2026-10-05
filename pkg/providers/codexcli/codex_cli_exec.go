@@ -29,7 +29,7 @@ func parseCodexCommand(customCommand string) (string, []string) {
 	if customCommand != "" {
 		parts := spi.SplitCommandLine(customCommand)
 		if len(parts) > 0 {
-			return expandTilde(parts[0]), parts[1:]
+			return spi.ExpandCommandPath(parts[0]), parts[1:]
 		}
 	}
 
@@ -127,30 +127,6 @@ func findNpmCodex() (string, bool) {
 	}
 
 	return "", false
-}
-
-// expandTilde expands a leading tilde in a path to the user's home directory.
-func expandTilde(path string) string {
-	if path == "" || path[0] != '~' {
-		return path
-	}
-
-	home, err := osUserHomeDir()
-	if err != nil {
-		return path
-	}
-
-	if path == "~" {
-		return home
-	}
-
-	// Handle both Unix-style (~/) and Windows-style (~\) paths even though we don't support Windows.
-	// This check exists for defensive programming but won't be exercised in practice.
-	if len(path) >= 2 && (path[1] == '/' || path[1] == '\\') {
-		return filepath.Join(home, path[2:])
-	}
-
-	return path
 }
 
 // isExecutable returns true if the file exists and has execute permissions.

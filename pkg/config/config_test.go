@@ -191,6 +191,59 @@ func TestLoadPath_RejectsEmptyArchiveRootEntries(t *testing.T) {
 	}
 }
 
+func TestLoadPath_TildeArchiveRoots(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+		wantErr string
+	}{
+		{
+			name:    "home roots",
+			content: "[archive]\nadditional_roots = [\"~\", \"~/one\", \"/srv/~/two\"]\n",
+			want:    []string{"HOME", "HOME/one", "/srv/~/two"},
+		},
+		{
+			name:    "unknown user in additional root",
+			content: "[archive]\nadditional_roots = [\"/a\", \"~tracer-no-such-user-12/x\"]\n",
+			wantErr: "archive.additional_roots[1]: expand \"~tracer-no-such-user-12/x\"",
+		},
+		{
+			name:    "unknown user in annotatable root",
+			content: "[archive]\nannotatable_roots = [\"~tracer-no-such-user-12\"]\n",
+			wantErr: "archive.annotatable_roots[0]: expand \"~tracer-no-such-user-12\"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			path := writeConfigFile(t, t.TempDir(), tt.content)
+
+			cfg, err := LoadPath(path, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("LoadPath() error = %v, want error containing %q", err, tt.wantErr)
+				}
+				if result := ValidateConfigFile(path); !strings.Contains(result.ValidationError, tt.wantErr) {
+					t.Errorf("ValidateConfigFile().ValidationError = %q, want %q", result.ValidationError, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := make([]string, len(tt.want))
+			for i, root := range tt.want {
+				want[i] = strings.Replace(root, "HOME", home, 1)
+			}
+			if got := cfg.GetAdditionalArchiveRoots(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("GetAdditionalArchiveRoots() = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestLoadPath_PushRemotes(t *testing.T) {
 	path := writeConfigFile(t, t.TempDir(), `
 [[push.remotes]]

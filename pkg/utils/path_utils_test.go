@@ -3,19 +3,53 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestExpandTilde(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir() error = %v", err)
+func TestNewOutputPathConfig_Tilde(t *testing.T) {
+	tests := []struct {
+		name    string
+		dir     string
+		want    string
+		wantErr string
+	}{
+		{name: "home path", dir: "~/archive", want: "archive"},
+		{name: "unknown user", dir: "~tracer-no-such-user-12/archive", wantErr: "unknown user tracer-no-such-user-12"},
 	}
 
-	got := ExpandTilde("~/tmp")
-	want := filepath.Join(home, "tmp")
-	if got != want {
-		t.Fatalf("ExpandTilde() = %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			cwd := t.TempDir()
+			t.Chdir(cwd)
+
+			cfg, err := NewOutputPathConfig(tt.dir, "")
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("NewOutputPathConfig(%q) error = %v, want error containing %q", tt.dir, err, tt.wantErr)
+				}
+				// Why: the old expansion created $HOME/<user>/archive, and a
+				// literal fallback would create ./~<user>/archive.
+				for _, parent := range []string{home, cwd} {
+					entries, err := os.ReadDir(parent)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(entries) != 0 {
+						t.Errorf("NewOutputPathConfig(%q) created %v in %s", tt.dir, entries, parent)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewOutputPathConfig(%q) error = %v", tt.dir, err)
+			}
+			if want := filepath.Join(home, tt.want); cfg.BaseDir != want {
+				t.Errorf("BaseDir = %q, want %q", cfg.BaseDir, want)
+			}
+		})
 	}
 }
 

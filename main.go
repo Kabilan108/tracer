@@ -1639,7 +1639,11 @@ func createReceiveCommand() *cobra.Command {
 			if !cmd.Flags().Changed("stdin") || !fromStdin {
 				return fmt.Errorf("--stdin is required")
 			}
-			_, err := transfer.Receive(cmd.InOrStdin(), utils.ExpandTilde(dest))
+			destRoot, err := spi.ExpandTilde(dest)
+			if err != nil {
+				return fmt.Errorf("invalid --dest: %w", err)
+			}
+			_, err = transfer.Receive(cmd.InOrStdin(), destRoot)
 			return err
 		},
 	}
@@ -1734,11 +1738,14 @@ func applyConfigDefaults(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	// Why these stay unexpanded: every command passes them through
+	// utils.SetupOutputConfig, which expands the tilde and reports an
+	// unresolvable "~user" as an error.
 	if cfg.GetArchiveRoot() != "" {
-		outputDir = utils.ExpandTilde(cfg.GetArchiveRoot())
+		outputDir = cfg.GetArchiveRoot()
 	}
 	if cfg.GetDebugDir() != "" {
-		debugDir = utils.ExpandTilde(cfg.GetDebugDir())
+		debugDir = cfg.GetDebugDir()
 	}
 	localTimeZone = cfg.IsLocalTimeZoneEnabled()
 	console = cfg.IsConsoleEnabled()

@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"log/slog"
 
@@ -54,17 +53,6 @@ func getDefaultClaudeCommand() string {
 	return "claude"
 }
 
-// expandTilde expands ~ to the user's home directory
-func expandTilde(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(homeDir, path[2:])
-		}
-	}
-	return path
-}
-
 // parseClaudeCommand parses a custom command string into executable and arguments.
 // If customCommand is empty, returns the default command.
 // If resumeSessionId is provided, appends "--resume <sessionId>" to the arguments.
@@ -83,8 +71,7 @@ func parseClaudeCommand(customCommand string, resumeSessionId string) (string, [
 			cmd = getDefaultClaudeCommand()
 			args = nil
 		} else {
-			// Expand tilde in the command path
-			cmd = expandTilde(parts[0])
+			cmd = spi.ExpandCommandPath(parts[0])
 			args = parts[1:]
 		}
 	}

@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/tracer-ai/tracer-cli/pkg/spi"
 )
 
 var ignoredLegacyKeys = map[string]struct{}{
@@ -398,6 +400,12 @@ func (c *Config) validateArchiveRootEntries() error {
 			if strings.TrimSpace(root) == "" {
 				return fmt.Errorf("%s[%d] must not be empty or whitespace", rootList.name, i)
 			}
+			// Why: reject "~nosuchuser/x" at load time. normalizeRoots
+			// cannot return an error, and a literal "~nosuchuser" root would
+			// be read relative to whatever directory tracer runs in.
+			if _, err := spi.ExpandTilde(root); err != nil {
+				return fmt.Errorf("%s[%d]: %w", rootList.name, i, err)
+			}
 		}
 	}
 	return nil
@@ -406,22 +414,16 @@ func (c *Config) validateArchiveRootEntries() error {
 func normalizeRoots(configured []string) []string {
 	roots := make([]string, 0, len(configured))
 	for _, root := range configured {
-		roots = append(roots, filepath.Clean(expandTilde(root)))
+		expanded, err := spi.ExpandTilde(root)
+		if err != nil {
+			// Why: Load already rejected unresolvable roots through
+			// validateArchiveRootEntries, so this only keeps the configured
+			// value for a Config that skipped validation.
+			expanded = root
+		}
+		roots = append(roots, filepath.Clean(expanded))
 	}
 	return roots
-}
-
-// This package keeps path expansion local because importing pkg/utils would
-// pull the provider and SPI trees into the low-level configuration package.
-func expandTilde(path string) string {
-	if !strings.HasPrefix(path, "~") {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	return filepath.Join(home, path[1:])
 }
 
 func (c *Config) IsConsoleEnabled() bool {

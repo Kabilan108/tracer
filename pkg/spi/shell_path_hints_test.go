@@ -1,8 +1,7 @@
 package spi
 
 import (
-	"os"
-	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -350,49 +349,6 @@ func TestExtractShellPathHints(t *testing.T) {
 	}
 }
 
-func Test_expandTilde(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot determine home directory")
-	}
-
-	tests := []struct {
-		name string
-		path string
-		want string
-	}{
-		{
-			name: "expands tilde prefix",
-			path: "~/project/file.txt",
-			want: filepath.Join(home, "project/file.txt"),
-		},
-		{
-			name: "no tilde unchanged",
-			path: "/absolute/path",
-			want: "/absolute/path",
-		},
-		{
-			name: "tilde without slash unchanged",
-			path: "~user/file",
-			want: "~user/file",
-		},
-		{
-			name: "relative path unchanged",
-			path: "relative/path",
-			want: "relative/path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := expandTilde(tt.path)
-			if got != tt.want {
-				t.Errorf("expandTilde(%q) = %q, want %q", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNormalizePath(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -443,20 +399,118 @@ func TestNormalizePath(t *testing.T) {
 }
 
 func TestExtractShellPathHints_TildeExpansion(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot determine home directory")
+	t.Setenv("HOME", "/home/me")
+	stubLookupUser(t, map[string]string{"bob": "/srv/bob"})
+	workspaceRoot := "/home/me/project"
+
+	tests := []struct {
+		name    string
+		command string
+		want    []string
+	}{
+		{
+			name:    "home path inside the workspace is made relative",
+			command: "touch ~/project/file.txt",
+			want:    []string{"file.txt"},
+		},
+		{
+			name:    "another user's home",
+			command: "touch ~bob/notes.txt",
+			want:    []string{"/srv/bob/notes.txt"},
+		},
+		{
+			name:    "redirect into another user's home",
+			command: "echo hi > ~bob/out.log",
+			want:    []string{"/srv/bob/out.log"},
+		},
+		{
+			name:    "unknown user stays literal like in a shell",
+			command: "touch ~nosuchuser/x",
+			want:    []string{"~nosuchuser/x"},
+		},
+		{
+			name:    "tilde in the middle of a path is not expanded",
+			command: "touch a/~/b",
+			want:    []string{"a/~/b"},
+		},
+		{
+			name:    "tilde in the middle of a word is not expanded",
+			command: "touch a~/b",
+			want:    []string{"a~/b"},
+		},
+		{
+			name:    "double-quoted tilde-user is literal",
+			command: `touch "~bob/x"`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "single-quoted tilde-user is literal",
+			command: `touch '~bob/x'`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "escaped tilde is literal",
+			command: `touch \~bob/x`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "quoted login name is literal",
+			command: `touch ~"bob"/x`,
+			want:    []string{"~bob/x"},
+		},
+		{
+			name:    "quoted home tilde is literal",
+			command: `touch "~/x"`,
+			want:    []string{"~/x"},
+		},
+		{
+			name:    "quoting after the tilde-prefix still expands",
+			command: `touch ~/"my dir"/x`,
+			want:    []string{"/home/me/my dir/x"},
+		},
+		{
+			name:    "quoted redirect target is literal",
+			command: `echo hi > "~bob/out.log"`,
+			want:    []string{"~bob/out.log"},
+		},
+		{
+			name:    "redirect without a space expands",
+			command: "echo hi >~bob/out.log",
+			want:    []string{"/srv/bob/out.log"},
+		},
+		{
+			name:    "bare tilde-user as cp destination",
+			command: "cp notes.txt ~bob",
+			want:    []string{"/srv/bob"},
+		},
+		{
+			name:    "output flag value expands",
+			command: "go build -o ~/bin/tool .",
+			want:    []string{"/home/me/bin/tool"},
+		},
+		{
+			name:    "attached output flag value is literal",
+			command: "go build -o~/bin/tool .",
+			want:    []string{"~/bin/tool"},
+		},
+		{
+			name:    "literal marker rune is not taken for a tilde",
+			command: "touch \"\uE000bob/x\" \uE001\uE000y",
+			want:    []string{"\uE000bob/x", "\uE001\uE000y"},
+		},
+		{
+			name:    "heredoc delimiter starting with a tilde still ends the body",
+			command: "cat <<~EOF > ~bob/out\nbody\n~EOF\ntouch ~/after",
+			want:    []string{"/srv/bob/out", "/home/me/after"},
+		},
 	}
 
-	// Use home dir as workspace root so tilde-expanded paths get normalized
-	workspaceRoot := filepath.Join(home, "project")
-	cwd := workspaceRoot
-
-	got := ExtractShellPathHints("touch ~/project/file.txt", cwd, workspaceRoot)
-	if len(got) != 1 {
-		t.Fatalf("got %d paths %v, want 1", len(got), got)
-	}
-	if got[0] != "file.txt" {
-		t.Errorf("got %q, want %q", got[0], "file.txt")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractShellPathHints(tt.command, workspaceRoot, workspaceRoot)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ExtractShellPathHints(%q) = %v, want %v", tt.command, got, tt.want)
+			}
+		})
 	}
 }

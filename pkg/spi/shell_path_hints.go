@@ -1,7 +1,6 @@
 package spi
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -23,22 +22,6 @@ func NormalizePath(path, workspaceRoot string) string {
 	}
 
 	return path
-}
-
-// expandTilde replaces a leading ~/ with the user's home directory.
-// Returns the path unchanged if it doesn't start with ~/ or if the
-// home directory can't be determined.
-func expandTilde(path string) string {
-	if !strings.HasPrefix(path, "~/") {
-		return path
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-
-	return filepath.Join(home, path[2:])
 }
 
 // ExtractShellPathHints parses a shell command and extracts file paths that
@@ -84,8 +67,10 @@ func ExtractShellPathHints(command, cwd, workspaceRoot string) []string {
 			continue
 		}
 
-		// Split line on shell operators (|, &&, ||, ;) respecting quotes
-		subCommands := splitOnShellOperators(line)
+		// Split line on shell operators (|, &&, ||, ;) respecting quotes.
+		// Tildes are marked first because tokenizing discards the quoting
+		// that decides whether a shell expands them.
+		subCommands := splitOnShellOperators(markExpandableTildes(line))
 
 		for _, sub := range subCommands {
 			sub = strings.TrimSpace(sub)
@@ -102,7 +87,9 @@ func ExtractShellPathHints(command, cwd, workspaceRoot string) []string {
 			// If we found a heredoc marker, enter heredoc mode
 			if heredocEnd != "" {
 				inHeredoc = true
-				heredocMarker = heredocEnd
+				// Why: a shell never expands a heredoc delimiter, and the
+				// body's end line holds the delimiter's literal text.
+				heredocMarker, _ = unmarkTildes(heredocEnd)
 			}
 
 			// Tokenize the remaining command (without redirect parts)
@@ -632,17 +619,124 @@ func readHeredocMarker(runes []rune, i int) string {
 	return marker.String()
 }
 
-// resolvePath expands tildes, resolves relative paths against cwd, and
-// normalizes against workspaceRoot.
+// expandableTilde stands in for a "~" that a shell would expand. It and
+// tildeMarkEscape are Unicode private-use runes, which the tokenizers pass
+// through like any other character. A command can still contain them, since
+// they are valid in filenames, so markExpandableTildes escapes any it finds
+// and unmarkTildes restores them.
+const (
+	expandableTilde = '\uE000'
+	tildeMarkEscape = '\uE001'
+)
+
+// markExpandableTildes replaces each tilde that a shell would expand with
+// expandableTilde, leaving quoted and escaped tildes as plain "~".
+//
+// Why: a shell expands "~" only at the start of a word, and only when no
+// character of the tilde-prefix (up to the first "/") is quoted or escaped.
+// `touch "~bob/x"` and `touch ~"bob"/x` create a literal ./~bob/x. The
+// tokenizers strip quotes, so this has to be decided on the raw line. Quote
+// and escape handling mirrors splitOnShellOperators and SplitCommandLine,
+// which treat a backslash as an escape everywhere, so all three agree on
+// where quoted spans begin and end.
+func markExpandableTildes(line string) string {
+	runes := []rune(line)
+	var out strings.Builder
+	var inQuote rune
+	var escaped bool
+	atWordStart := true
+
+	for i, r := range runes {
+		wordStart := atWordStart
+		atWordStart = false
+		if r == expandableTilde || r == tildeMarkEscape {
+			out.WriteRune(tildeMarkEscape)
+		}
+
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case inQuote != 0:
+			if r == inQuote {
+				inQuote = 0
+			}
+		case r == '"' || r == '\'':
+			inQuote = r
+		case isShellWordBreak(r):
+			atWordStart = true
+		case r == '~' && wordStart && tildePrefixUnquoted(runes[i+1:]):
+			r = expandableTilde
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
+}
+
+// isShellWordBreak reports whether an unquoted rune ends a shell word, so that
+// the next rune starts one. Redirect operators count because `>~/x` writes to
+// the expanded path.
+func isShellWordBreak(r rune) bool {
+	return strings.ContainsRune(" \t\n|&;<>()", r)
+}
+
+// tildePrefixUnquoted reports whether the tilde-prefix that follows a "~" (the
+// login name, up to the first "/" or the end of the word) contains no quote or
+// escape characters.
+func tildePrefixUnquoted(rest []rune) bool {
+	for _, r := range rest {
+		if r == '/' || isShellWordBreak(r) {
+			return true
+		}
+		if r == '"' || r == '\'' || r == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// unmarkTildes turns a token taken from a marked line back into the
+// command's literal text. It reports whether the token starts with an
+// expandable tilde; markExpandableTildes only marks tildes at word starts, so
+// a marker anywhere else is restored to a plain "~".
+func unmarkTildes(token string) (string, bool) {
+	var out strings.Builder
+	var escaped bool
+	for _, r := range token {
+		switch {
+		case escaped:
+			out.WriteRune(r)
+			escaped = false
+		case r == tildeMarkEscape:
+			escaped = true
+		case r == expandableTilde:
+			out.WriteRune('~')
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String(), strings.HasPrefix(token, string(expandableTilde))
+}
+
+// resolvePath expands a marked tilde, resolves relative paths against cwd,
+// and normalizes against workspaceRoot.
 func resolvePath(raw, cwd, workspaceRoot string) string {
 	if raw == "" {
 		return ""
 	}
 
-	path := raw
-
-	// Expand tilde
-	path = expandTilde(path)
+	literal, expandable := unmarkTildes(raw)
+	path := literal
+	if expandable {
+		expanded, err := ExpandTilde(literal)
+		// Why the error leaves the path literal: a shell keeps an
+		// unresolvable tilde-prefix such as "~nosuchuser/x" as typed, so
+		// that is the path the command wrote to.
+		if err == nil {
+			path = expanded
+		}
+	}
 
 	// Resolve relative paths against cwd
 	if !filepath.IsAbs(path) && cwd != "" {
