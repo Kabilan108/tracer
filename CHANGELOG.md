@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- `tracer tag <session-id> no-push` keeps a session on the host it ran on. `tracer push` never sends a transcript tagged `no-push`, and sync carries the tag forward when it re-renders a transcript, so a live session that keeps growing stays excluded. If a remote received the transcript before it was tagged, or while a push was streaming it, the next push to that remote deletes the remote copy. `tracer untag <session-id> no-push` makes the session eligible again, and the next push sends it in full. `push --dry-run` lists these sessions as `excluded: <path>` or `retract: <path>`, and the push summary reports `excluded` and `retracted` counts (#23).
+
+### Changed
+
+- Pushes that carry retractions use push protocol 2. All other pushes stay on protocol 1, so receivers running 0.3.1 or earlier keep working until a retraction is needed. Those receivers then reject the whole push with an upgrade error, and the sender retries on the next push. Upgrade receivers before senders.
+- The push cursor records the hash of the bytes actually sent. A file that changes while streamed still mismatches its cursor row and is retried on the next push, as before.
+
 ## 0.3.1
 
 ### Fixed
