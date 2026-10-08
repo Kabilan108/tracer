@@ -3,11 +3,13 @@ package transfer
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -410,7 +412,10 @@ func tarStreamEntries(t *testing.T, manifest Manifest, entries []testTarEntry) [
 	t.Helper()
 	var buffer bytes.Buffer
 	writer := tar.NewWriter(&buffer)
-	manifestData := []byte(fmt.Sprintf(`{"protocol":%d,"sender_host":%q,"count":%d}`, manifest.Protocol, manifest.SenderHost, manifest.Count))
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := writeTarEntry(writer, manifestPath, manifestData); err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +597,7 @@ func TestReceive_WriteFailureContinuesBatch(t *testing.T) {
 }
 
 func TestReceive_ProtocolMismatch(t *testing.T) {
-	stream := tarStream(t, Manifest{Protocol: 2, SenderHost: "sender"}, nil)
+	stream := tarStream(t, Manifest{Protocol: protocolRetract + 1, SenderHost: "sender"}, nil)
 	_, err := Receive(bytes.NewReader(stream), t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "upgrade tracer") {
 		t.Fatalf("Receive() error = %v, want upgrade tracer", err)
@@ -601,11 +606,16 @@ func TestReceive_ProtocolMismatch(t *testing.T) {
 
 func writeSenderTranscript(t *testing.T, root, relPath, body string) {
 	t.Helper()
+	writeTaggedSenderTranscript(t, root, relPath, body, nil)
+}
+
+func writeTaggedSenderTranscript(t *testing.T, root, relPath, body string, tags []string) {
+	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, transcriptBytes(t, strings.TrimSuffix(filepath.Base(relPath), ".md"), "", nil, body), 0o644); err != nil {
+	if err := os.WriteFile(path, transcriptBytes(t, strings.TrimSuffix(filepath.Base(relPath), ".md"), "", tags, body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -697,5 +707,412 @@ func TestPushReceiveEndToEnd_ReceiverAnnotationsSurvive(t *testing.T) {
 	}
 	if body != "# second version\n" {
 		t.Fatalf("receiver body = %q, want second sender version", body)
+	}
+}
+
+func TestScanPending_NoPushTag(t *testing.T) {
+	relPath := "codex/project/one.md"
+	tests := []struct {
+		name         string
+		tags         []string
+		handEdited   bool
+		pushedBefore bool
+		wantFiles    int
+		wantExcluded []string
+		wantRetract  []string
+	}{
+		{name: "untagged", wantFiles: 1},
+		{name: "other tags only", tags: []string{"wiki:compiled"}, wantFiles: 1},
+		{name: "tagged and never pushed", tags: []string{NoPushTag}, wantExcluded: []string{relPath}},
+		{name: "hand-edited tag case", tags: []string{NoPushTag}, handEdited: true, wantExcluded: []string{relPath}},
+		{name: "tagged after an earlier push", tags: []string{NoPushTag}, pushedBefore: true, wantRetract: []string{relPath}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTaggedSenderTranscript(t, root, relPath, "# body\n", tt.tags)
+			if tt.handEdited {
+				path := filepath.Join(root, filepath.FromSlash(relPath))
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				content = bytes.Replace(content, []byte("- "+NoPushTag), []byte("- No-Push"), 1)
+				if err := os.WriteFile(path, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cursor := map[string]string{}
+			if tt.pushedBefore {
+				cursor[relPath] = "hash-of-earlier-version"
+			}
+
+			got, err := ScanPending(root, cursor)
+			if err != nil {
+				t.Fatalf("ScanPending() error = %v", err)
+			}
+			if len(got.Files) != tt.wantFiles {
+				t.Errorf("ScanPending() files = %+v, want %d", got.Files, tt.wantFiles)
+			}
+			if !reflect.DeepEqual(got.Excluded, tt.wantExcluded) {
+				t.Errorf("ScanPending() excluded = %v, want %v", got.Excluded, tt.wantExcluded)
+			}
+			if !reflect.DeepEqual(got.Retract, tt.wantRetract) {
+				t.Errorf("ScanPending() retract = %v, want %v", got.Retract, tt.wantRetract)
+			}
+			wantPresent := len(tt.wantExcluded)+len(tt.wantRetract) == 0
+			if present := slices.Contains(got.AllPaths, relPath); present != wantPresent {
+				t.Errorf("ScanPending() AllPaths contains %s = %v, want %v", relPath, present, wantPresent)
+			}
+		})
+	}
+}
+
+func TestWriteTar_ProtocolFollowsRetractions(t *testing.T) {
+	tests := []struct {
+		name         string
+		retract      []string
+		wantProtocol int
+	}{
+		{name: "no retractions stays readable by older receivers", wantProtocol: protocolBase},
+		{name: "retractions require a receiver that applies them", retract: []string{"codex/project/gone.md"}, wantProtocol: protocolRetract},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			if _, err := WriteTar(&buffer, "sender", t.TempDir(), nil, tt.retract); err != nil {
+				t.Fatalf("WriteTar() error = %v", err)
+			}
+			reader := tar.NewReader(&buffer)
+			if _, err := reader.Next(); err != nil {
+				t.Fatal(err)
+			}
+			var manifest Manifest
+			if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
+				t.Fatal(err)
+			}
+			if manifest.Protocol != tt.wantProtocol {
+				t.Errorf("manifest protocol = %d, want %d", manifest.Protocol, tt.wantProtocol)
+			}
+			if !reflect.DeepEqual(manifest.Retract, tt.retract) {
+				t.Errorf("manifest retract = %v, want %v", manifest.Retract, tt.retract)
+			}
+		})
+	}
+}
+
+func TestRetractFile(t *testing.T) {
+	tests := []struct {
+		name        string
+		relPath     string
+		wantRemoved bool
+		wantErr     string
+		// wantRemain is relative to the directory holding dest, so it can
+		// name files both inside and outside the destination root.
+		wantRemain string
+	}{
+		{name: "existing transcript", relPath: "codex/project/one.md", wantRemoved: true},
+		{name: "already absent transcript", relPath: "codex/project/missing.md"},
+		{name: "absent project directory", relPath: "codex/missing/one.md"},
+		{name: "non-transcript file", relPath: "codex/project/notes.txt", wantErr: "non-transcript", wantRemain: "dest/codex/project/notes.txt"},
+		{name: "parent traversal", relPath: "../victim.md", wantErr: "path traversal", wantRemain: "victim.md"},
+		{name: "symlinked parent escape", relPath: "codex/linked/victim.md", wantErr: "escapes destination", wantRemain: "victim.md"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			dest := filepath.Join(base, "dest")
+			writeSenderTranscript(t, dest, "codex/project/one.md", "# body\n")
+			if err := os.WriteFile(filepath.Join(dest, "codex", "project", "notes.txt"), []byte("notes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(base, "victim.md"), []byte("victim"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(base, filepath.Join(dest, "codex", "linked")); err != nil {
+				t.Fatal(err)
+			}
+
+			removed, err := retractFile(dest, tt.relPath)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("retractFile() error = %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("retractFile() error = %v, want %q", err, tt.wantErr)
+			}
+			if removed != tt.wantRemoved {
+				t.Errorf("retractFile() removed = %v, want %v", removed, tt.wantRemoved)
+			}
+			if tt.wantRemoved {
+				if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(tt.relPath))); !os.IsNotExist(err) {
+					t.Errorf("retracted transcript still exists: %v", err)
+				}
+			}
+			if tt.wantRemain != "" {
+				if _, err := os.Stat(filepath.Join(base, filepath.FromSlash(tt.wantRemain))); err != nil {
+					t.Errorf("%s should survive a rejected retraction: %v", tt.wantRemain, err)
+				}
+			}
+		})
+	}
+}
+
+// TestPushReceiveEndToEnd_NoPush covers the issue #23 acceptance flow: a
+// no-push session that keeps growing never reaches the remote, one tagged
+// after an earlier push is retracted, and removing the tag re-sends it.
+func TestPushReceiveEndToEnd_NoPush(t *testing.T) {
+	senderRoot := t.TempDir()
+	receiverRoot := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "runtime-state.db")
+	keepPath := "codex/project/keep.md"
+	privatePath := "codex/project/private.md"
+	leakedPath := "codex/project/leaked.md"
+	writeSenderTranscript(t, senderRoot, keepPath, "# keep\n")
+	writeTaggedSenderTranscript(t, senderRoot, privatePath, "# secret\n", []string{NoPushTag})
+	writeSenderTranscript(t, senderRoot, leakedPath, "# shared before tagging\n")
+
+	sends := 0
+	failNextSend := false
+	var lastReceive ReceiveSummary
+	push := func(dryRun bool) (PushSummary, string, error) {
+		t.Helper()
+		var output bytes.Buffer
+		summary, err := Push(PushOptions{
+			Remote:      "receiver",
+			ArchiveRoot: senderRoot,
+			StateDBPath: statePath,
+			SenderHost:  "sender",
+			DryRun:      dryRun,
+			Output:      &output,
+			Send: func(writeTar func(io.Writer) (TarResult, error)) (TarResult, error) {
+				sends++
+				if failNextSend {
+					failNextSend = false
+					return TarResult{}, fmt.Errorf("ssh failed")
+				}
+				result, receiveSummary := pipePushToReceive(t, writeTar, receiverRoot)
+				lastReceive = receiveSummary
+				return result, nil
+			},
+		})
+		return summary, output.String(), err
+	}
+	receiverHas := func(relPath string) bool {
+		t.Helper()
+		_, err := os.Stat(filepath.Join(receiverRoot, filepath.FromSlash(relPath)))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
+
+	first, _, err := push(false)
+	if err != nil {
+		t.Fatalf("first push error = %v", err)
+	}
+	if first.Transferred != 2 || first.Excluded != 1 || receiverHas(privatePath) {
+		t.Fatalf("first push = %+v, receiver has private = %v; want two sent and private excluded", first, receiverHas(privatePath))
+	}
+
+	writeTaggedSenderTranscript(t, senderRoot, privatePath, "# secret\n# more secret\n", []string{NoPushTag})
+	second, _, err := push(false)
+	if err != nil {
+		t.Fatalf("second push error = %v", err)
+	}
+	if second.Transferred != 0 || second.Excluded != 1 || receiverHas(privatePath) {
+		t.Fatalf("second push = %+v; want the grown private session still excluded", second)
+	}
+
+	writeTaggedSenderTranscript(t, senderRoot, leakedPath, "# shared before tagging\n# now private\n", []string{NoPushTag})
+	_, dryRunOutput, err := push(true)
+	if err != nil {
+		t.Fatalf("dry-run push error = %v", err)
+	}
+	wantDryRun := "excluded: " + privatePath + "\nretract: " + leakedPath + "\n"
+	if dryRunOutput != wantDryRun {
+		t.Fatalf("dry-run output = %q, want %q", dryRunOutput, wantDryRun)
+	}
+
+	failNextSend = true
+	if _, _, err := push(false); err == nil {
+		t.Fatal("push with failing transport succeeded")
+	}
+	if !receiverHas(leakedPath) {
+		t.Fatal("receiver lost leaked transcript although the retracting push failed")
+	}
+	third, _, err := push(false)
+	if err != nil {
+		t.Fatalf("retrying push error = %v", err)
+	}
+	if third.Retracted != 1 || lastReceive.Retracted != 1 || receiverHas(leakedPath) {
+		t.Fatalf("retrying push = %+v receive = %+v; want leaked transcript retracted after the failed attempt", third, lastReceive)
+	}
+	if !receiverHas(keepPath) {
+		t.Fatal("retraction removed an untagged transcript")
+	}
+
+	sendsBefore := sends
+	fourth, _, err := push(false)
+	if err != nil {
+		t.Fatalf("fourth push error = %v", err)
+	}
+	if fourth.Retracted != 0 || fourth.Excluded != 2 || sends != sendsBefore {
+		t.Fatalf("fourth push = %+v sends = %d; want no repeated retraction and no transport call", fourth, sends-sendsBefore)
+	}
+
+	writeTaggedSenderTranscript(t, senderRoot, privatePath, "# secret\n# more secret\n", nil)
+	fifth, _, err := push(false)
+	if err != nil {
+		t.Fatalf("fifth push error = %v", err)
+	}
+	if fifth.Transferred != 1 || !receiverHas(privatePath) {
+		t.Fatalf("fifth push = %+v; want the untagged session sent", fifth)
+	}
+	if _, body := readAnnotations(t, filepath.Join(receiverRoot, filepath.FromSlash(privatePath))); body != "# secret\n# more secret\n" {
+		t.Fatalf("receiver private body = %q, want the full sender version", body)
+	}
+}
+
+// tagWhenStreamed runs onFile the first time the tar stream writes the header
+// for relPath. WriteTar has opened the file by then, so a rename-based write
+// in onFile models `tracer tag` landing while the old inode is streamed.
+type tagWhenStreamed struct {
+	writer  io.Writer
+	relPath string
+	onFile  func()
+	fired   bool
+}
+
+func (w *tagWhenStreamed) Write(p []byte) (int, error) {
+	if !w.fired && bytes.Contains(p, []byte(w.relPath)) {
+		w.fired = true
+		w.onFile()
+	}
+	return w.writer.Write(p)
+}
+
+func TestPush_RetractsTranscriptTaggedWhileStreaming(t *testing.T) {
+	senderRoot := t.TempDir()
+	receiverRoot := t.TempDir()
+	statePath := filepath.Join(t.TempDir(), "runtime-state.db")
+	relPath := "codex/project/one.md"
+	senderPath := filepath.Join(senderRoot, filepath.FromSlash(relPath))
+	writeSenderTranscript(t, senderRoot, relPath, "# body\n")
+	tagSender := func() {
+		content, err := os.ReadFile(senderPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata, _, err := session.ParseFrontmatter(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metadata.Path = senderPath
+		metadata.Tags = []string{NoPushTag}
+		if err := session.WriteMetadata(metadata); err != nil {
+			t.Fatal(err)
+		}
+	}
+	push := func(wrap func(io.Writer) io.Writer) PushSummary {
+		t.Helper()
+		summary, err := Push(PushOptions{
+			Remote:      "receiver",
+			ArchiveRoot: senderRoot,
+			StateDBPath: statePath,
+			SenderHost:  "sender",
+			Send: func(writeTar func(io.Writer) (TarResult, error)) (TarResult, error) {
+				result, _ := pipePushToReceive(t, func(writer io.Writer) (TarResult, error) {
+					return writeTar(wrap(writer))
+				}, receiverRoot)
+				return result, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("Push() error = %v", err)
+		}
+		return summary
+	}
+
+	push(func(writer io.Writer) io.Writer {
+		return &tagWhenStreamed{writer: writer, relPath: relPath, onFile: tagSender}
+	})
+	receiverPath := filepath.Join(receiverRoot, filepath.FromSlash(relPath))
+	if _, err := os.Stat(receiverPath); err != nil {
+		t.Fatalf("receiver should hold the untagged bytes streamed before the tag landed: %v", err)
+	}
+
+	second := push(func(writer io.Writer) io.Writer { return writer })
+	if second.Retracted != 1 {
+		t.Fatalf("second push = %+v, want the copy delivered mid-tag retracted", second)
+	}
+	if _, err := os.Stat(receiverPath); !os.IsNotExist(err) {
+		t.Fatalf("receiver still holds transcript tagged during the earlier push: %v", err)
+	}
+}
+
+func TestReceive_AppliesRetractions(t *testing.T) {
+	tests := []struct {
+		name          string
+		retract       []string
+		wantErr       string
+		wantRetracted int
+		wantFailed    int
+		wantRemain    []string
+		wantGone      []string
+	}{
+		{
+			name:          "retracts listed transcript",
+			retract:       []string{"codex/project/old.md"},
+			wantRetracted: 1,
+			wantRemain:    []string{"codex/project/notes.txt", "codex/project/new.md"},
+			wantGone:      []string{"codex/project/old.md"},
+		},
+		{
+			name:       "failed retraction fails the stream but keeps processing",
+			retract:    []string{"codex/project/notes.txt"},
+			wantErr:    "non-transcript",
+			wantFailed: 1,
+			wantRemain: []string{"codex/project/notes.txt", "codex/project/old.md", "codex/project/new.md"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeSenderTranscript(t, root, "codex/project/old.md", "# old\n")
+			if err := os.WriteFile(filepath.Join(root, "codex", "project", "notes.txt"), []byte("notes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stream := tarStream(t, Manifest{Protocol: protocolRetract, SenderHost: "sender", Count: 1, Retract: tt.retract}, map[string][]byte{
+				"codex/project/new.md": transcriptBytes(t, "new", "", nil, "# new\n"),
+			})
+
+			summary, err := Receive(bytes.NewReader(stream), root)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("Receive() error = %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("Receive() error = %v, want %q", err, tt.wantErr)
+			}
+			if summary.Retracted != tt.wantRetracted || summary.Failed != tt.wantFailed || summary.Created != 1 {
+				t.Errorf("Receive() summary = %+v, want retracted=%d failed=%d created=1", summary, tt.wantRetracted, tt.wantFailed)
+			}
+			for _, relPath := range tt.wantRemain {
+				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); err != nil {
+					t.Errorf("%s should remain: %v", relPath, err)
+				}
+			}
+			for _, relPath := range tt.wantGone {
+				if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relPath))); !os.IsNotExist(err) {
+					t.Errorf("%s should be retracted: %v", relPath, err)
+				}
+			}
+		})
 	}
 }

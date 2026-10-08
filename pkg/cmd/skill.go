@@ -39,6 +39,7 @@ Bare session IDs resolve in the writable primary archive and roots explicitly co
 
 The tracer push <remote> [--dry-run] command sends or previews changed primary-archive files for a config-defined SSH remote and merge-preserves the receiver's outcome and tags.
 The tracer receive --dest <path> --stdin command is the one-shot stream receiver normally invoked by push over ssh; no daemon runs on the destination.
+The reserved tag no-push keeps a session on its host: tracer tag <session-id> no-push excludes it from every later push, including growth of a live session, and deletes the copy from any remote that already received it. tracer untag <session-id> no-push makes it eligible again. A push dry run lists these sessions as excluded: <path> or retract: <path>.
 
 ## Setup and diagnostics
 

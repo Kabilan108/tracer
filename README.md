@@ -157,7 +157,17 @@ tracer push sietch
 
 Each push invokes `ssh <host> tracer receive --dest <dest> --stdin`, streams a tar archive, and exits. There is no receiving daemon. The receiver must run the Tracer release that introduced `receive` or newer.
 
-Only one push to a given remote can run at a time. A concurrent attempt exits immediately with an “already in progress” error. Deleted or renamed sender paths are pruned from that remote's cursor after a successful push. Files that change during a push are skipped or left uncheckpointed so the next push retries them.
+Only one push to a given remote can run at a time. A concurrent attempt exits immediately with an “already in progress” error. Deleted or renamed sender paths are pruned from that remote's cursor after a successful push. Files that change during a push are either skipped or checkpointed at the version actually sent, so the next push retries them.
+
+To keep a session on the host where it ran, tag it `no-push`:
+
+```bash
+tracer tag <session-id> no-push
+```
+
+Push skips tagged transcripts on every run. Sync carries the tag forward when it re-renders a transcript, so a live session that keeps growing never leaves the host. If a remote received the transcript before you tagged it, or a push was already streaming it when you tagged it, the next push to that remote deletes the remote copy. `tracer untag <session-id> no-push` makes the session eligible again, and the next push sends it in full. `--dry-run` lists these sessions after the pending files as `excluded: <path>` (never sent to this remote) or `retract: <path>` (will be deleted from it).
+
+Retraction needs a receiver running a Tracer release newer than 0.3.1. An older receiver rejects a push that carries retractions with an upgrade error, including the other files in that push, and the sender retries everything on the next push. Pushes with nothing to retract still work against older receivers. Retraction reaches only remotes this host pushes to directly; if a remote forwards transcripts to a third host, delete the copy there by hand.
 
 When a transcript already exists at the destination, Tracer applies the incoming transcript body and derived metadata while merging annotations. Tags are the normalized union of both copies, and a non-empty receiver outcome wins over the sender outcome. Because tags are a union, removing a tag only on the receiver is not permanent: it reappears on a later push while the sender still has that tag.
 

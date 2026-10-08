@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -27,11 +28,30 @@ const frontmatterProbeBytes = 32 << 10
 
 const manifestPath = ".tracer-push-manifest.json"
 
+// NoPushTag is the reserved tag that keeps a transcript on the host it ran on.
+// It lives in the transcript's own frontmatter, which sync carries forward on
+// every re-render, so a live session that keeps growing stays excluded.
+const NoPushTag = "no-push"
+
+const (
+	protocolBase = 1
+	// protocolRetract is sent only when a stream carries retractions. Pushes
+	// without retractions stay on protocolBase so receivers running an older
+	// release keep working; a retraction sent to one of those receivers is
+	// rejected loudly instead of being silently ignored, which leaves the
+	// sender cursor untouched so the retraction is retried after the upgrade.
+	protocolRetract = 2
+)
+
 // Manifest identifies the archive transfer protocol used by a tar stream.
 type Manifest struct {
 	Protocol   int    `json:"protocol"`
 	SenderHost string `json:"sender_host"`
 	Count      int    `json:"count"`
+
+	// Retract lists archive paths the receiver must delete because the sender
+	// tagged them no-push after they had already been pushed.
+	Retract []string `json:"retract,omitempty"`
 }
 
 // PendingFile is an archived transcript that differs from the push cursor.
@@ -54,6 +74,13 @@ type ScanResult struct {
 	// pre-frontmatter archives cannot be regenerated once provider data is
 	// gone).
 	Invalid int
+
+	// Excluded lists no-push transcripts this remote has never received.
+	// Retract lists no-push transcripts the cursor shows this remote already
+	// holds. Both stay out of AllPaths so a successful push prunes their
+	// cursor rows; removing the tag later then re-sends the file in full.
+	Excluded []string
+	Retract  []string
 }
 
 // PushSummary describes one completed or failed push attempt.
@@ -64,16 +91,21 @@ type PushSummary struct {
 	Bytes       int64
 	Skipped     int
 	Invalid     int
-	Failed      int
-	Duration    time.Duration
+	// Excluded counts every no-push transcript; Retracted is the subset the
+	// remote held and has now deleted.
+	Excluded  int
+	Retracted int
+	Failed    int
+	Duration  time.Duration
 }
 
-// TarResult describes the files actually written and safe to checkpoint.
+// TarResult describes the files actually written and the hashes the receiver
+// holds once the stream is accepted.
 type TarResult struct {
-	Bytes   int64
-	Sent    int
-	Skipped int
-	Stable  []CursorEntry
+	Bytes     int64
+	Sent      int
+	Skipped   int
+	Delivered []CursorEntry
 }
 
 // SendTar delivers a generated tar stream and returns only after the receiver succeeds.
@@ -125,24 +157,20 @@ func Push(options PushOptions) (summary PushSummary, err error) {
 	summary.Scanned = scan.Scanned
 	summary.Skipped = scan.Skipped
 	summary.Invalid = scan.Invalid
+	summary.Excluded = len(scan.Excluded) + len(scan.Retract)
 	if err != nil {
 		summary.Failed++
 		return summary, err
 	}
 
 	if options.DryRun {
-		if options.Output == nil {
-			options.Output = io.Discard
-		}
-		for _, file := range scan.Files {
-			if _, err := fmt.Fprintln(options.Output, file.RelPath); err != nil {
-				summary.Failed++
-				return summary, fmt.Errorf("write dry-run output: %w", err)
-			}
+		if err := writeDryRun(options.Output, scan); err != nil {
+			summary.Failed++
+			return summary, err
 		}
 		return summary, nil
 	}
-	if len(scan.Files) == 0 {
+	if len(scan.Files) == 0 && len(scan.Retract) == 0 {
 		if err := cursor.CommitPush(options.Remote, nil, scan.AllPaths, time.Now().UTC()); err != nil {
 			summary.Failed++
 			return summary, err
@@ -155,7 +183,7 @@ func Push(options PushOptions) (summary PushSummary, err error) {
 	}
 
 	result, err := options.Send(func(writer io.Writer) (TarResult, error) {
-		return WriteTar(writer, options.SenderHost, options.ArchiveRoot, scan.Files)
+		return WriteTar(writer, options.SenderHost, options.ArchiveRoot, scan.Files, scan.Retract)
 	})
 	summary.Bytes = result.Bytes
 	summary.Transferred = result.Sent
@@ -164,11 +192,39 @@ func Push(options PushOptions) (summary PushSummary, err error) {
 		summary.Failed++
 		return summary, err
 	}
-	if err := cursor.CommitPush(options.Remote, result.Stable, scan.AllPaths, time.Now().UTC()); err != nil {
+	// The receiver fails the whole stream when any retraction fails, so a
+	// successful send means every listed path is gone from the remote.
+	summary.Retracted = len(scan.Retract)
+	if err := cursor.CommitPush(options.Remote, result.Delivered, scan.AllPaths, time.Now().UTC()); err != nil {
 		summary.Failed++
 		return summary, err
 	}
 	return summary, nil
+}
+
+// writeDryRun prints pending paths bare, as before, so existing consumers of
+// the dry-run output keep working; no-push paths carry a prefix saying what a
+// real push would do with them.
+func writeDryRun(output io.Writer, scan ScanResult) error {
+	if output == nil {
+		output = io.Discard
+	}
+	lines := make([]string, 0, len(scan.Files)+len(scan.Excluded)+len(scan.Retract))
+	for _, file := range scan.Files {
+		lines = append(lines, file.RelPath)
+	}
+	for _, relPath := range scan.Excluded {
+		lines = append(lines, "excluded: "+relPath)
+	}
+	for _, relPath := range scan.Retract {
+		lines = append(lines, "retract: "+relPath)
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintln(output, line); err != nil {
+			return fmt.Errorf("write dry-run output: %w", err)
+		}
+	}
+	return nil
 }
 
 func acquirePushLock(stateDBPath, remote string) (func(), error) {
@@ -216,9 +272,20 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 		// cursor row pruned; once repaired it is re-sent in full. That is
 		// intentional: the receiver merge is idempotent, and a repaired file
 		// should reach the remote rather than be skipped by a stale hash.
-		if _, _, parseErr := session.ParseFrontmatter(head); parseErr != nil {
+		metadata, _, parseErr := session.ParseFrontmatter(head)
+		if parseErr != nil {
 			result.Invalid++
 			slog.Warn("Skipping transcript without valid frontmatter", "path", relPath, "error", parseErr)
+			return nil
+		}
+		if hasNoPushTag(metadata.Tags) {
+			// A cursor row means this remote received an earlier version
+			// before the tag was added, so it must be told to delete it.
+			if _, pushed := cursor[relPath]; pushed {
+				result.Retract = append(result.Retract, relPath)
+			} else {
+				result.Excluded = append(result.Excluded, relPath)
+			}
 			return nil
 		}
 		result.Scanned++
@@ -235,7 +302,18 @@ func ScanPending(root string, cursor map[string]string) (ScanResult, error) {
 	}
 	sort.Slice(result.Files, func(i, j int) bool { return result.Files[i].RelPath < result.Files[j].RelPath })
 	sort.Strings(result.AllPaths)
+	sort.Strings(result.Excluded)
+	sort.Strings(result.Retract)
 	return result, nil
+}
+
+// hasNoPushTag compares case-insensitively because hand-edited frontmatter is
+// not normalized until Tracer next rewrites it, and a missed match would push
+// a transcript the user meant to keep local.
+func hasNoPushTag(tags []string) bool {
+	return slices.ContainsFunc(tags, func(tag string) bool {
+		return strings.EqualFold(strings.TrimSpace(tag), NoPushTag)
+	})
 }
 
 // hashFile is the head-free path used by WriteTar, where the probe buffer of
@@ -275,8 +353,9 @@ func hashFileWithHead(path string) (string, int64, []byte, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), int64(head.Len()) + rest, head.Bytes(), nil
 }
 
-// WriteTar writes a protocol manifest followed by files unchanged since the scan.
-func WriteTar(writer io.Writer, senderHost, archiveRoot string, files []PendingFile) (TarResult, error) {
+// WriteTar writes a protocol manifest, carrying any retractions, followed by
+// files unchanged since the scan.
+func WriteTar(writer io.Writer, senderHost, archiveRoot string, files []PendingFile, retract []string) (TarResult, error) {
 	result := TarResult{}
 	ready := make([]PendingFile, 0, len(files))
 	for _, file := range files {
@@ -292,7 +371,11 @@ func WriteTar(writer io.Writer, senderHost, archiveRoot string, files []PendingF
 	}
 
 	tarWriter := tar.NewWriter(writer)
-	manifest, err := json.Marshal(Manifest{Protocol: 1, SenderHost: senderHost, Count: len(ready)})
+	protocol := protocolBase
+	if len(retract) > 0 {
+		protocol = protocolRetract
+	}
+	manifest, err := json.Marshal(Manifest{Protocol: protocol, SenderHost: senderHost, Count: len(ready), Retract: retract})
 	if err != nil {
 		return result, fmt.Errorf("marshal push manifest: %w", err)
 	}
@@ -327,16 +410,15 @@ func WriteTar(writer io.Writer, senderHost, archiveRoot string, files []PendingF
 			return result, fmt.Errorf("close archive file %s: %w", path, closeErr)
 		}
 		result.Sent++
-		currentHash, currentSize, err := hashFile(path)
-		if err != nil {
-			_ = tarWriter.Close()
-			return result, err
-		}
-		if hex.EncodeToString(hasher.Sum(nil)) == file.ContentHash &&
-			currentHash == file.ContentHash &&
-			currentSize == file.Size {
-			result.Stable = append(result.Stable, CursorEntry{RelPath: file.RelPath, ContentHash: file.ContentHash})
-		}
+		// Checkpoint the bytes the receiver actually got, not the scan hash.
+		// If the file changed mid-stream, the local hash no longer matches
+		// and the next push re-sends it. If the change was a no-push tag, the
+		// cursor row is what lets the next push retract the copy the remote
+		// already received.
+		result.Delivered = append(result.Delivered, CursorEntry{
+			RelPath:     file.RelPath,
+			ContentHash: hex.EncodeToString(hasher.Sum(nil)),
+		})
 	}
 	if err := tarWriter.Close(); err != nil {
 		return result, fmt.Errorf("close push tar: %w", err)
@@ -364,6 +446,8 @@ func LogPushSummary(summary PushSummary) {
 		"bytes", summary.Bytes,
 		"skipped", summary.Skipped,
 		"invalid", summary.Invalid,
+		"excluded", summary.Excluded,
+		"retracted", summary.Retracted,
 		"failed", summary.Failed,
 		"duration", summary.Duration,
 	)
