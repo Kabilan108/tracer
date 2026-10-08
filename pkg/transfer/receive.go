@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -22,11 +23,12 @@ const maxTranscriptBytes = 64 << 20
 
 // ReceiveSummary describes the files applied from one tar stream.
 type ReceiveSummary struct {
-	Received int
-	Merged   int
-	Created  int
-	Failed   int
-	Duration time.Duration
+	Received  int
+	Merged    int
+	Created   int
+	Retracted int
+	Failed    int
+	Duration  time.Duration
 }
 
 // Receive consumes one push tar stream and atomically updates the destination archive.
@@ -38,6 +40,7 @@ func Receive(reader io.Reader, dest string) (summary ReceiveSummary, err error) 
 			"received", summary.Received,
 			"merged", summary.Merged,
 			"created", summary.Created,
+			"retracted", summary.Retracted,
 			"failed", summary.Failed,
 			"duration", summary.Duration,
 		)
@@ -76,13 +79,26 @@ func Receive(reader io.Reader, dest string) (summary ReceiveSummary, err error) 
 		summary.Failed++
 		return summary, fmt.Errorf("decode push manifest: %w", err)
 	}
-	if manifest.Protocol != 1 {
+	if manifest.Protocol != protocolBase && manifest.Protocol != protocolRetract {
 		summary.Failed++
 		return summary, fmt.Errorf("unsupported push protocol %d; upgrade tracer on the receiver", manifest.Protocol)
 	}
 
-	entryCount := 0
 	fileErrors := make([]error, 0)
+	for _, relPath := range manifest.Retract {
+		removed, retractErr := retractFile(resolvedDest, relPath)
+		if retractErr != nil {
+			summary.Failed++
+			fileErrors = append(fileErrors, fmt.Errorf("retract %s: %w", relPath, retractErr))
+			slog.Warn("Failed to retract transcript", "path", relPath, "error", retractErr)
+			continue
+		}
+		if removed {
+			summary.Retracted++
+		}
+	}
+
+	entryCount := 0
 	for {
 		header, nextErr := tarReader.Next()
 		if errors.Is(nextErr, io.EOF) {
@@ -169,20 +185,8 @@ func writeReceivedFile(resolvedDest, target string, incoming []byte) (bool, erro
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return false, fmt.Errorf("create transcript directory: %w", err)
 	}
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return false, fmt.Errorf("resolve transcript directory: %w", err)
-	}
-	resolvedParent, err = filepath.Abs(resolvedParent)
-	if err != nil {
-		return false, fmt.Errorf("resolve absolute transcript directory: %w", err)
-	}
-	rootPrefix := resolvedDest
-	if !strings.HasSuffix(rootPrefix, string(filepath.Separator)) {
-		rootPrefix += string(filepath.Separator)
-	}
-	if resolvedParent != resolvedDest && !strings.HasPrefix(resolvedParent, rootPrefix) {
-		return false, fmt.Errorf("resolved transcript directory %s escapes destination %s", resolvedParent, resolvedDest)
+	if err := checkContainedDir(resolvedDest, parent); err != nil {
+		return false, err
 	}
 	unlock, err := session.LockTranscript(target)
 	if err != nil {
@@ -213,6 +217,64 @@ func writeReceivedFile(resolvedDest, target string, incoming []byte) (bool, erro
 		return false, fmt.Errorf("replace transcript: %w", err)
 	}
 	return merged, nil
+}
+
+// checkContainedDir resolves dir through symlinks because a lexically safe
+// path can still route through a symlinked directory to somewhere outside the
+// destination, and both writes and retractions must stay inside it.
+func checkContainedDir(resolvedDest, dir string) error {
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("resolve transcript directory: %w", err)
+	}
+	resolvedDir, err = filepath.Abs(resolvedDir)
+	if err != nil {
+		return fmt.Errorf("resolve absolute transcript directory: %w", err)
+	}
+	rootPrefix := resolvedDest
+	if !strings.HasSuffix(rootPrefix, string(filepath.Separator)) {
+		rootPrefix += string(filepath.Separator)
+	}
+	if resolvedDir != resolvedDest && !strings.HasPrefix(resolvedDir, rootPrefix) {
+		return fmt.Errorf("resolved transcript directory %s escapes destination %s", resolvedDir, resolvedDest)
+	}
+	return nil
+}
+
+// retractFile deletes a transcript the sender has since tagged no-push. It
+// reports whether a file was removed. A missing file counts as success: the
+// receiver may have deleted it by hand, or an earlier attempt removed it before
+// another failure made the sender retry the whole stream.
+func retractFile(resolvedDest, relPath string) (bool, error) {
+	if err := validateRelativePath(relPath); err != nil {
+		return false, err
+	}
+	// Retraction may only remove transcripts, so a buggy or hostile sender
+	// cannot use it to delete other files that happen to live under dest.
+	if !strings.EqualFold(filepath.Ext(relPath), ".md") {
+		return false, fmt.Errorf("refusing to retract non-transcript path %q", relPath)
+	}
+	target := filepath.Join(resolvedDest, filepath.FromSlash(relPath))
+	if err := checkContainedDir(resolvedDest, filepath.Dir(target)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	unlock, err := session.LockTranscript(target)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+
+	removed := true
+	if err := os.Remove(target); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("remove transcript: %w", err)
+		}
+		removed = false
+	}
+	return removed, nil
 }
 
 func mergeTranscriptAnnotations(existing, incoming []byte) ([]byte, error) {
