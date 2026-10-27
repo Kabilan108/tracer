@@ -4,59 +4,26 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { self, nixpkgs }:
+    { nixpkgs, ... }:
     let
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
-
-      mkPackage =
-        pkgs:
-        (pkgs.buildGoModule.override { go = pkgs.go_1_26; }) rec {
-          pname = "tracer";
-          version = "0.4.0";
-          src = self;
-          vendorHash = "sha256-MMrLdQC5HUunc9qkcAGDXe5/JRReVdNI1jEV5p72gTk=";
-
-          env.CGO_ENABLED = 0;
-
-          buildPhase = ''
-            runHook preBuild
-            go build -trimpath -ldflags "-X main.version=${version}" -o tracer .
-            runHook postBuild
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            install -Dm755 tracer $out/bin/tracer
-            runHook postInstall
-          '';
-
-          doCheck = false;
-
-          meta = with pkgs.lib; {
-            description = "Tracer CLI and watcher for Claude/Codex session archiving";
-            homepage = "https://github.com/tracer-ai/tracer-cli";
-            license = licenses.asl20;
-            platforms = [ "x86_64-linux" ];
-            mainProgram = "tracer";
-          };
-        };
     in
     {
+      overlays.default = final: prev: {
+        tracer = final.callPackage ./nix/package.nix { };
+      };
+
       packages = forAllSystems (
         system:
         let
           pkgs = import nixpkgs { inherit system; };
         in
-        {
-          default = mkPackage pkgs;
-          tracer = mkPackage pkgs;
+        rec {
+          tracer = pkgs.callPackage ./nix/package.nix { };
+          default = tracer;
         }
       );
-
-      overlays.default = final: prev: {
-        tracer = mkPackage final;
-      };
 
       homeManagerModules.default = import ./nix/hm-module.nix;
 
@@ -68,7 +35,7 @@
         {
           default = pkgs.mkShell {
             buildInputs = with pkgs; [
-              go_1_26
+              go
               gopls
               git
               just
